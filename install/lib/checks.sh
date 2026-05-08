@@ -151,11 +151,11 @@ check_containers() {
     esac
 
     local status
-    status="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || echo "missing")"
+    status="$(docker_cmd inspect -f '{{.State.Status}}' "$container" 2>/dev/null || echo "missing")"
 
     if [[ "$status" == "running" ]]; then
       local uptime
-      uptime="$(docker inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null | cut -dT -f2 | cut -d. -f1)"
+      uptime="$(docker_cmd inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null | cut -dT -f2 | cut -d. -f1)"
       info "$svc ($container) — running since $uptime"
     else
       fail "$svc ($container) — $status"
@@ -167,10 +167,10 @@ check_containers() {
     fi
   done
 
-  if docker inspect -f '{{.State.Status}}' mowgli-ros2 2>/dev/null | grep -q running; then
+  if docker_cmd inspect -f '{{.State.Status}}' mowgli-ros2 2>/dev/null | grep -q running; then
     local dead_nodes
     dead_nodes=$(
-      docker logs mowgli-ros2 --tail 200 2>&1 \
+      docker_cmd logs mowgli-ros2 --tail 200 2>&1 \
         | grep -oP "process has died.*cmd '([^']+)'" \
         | grep -oP "(?<=cmd ')[^']+" \
         | xargs -r -I{} basename {} 2>/dev/null \
@@ -190,14 +190,14 @@ check_containers() {
 check_firmware() {
   step "Check: Mowgli firmware"
 
-  if ! docker inspect -f '{{.State.Status}}' mowgli-ros2 2>/dev/null | grep -q running; then
+  if ! docker_cmd inspect -f '{{.State.Status}}' mowgli-ros2 2>/dev/null | grep -q running; then
     warn "mowgli-ros2 not running — skipping firmware check"
     return
   fi
 
   local status_data
   status_data="$(
-    docker exec mowgli-ros2 bash -lc \
+    docker_cmd exec mowgli-ros2 bash -lc \
       "source /opt/ros/kilted/setup.bash && source /ros2_ws/install/setup.bash && timeout 5 ros2 topic echo /hardware_bridge/status --once 2>/dev/null" \
       2>/dev/null || echo ""
   )"
@@ -234,7 +234,7 @@ check_gps() {
     info "MAVROS backend: GPS is handled through Pixhawk/MAVROS"
 
     local gps_status
-    gps_status="$(docker inspect -f '{{.State.Status}}' mowgli-gps 2>/dev/null || echo "missing")"
+    gps_status="$(docker_cmd inspect -f '{{.State.Status}}' mowgli-gps 2>/dev/null || echo "missing")"
     if [[ "$gps_status" == "running" ]]; then
       fail "mowgli-gps is running in MAVROS mode"
       add_issue "mowgli-gps must not run when HARDWARE_BACKEND=mavros. Regenerate docker/docker-compose.yaml and restart the stack."
@@ -243,7 +243,7 @@ check_gps() {
     fi
 
     local mavros_status
-    mavros_status="$(docker inspect -f '{{.State.Status}}' mowgli-mavros 2>/dev/null || echo "missing")"
+    mavros_status="$(docker_cmd inspect -f '{{.State.Status}}' mowgli-mavros 2>/dev/null || echo "missing")"
     if [[ "$mavros_status" != "running" ]]; then
       fail "mowgli-mavros is ${mavros_status}"
       add_issue "MAVROS backend selected but mowgli-mavros is not running. Check docker logs mowgli-mavros --tail 50."
@@ -253,7 +253,7 @@ check_gps() {
 
     local mavros_state
     mavros_state="$(
-      docker exec mowgli-ros2 bash -lc \
+      docker_cmd exec mowgli-ros2 bash -lc \
         "source /opt/ros/kilted/setup.bash && source /ros2_ws/install/setup.bash && timeout 5 ros2 topic echo /mavros/state --once 2>/dev/null" \
         2>/dev/null || echo ""
     )"
@@ -266,7 +266,7 @@ check_gps() {
 
     local mavros_global
     mavros_global="$(
-      docker exec mowgli-ros2 bash -lc \
+      docker_cmd exec mowgli-ros2 bash -lc \
         "source /opt/ros/kilted/setup.bash && source /ros2_ws/install/setup.bash && timeout 5 ros2 topic echo /mavros/global_position/global --once 2>/dev/null" \
         2>/dev/null || echo ""
     )"
@@ -279,7 +279,7 @@ check_gps() {
 
     local rtcm_info
     rtcm_info="$(
-      docker exec mowgli-ros2 bash -lc \
+      docker_cmd exec mowgli-ros2 bash -lc \
         "source /opt/ros/kilted/setup.bash && source /ros2_ws/install/setup.bash && ros2 topic info /rtcm 2>/dev/null" \
         2>/dev/null || echo ""
     )"
@@ -302,14 +302,14 @@ check_gps() {
       ;;
   esac
 
-  if ! docker inspect -f '{{.State.Status}}' "$gps_container" 2>/dev/null | grep -q running; then
+  if ! docker_cmd inspect -f '{{.State.Status}}' "$gps_container" 2>/dev/null | grep -q running; then
     warn "$gps_container not running — skipping GPS check"
     return
   fi
 
   local fix_data
   fix_data="$(
-    docker exec mowgli-ros2 bash -lc \
+    docker_cmd exec mowgli-ros2 bash -lc \
       "source /opt/ros/kilted/setup.bash && source /ros2_ws/install/setup.bash && timeout 5 ros2 topic echo /gps/fix --once 2>/dev/null" \
       2>/dev/null || echo ""
   )"
@@ -349,7 +349,7 @@ check_gps() {
   fi
 
   local ntrip_logs
-  ntrip_logs="$(docker logs "$gps_container" --tail 80 2>&1 || true)"
+  ntrip_logs="$(docker_cmd logs "$gps_container" --tail 80 2>&1 || true)"
 
   if echo "$ntrip_logs" | grep -q "Connected to http"; then
     local ntrip_url
@@ -412,14 +412,14 @@ check_lidar() {
 
   info "LiDAR config: type=${LIDAR_TYPE} port=${LIDAR_PORT} baud=${LIDAR_BAUD}"
 
-  if ! docker inspect -f '{{.State.Status}}' mowgli-lidar 2>/dev/null | grep -q running; then
+  if ! docker_cmd inspect -f '{{.State.Status}}' mowgli-lidar 2>/dev/null | grep -q running; then
     warn "mowgli-lidar not running — skipping LiDAR check"
     return
   fi
 
   local scan_check
   scan_check="$(
-    docker exec mowgli-ros2 bash -lc \
+    docker_cmd exec mowgli-ros2 bash -lc \
       "source /opt/ros/kilted/setup.bash && source /ros2_ws/install/setup.bash && ros2 topic info /scan 2>/dev/null" \
       2>/dev/null || echo ""
   )"
@@ -466,7 +466,7 @@ check_rangefinders() {
 check_gui() {
   step "Check: GUI & connectivity"
 
-  if ! docker inspect -f '{{.State.Status}}' mowgli-gui 2>/dev/null | grep -q running; then
+  if ! docker_cmd inspect -f '{{.State.Status}}' mowgli-gui 2>/dev/null | grep -q running; then
     fail "mowgli-gui not running"
     add_issue "GUI container not running."
     return
@@ -484,7 +484,7 @@ check_gui() {
 
   local fg_info
   fg_info="$(
-    docker exec mowgli-ros2 bash -lc \
+    docker_cmd exec mowgli-ros2 bash -lc \
       "source /opt/ros/kilted/setup.bash && source /ros2_ws/install/setup.bash && ros2 node list 2>/dev/null" \
       2>/dev/null | grep foxglove_bridge || echo ""
   )"

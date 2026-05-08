@@ -140,7 +140,7 @@ write_compose_merged() {
   # values resolved at first install.
   (
     cd "$REPO_DIR" || exit 1
-    docker compose \
+    docker_compose_cmd \
       --project-directory "$REPO_DIR" \
       --env-file "$FINAL_ENV_FILE" \
       "${compose_args[@]}" \
@@ -159,11 +159,11 @@ run_compose_stack() {
   info "Env file: $FINAL_ENV_FILE"
 
   info "Pulling selected images..."
-  docker compose -f "$FINAL_COMPOSE_FILE" --env-file "$FINAL_ENV_FILE" pull
+  docker_compose_cmd -f "$FINAL_COMPOSE_FILE" --env-file "$FINAL_ENV_FILE" pull
   echo ""
   info "Starting stack..."
-  docker compose -f "$FINAL_COMPOSE_FILE" --env-file "$FINAL_ENV_FILE" up -d
+  docker_compose_cmd -f "$FINAL_COMPOSE_FILE" --env-file "$FINAL_ENV_FILE" up -d
   echo ""
   info "Current containers:"
-  docker compose -f "$FINAL_COMPOSE_FILE" --env-file "$FINAL_ENV_FILE" ps
+  docker_compose_cmd -f "$FINAL_COMPOSE_FILE" --env-file "$FINAL_ENV_FILE" ps
 }
