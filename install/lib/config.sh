@@ -28,6 +28,49 @@ GUI_IMAGE_DEFAULT="ghcr.io/cedbossneo/mowglinext/mowglinext-gui:${IMAGE_TAG}"
 CHECK_ONLY=false
 CLI_PRESET=false
 
+installer_main_command() {
+  printf 'bash %q' "$REPO_DIR/install/mowglinext.sh"
+}
+
+rerun_check_command() {
+  printf '%s --check' "$(installer_main_command)"
+}
+
+compose_restart_services_for_backend() {
+  local backend="${1:-${HARDWARE_BACKEND:-mowgli}}"
+  local services=()
+
+  if [[ "$backend" == "mavros" ]]; then
+    services+=(mavros ntrip mowgli)
+  else
+    local gnss_backend
+    local gnss_service
+
+    gnss_backend="$(effective_gnss_backend 2>/dev/null || true)"
+    if is_supported_gnss_backend "$gnss_backend"; then
+      gnss_service="$(compose_gnss_service_name "$gnss_backend" 2>/dev/null || true)"
+      [ -n "$gnss_service" ] && services+=("$gnss_service")
+    fi
+    services+=(mowgli)
+  fi
+
+  printf '%s\n' "${services[@]}"
+}
+
+print_restart_command_for_backend() {
+  local backend="${1:-${HARDWARE_BACKEND:-mowgli}}"
+  local services=()
+  local service
+
+  mapfile -t services < <(compose_restart_services_for_backend "$backend")
+
+  printf 'docker compose -f %q --env-file %q restart' "$FINAL_COMPOSE_FILE" "$FINAL_ENV_FILE"
+  for service in "${services[@]}"; do
+    printf ' %q' "$service"
+  done
+  printf '\n'
+}
+
 range_services_available() {
   local fragment
 
@@ -673,11 +716,10 @@ auto_detect_position() {
 
   local gnss_backend
   local gps_container
-  local gnss_service
+  local restart_services=()
 
   gnss_backend="$(effective_gnss_backend 2>/dev/null || true)"
   gps_container="$(compose_gnss_container_name "$gnss_backend" 2>/dev/null || true)"
-  gnss_service="$(compose_gnss_service_name "$gnss_backend" 2>/dev/null || true)"
 
   if ! docker_cmd inspect -f '{{.State.Status}}' mowgli-ros2 2>/dev/null | grep -q running; then
     warn "mowgli-ros2 container not running — cannot auto-detect"
@@ -743,10 +785,11 @@ auto_detect_position() {
   info "Config updated with auto-detected position"
 
   echo -e "${DIM}Restarting containers with new config...${NC}"
+  mapfile -t restart_services < <(compose_restart_services_for_backend)
   docker_compose_cmd \
     -f "$FINAL_COMPOSE_FILE" \
     --env-file "$FINAL_ENV_FILE" \
-    restart "${gnss_service:-gps}" mowgli 2>&1 | tail -3
+    restart "${restart_services[@]}" 2>&1 | tail -3
   sleep 10
 }
 

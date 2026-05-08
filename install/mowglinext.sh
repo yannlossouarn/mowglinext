@@ -57,19 +57,19 @@ main() {
   assert_supported_platform || return 1
   print_platform_summary
 
+  if [ -f "$REPO_DIR/docker/.env" ]; then
+    load_env_defaults_file "$REPO_DIR/docker/.env"
+  fi
+
   if ! $CHECK_ONLY; then
     local TOTAL_STEPS=15
 
     # Language selection, load previous env, then load preset
     select_language
 
-    # Load existing .env for defaults on re-run (preset/CLI flags override)
-    if [ -f "$REPO_DIR/docker/.env" ]; then
-      load_env_defaults_file "$REPO_DIR/docker/.env"
-      # Image refs are tied to the install script version — never inherit
-      # stale paths from older installs (e.g. mowgli-docker, openmower-gui).
-      unset MOWGLI_ROS2_IMAGE GPS_IMAGE UNICORE_IMAGE LIDAR_IMAGE MAVROS_IMAGE NMEA_IMAGE GUI_IMAGE
-    fi
+    # Image refs are tied to the install script version — never inherit
+    # stale paths from older installs (e.g. mowgli-docker, openmower-gui).
+    unset MOWGLI_ROS2_IMAGE GPS_IMAGE UNICORE_IMAGE LIDAR_IMAGE MAVROS_IMAGE NMEA_IMAGE GUI_IMAGE
 
     load_preset
 
