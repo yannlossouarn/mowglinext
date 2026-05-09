@@ -117,6 +117,17 @@ load_env_defaults_file() {
   info "Loaded previous configuration from ${file}"
 }
 
+backup_env_defaults_file() {
+  local file="${1:-$REPO_DIR/docker/.env}"
+  local backup
+
+  [ -f "$file" ] || return 0
+
+  backup="${file}.old.$(date +%Y%m%d_%H%M%S)"
+  mv "$file" "$backup"
+  info "Moved previous runtime environment aside: ${file} -> ${backup}"
+}
+
 load_preset_file() {
   local file="${1:-$(preset_file_path)}"
   local i key value

@@ -103,6 +103,21 @@ assert_eq ".env export compatibility preserved" "NMEA" "${GPS_PROTOCOL:-}"
 assert_eq ".env numeric text preserved" "115200" "${GPS_BAUD:-}"
 assert_eq ".env quoted empty value preserved" "" "${LIDAR_MODEL-__unset__}"
 
+section ".env backup for web preset installs"
+
+cat > "$SANDBOX_REPO/docker/.env" <<'EOF'
+GNSS_BACKEND=gps
+GPS_CONNECTION=usb
+GPS_PROTOCOL=UBX
+EOF
+
+backup_env_defaults_file "$SANDBOX_REPO/docker/.env"
+assert_file_not_exists ".env moved aside" "$SANDBOX_REPO/docker/.env"
+backup_file="$(find "$SANDBOX_REPO/docker" -maxdepth 1 -name '.env.old.*' | sort | tail -n1)"
+assert_file_exists ".env backup created" "$backup_file"
+backup_content="$(cat "$backup_file")"
+assert_contains ".env backup keeps old GPS_CONNECTION" "GPS_CONNECTION=usb" "$backup_content"
+
 section "preset is consumed only on explicit success path"
 
 cat > "$SANDBOX_REPO/install/.preset" <<'EOF'

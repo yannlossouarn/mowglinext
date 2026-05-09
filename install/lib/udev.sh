@@ -203,7 +203,10 @@ install_udev_rules() {
   rm -f "$tmpfile"
 
   # Verify symlinks were created — UART devices may not exist until reboot
+  local gnss_backend
   local needs_reboot=false
+
+  gnss_backend="$(effective_gnss_backend 2>/dev/null || true)"
 
   if [ "$gnss_backend" != "disabled" ] && [ "${GPS_CONNECTION:-usb}" = "uart" ] && [ -n "${GPS_UART_DEVICE:-}" ]; then
     if [ ! -e "$GPS_UART_DEVICE" ]; then

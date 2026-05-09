@@ -50,6 +50,34 @@ load_preset() {
   fi
 }
 
+load_install_state() {
+  local preset_file
+  local preset_attempted=false
+
+  preset_file="$(preset_file_path)"
+
+  if ! $CHECK_ONLY && [ -f "$preset_file" ]; then
+    preset_attempted=true
+    load_preset
+
+    if [ "${PRESET_LOADED:-false}" = "true" ] && [ -n "${STATE_ACTIVE_PRESET_FILE:-}" ]; then
+      if [ -f "$REPO_DIR/docker/.env" ]; then
+        warn "Web preset detected; existing docker/.env will be backed up and ignored for this install run."
+        backup_env_defaults_file "$REPO_DIR/docker/.env"
+      fi
+      return 0
+    fi
+  fi
+
+  if [ -f "$REPO_DIR/docker/.env" ]; then
+    load_env_defaults_file "$REPO_DIR/docker/.env"
+  fi
+
+  if ! $CHECK_ONLY && [ "$preset_attempted" != "true" ]; then
+    load_preset
+  fi
+}
+
 main() {
   show_banner
   load_locale
@@ -57,21 +85,17 @@ main() {
   assert_supported_platform || return 1
   print_platform_summary
 
-  if [ -f "$REPO_DIR/docker/.env" ]; then
-    load_env_defaults_file "$REPO_DIR/docker/.env"
-  fi
-
   if ! $CHECK_ONLY; then
     local TOTAL_STEPS=15
 
-    # Language selection, load previous env, then load preset
+    # Language selection, load previous env unless a web preset intentionally
+    # starts a fresh runtime configuration.
     select_language
+    load_install_state
 
     # Image refs are tied to the install script version — never inherit
     # stale paths from older installs (e.g. mowgli-docker, openmower-gui).
     unset MOWGLI_ROS2_IMAGE GPS_IMAGE UNICORE_IMAGE LIDAR_IMAGE MAVROS_IMAGE NMEA_IMAGE GUI_IMAGE
-
-    load_preset
 
     progress_run_interactive 1 "$TOTAL_STEPS" "Updating system" \
       run_system_update
@@ -119,6 +143,8 @@ main() {
       run_startup_step_live
 
   else
+    load_install_state
+
     if [ ! -f "$INSTALL_DIR/compose/docker-compose.base.yml" ]; then
       error "No installation sources found at $INSTALL_DIR — run without --check first"
       return 1

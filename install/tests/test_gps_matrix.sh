@@ -133,6 +133,56 @@ case "$unicore_fragments" in
   *)                        pass "unicore: NO legacy gps fragment" ;;
 esac
 
+# ── Web composer Unicore preset must not reuse stale GPS USB defaults ─────
+section "gnss=unicore web preset with stale GPS USB config"
+
+repo="$SANDBOX/repo_unicore_web_stale_env"
+sandbox_repo "$repo"
+harness_init "$repo"
+
+serial_dir="$SANDBOX/serial-unicore"
+serial_target="$SANDBOX/ttyUSB-unicore"
+mkdir -p "$serial_dir"
+touch "$serial_target"
+ln -s "$serial_target" "$serial_dir/usb-Unicore_UM980"
+
+export SERIAL_BY_ID_DIR="$serial_dir"
+export PRESET_LOADED=true
+export STATE_ACTIVE_PRESET_COUNT=1
+STATE_PARSED_KEYS=(GNSS_BACKEND)
+STATE_PARSED_VALUES=(unicore)
+
+GNSS_BACKEND=unicore
+GPS_CONNECTION=usb
+GPS_PROTOCOL=UBX
+GPS_BY_ID=""
+pick_serial_called=false
+
+prompt_count=0
+prompt() {
+  prompt_count=$((prompt_count + 1))
+  case "$prompt_count" in
+    1) REPLY="1" ;; # connection: USB
+    2) REPLY="1" ;; # by-id candidate
+    3) REPLY="1" ;; # protocol: UBX
+    *) REPLY="${2:-}" ;;
+  esac
+}
+pick_serial_by_id() {
+  pick_serial_called=true
+  REPLY="$serial_dir/usb-Unicore_UM980"
+}
+
+if configure_gps >/dev/null 2>&1; then
+  pass "unicore web preset ignores stale GPS USB preset values"
+else
+  fail "unicore web preset ignores stale GPS USB preset values"
+fi
+assert_eq "unicore web preset asks for by-id selection" "true" "$pick_serial_called"
+assert_eq "unicore web preset selects by-id interactively" "$serial_dir/usb-Unicore_UM980" "${GPS_BY_ID:-}"
+assert_eq "unicore web preset keeps backend" "unicore" "${GNSS_BACKEND:-}"
+unset SERIAL_BY_ID_DIR
+
 # ── Invalid GNSS backend name should fail ──────────────────────────────────
 section "Invalid gnss backend is rejected"
 

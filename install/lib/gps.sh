@@ -50,6 +50,19 @@ pick_serial_by_id() {
   REPLY="${candidates[$((choice - 1))]}"
 }
 
+preset_key_loaded() {
+  local wanted="${1:?preset_key_loaded: missing key}"
+  local key
+
+  [ "${STATE_ACTIVE_PRESET_COUNT:-0}" -gt 0 ] || return 1
+
+  for key in "${STATE_PARSED_KEYS[@]}"; do
+    [ "$key" = "$wanted" ] && return 0
+  done
+
+  return 1
+}
+
 configure_gps() {
   step "GPS configuration"
 
@@ -57,6 +70,8 @@ configure_gps() {
   GPS_UART_RULE=""
   GPS_DEBUG_UART_RULE=""
   : "${GNSS_BACKEND:=gps}"
+  local gnss_preconfigured=false
+  local gps_preconfigured=false
 
   if [[ "${GNSS_BACKEND:-}" == "nmea" ]]; then
     warn_legacy_nmea_backend_once
@@ -64,8 +79,22 @@ configure_gps() {
     GPS_PROTOCOL="NMEA"
   fi
 
+  if [[ "${PRESET_LOADED:-false}" == "true" ]]; then
+    if [ "${STATE_ACTIVE_PRESET_COUNT:-0}" -gt 0 ]; then
+      preset_key_loaded GNSS_BACKEND && gnss_preconfigured=true
+      if preset_key_loaded GPS_CONNECTION && preset_key_loaded GPS_PROTOCOL; then
+        gps_preconfigured=true
+      fi
+    else
+      [ -n "${GNSS_BACKEND:-}" ] && gnss_preconfigured=true
+      if [ -n "${GPS_CONNECTION:-}" ] && [ -n "${GPS_PROTOCOL:-}" ]; then
+        gps_preconfigured=true
+      fi
+    fi
+  fi
+
   # If preset values exist (from web composer or CLI), skip interactive prompts
-  if [[ "${PRESET_LOADED:-false}" == "true" && -n "${GNSS_BACKEND:-}" && -n "${GPS_CONNECTION:-}" && -n "${GPS_PROTOCOL:-}" ]]; then
+  if [[ "$gnss_preconfigured" == "true" ]]; then
     if ! is_supported_gnss_backend "${GNSS_BACKEND}"; then
       error "Invalid GNSS_BACKEND preset: ${GNSS_BACKEND} (expected: $(list_supported_gnss_backends))"
       return 1
@@ -75,6 +104,12 @@ configure_gps() {
       info "Direct GNSS configuration disabled for HARDWARE_BACKEND=${HARDWARE_BACKEND:-mowgli}"
       return 0
     fi
+  fi
+
+  # Skip GPS prompts only when the current preset provided the GPS details.
+  # Stale GPS_* values loaded from docker/.env must not turn --gnss=unicore
+  # into an incomplete USB preset without GPS_BY_ID.
+  if [[ "$gnss_preconfigured" == "true" && "$gps_preconfigured" == "true" ]]; then
 
     : "${GPS_PORT:=/dev/gps}"
     : "${GPS_BY_ID:=}"
@@ -105,29 +140,33 @@ configure_gps() {
       return 0
     fi
 
-    echo ""
-    echo "Select GNSS backend:"
-    echo "  1) Generic GPS (legacy container, UBX or NMEA)"
-    echo "  2) u-blox (F9P, UBX HP + NTRIP bundled)"
-    echo "  3) Unicore (UM98x)"
-    prompt "$MSG_CHOICE" "1"
-    local gnss_choice="$REPLY"
+    if [[ "$gnss_preconfigured" == "true" ]]; then
+      info "GNSS backend pre-configured: ${GNSS_BACKEND}"
+    else
+      echo ""
+      echo "Select GNSS backend:"
+      echo "  1) Generic GPS (legacy container, UBX or NMEA)"
+      echo "  2) u-blox (F9P, UBX HP + NTRIP bundled)"
+      echo "  3) Unicore (UM98x)"
+      prompt "$MSG_CHOICE" "1"
+      local gnss_choice="$REPLY"
 
-    case "$gnss_choice" in
-      1)
-        GNSS_BACKEND="gps"
-        ;;
-      2)
-        GNSS_BACKEND="ublox"
-        ;;
-      3)
-        GNSS_BACKEND="unicore"
-        ;;
-      *)
-        error "Invalid GNSS backend choice"
-        return 1
-        ;;
-    esac
+      case "$gnss_choice" in
+        1)
+          GNSS_BACKEND="gps"
+          ;;
+        2)
+          GNSS_BACKEND="ublox"
+          ;;
+        3)
+          GNSS_BACKEND="unicore"
+          ;;
+        *)
+          error "Invalid GNSS backend choice"
+          return 1
+          ;;
+      esac
+    fi
 
     # Defaults based on PCB / GUI-ready
     : "${GPS_PROTOCOL:=UBX}"
