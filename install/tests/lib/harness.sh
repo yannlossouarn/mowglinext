@@ -34,6 +34,7 @@ harness_init() {
   unset GNSS_BACKEND GPS_CONNECTION GPS_PROTOCOL GPS_PORT GPS_BAUD \
         GPS_UART_DEVICE GPS_BY_ID GPS_DEBUG_ENABLED GPS_DEBUG_PORT \
         GPS_DEBUG_UART_DEVICE GPS_DEBUG_BAUD \
+        UNICORE_COM_PORT UNICORE_TARGET_BAUD \
         LIDAR_ENABLED LIDAR_TYPE LIDAR_MODEL LIDAR_CONNECTION \
         LIDAR_PORT LIDAR_UART_DEVICE LIDAR_BAUD LIDAR_IMAGE \
         MOWGLI_ROS2_IMAGE GPS_IMAGE UNICORE_IMAGE MAVROS_IMAGE GUI_IMAGE \
@@ -83,6 +84,8 @@ harness_init() {
   source "$lib_dir/env.sh"
   # shellcheck source=/dev/null
   source "$lib_dir/serial_probe.sh"
+  # shellcheck source=/dev/null
+  source "$lib_dir/unicore_config.sh"
   # shellcheck source=/dev/null
   source "$lib_dir/gps.sh"
   # shellcheck source=/dev/null

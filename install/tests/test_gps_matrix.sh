@@ -118,9 +118,9 @@ GPS_UART_DEVICE=/dev/ttyUSB0
 harness_set_preset gnss=unicore gps=ubx-uart lidar=none tfluna=none
 if harness_run; then pass "harness_run unicore"; else fail "harness_run unicore"; fi
 assert_eq "unicore: GNSS_BACKEND=unicore" "unicore" "$(env_value "$repo" GNSS_BACKEND)"
-# Unicore UART must run at 460800 — see configure_gps override in
-# install/lib/gps.sh. The PCB-side UART (ttyAMA4) is fixed at this rate;
-# any other baud means the receiver won't talk to the host.
+# This preset carries an explicit legacy baud, so the installer must preserve
+# it and skip auto-upgrade. Auto-detected Unicore baud can be upgraded to
+# 921600 in the dedicated tests below.
 assert_eq "unicore/uart: GPS_BAUD=460800" "460800" "$(env_value "$repo" GPS_BAUD)"
 
 unicore_fragments=$(selected_fragments_in_current_run)
@@ -256,6 +256,99 @@ mapfile -t probe_args < "$probe_args_file"
 assert_eq "unicore baud probe uses selected by-id" "$serial_dir/usb-Unicore_UM980" "${probe_args[0]:-}"
 assert_eq "unicore baud probe uses backend" "unicore" "${probe_args[1]:-}"
 assert_eq "unicore web preset writes detected GPS_BAUD" "921600" "${GPS_BAUD:-}"
+
+# ── Unicore detected baud is upgraded to 921600 only after verification ───
+section "unicore auto-detected baud upgrade success"
+
+repo="$SANDBOX/repo_unicore_upgrade_success"
+sandbox_repo "$repo"
+harness_init "$repo"
+
+export PRESET_LOADED=true
+export STATE_ACTIVE_PRESET_COUNT=1
+STATE_PARSED_KEYS=(GNSS_BACKEND)
+STATE_PARSED_VALUES=(unicore)
+
+GNSS_BACKEND=unicore
+unset GPS_CONNECTION GPS_PROTOCOL GPS_BAUD GPS_BY_ID UNICORE_COM_PORT 2>/dev/null || true
+
+prompt_count=0
+prompt() {
+  prompt_count=$((prompt_count + 1))
+  case "$prompt_count" in
+    1) REPLY="1" ;;    # connection: USB
+    2) REPLY="1" ;;    # protocol: UBX
+    3) REPLY="1" ;;    # baud: auto-detect
+    4) REPLY="COM1" ;; # Unicore COM port
+    *) REPLY="${2:-}" ;;
+  esac
+}
+pick_serial_by_id() {
+  REPLY="$serial_dir/usb-Unicore_UM980"
+}
+serial_probe_baud() {
+  printf '460800\n'
+}
+upgrade_args_file="$SANDBOX/unicore-upgrade-success-args"
+configure_unicore_baud_921600() {
+  printf '%s\n%s\n%s\n' "$1" "$2" "$3" > "$upgrade_args_file"
+  return 0
+}
+
+if configure_gps >/dev/null 2>&1; then
+  pass "unicore detected baud upgrade success configures GPS"
+else
+  fail "unicore detected baud upgrade success configures GPS"
+fi
+mapfile -t upgrade_args < "$upgrade_args_file"
+assert_eq "unicore upgrade uses selected by-id" "$serial_dir/usb-Unicore_UM980" "${upgrade_args[0]:-}"
+assert_eq "unicore upgrade uses detected baud" "460800" "${upgrade_args[1]:-}"
+assert_eq "unicore upgrade uses COM1 default" "COM1" "${upgrade_args[2]:-}"
+assert_eq "unicore upgrade success writes GPS_BAUD=921600" "921600" "${GPS_BAUD:-}"
+
+section "unicore auto-detected baud upgrade failure keeps detected baud"
+
+repo="$SANDBOX/repo_unicore_upgrade_failure"
+sandbox_repo "$repo"
+harness_init "$repo"
+
+export PRESET_LOADED=true
+export STATE_ACTIVE_PRESET_COUNT=1
+STATE_PARSED_KEYS=(GNSS_BACKEND)
+STATE_PARSED_VALUES=(unicore)
+
+GNSS_BACKEND=unicore
+unset GPS_CONNECTION GPS_PROTOCOL GPS_BAUD GPS_BY_ID UNICORE_COM_PORT 2>/dev/null || true
+
+prompt_count=0
+prompt() {
+  prompt_count=$((prompt_count + 1))
+  case "$prompt_count" in
+    1) REPLY="1" ;;
+    2) REPLY="1" ;;
+    3) REPLY="1" ;;
+    4) REPLY="COM1" ;;
+    *) REPLY="${2:-}" ;;
+  esac
+}
+pick_serial_by_id() {
+  REPLY="$serial_dir/usb-Unicore_UM980"
+}
+serial_probe_baud() {
+  printf '460800\n'
+}
+configure_unicore_baud_921600() {
+  return 1
+}
+
+if configure_gps >/dev/null 2>&1; then
+  pass "unicore detected baud upgrade failure still configures GPS"
+else
+  fail "unicore detected baud upgrade failure still configures GPS"
+fi
+assert_eq "unicore upgrade failure keeps detected GPS_BAUD" "460800" "${GPS_BAUD:-}"
+
+unset -f configure_unicore_baud_921600 serial_probe_baud
 
 # ── Invalid GNSS backend name should fail ──────────────────────────────────
 section "Invalid gnss backend is rejected"

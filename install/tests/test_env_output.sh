@@ -49,6 +49,7 @@ REQUIRED_KEYS=(
   GPS_PORT
   GPS_BAUD
   GPS_UART_DEVICE
+  UNICORE_COM_PORT
   GPS_DEBUG_ENABLED
   GPS_DEBUG_PORT
   GPS_DEBUG_BAUD
@@ -115,7 +116,7 @@ done
 
 section ".env permissions are reasonable"
 
-mode=$(stat -f '%A' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null)
+mode=$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%A' "$ENV_FILE" 2>/dev/null)
 case "$mode" in
   6??|644|640|600) pass ".env permissions ($mode)" ;;
   *)               fail ".env permissions ($mode)" "expected 6xx, got $mode" ;;

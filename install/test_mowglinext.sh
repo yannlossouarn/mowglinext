@@ -133,6 +133,7 @@ echo ""
 echo "── configure_gps with preset tests ──"
 
 source "$SCRIPT_DIR/lib/serial_probe.sh"
+source "$SCRIPT_DIR/lib/unicore_config.sh"
 source "$SCRIPT_DIR/lib/gps.sh"
 
 pick_uart_port() {
@@ -421,6 +422,7 @@ for script in \
   "$SCRIPT_DIR/mowglinext.sh" \
   "$SCRIPT_DIR/lib/gps.sh" \
   "$SCRIPT_DIR/lib/serial_probe.sh" \
+  "$SCRIPT_DIR/lib/unicore_config.sh" \
   "$SCRIPT_DIR/lib/lidar.sh" \
   "$SCRIPT_DIR/lib/range.sh" \
   "$SCRIPT_DIR/lib/common.sh" \

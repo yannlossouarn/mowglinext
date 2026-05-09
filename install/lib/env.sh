@@ -31,6 +31,7 @@ setup_env() {
   : "${GPS_BY_ID:=}"
   : "${GPS_UART_DEVICE:=/dev/ttyAMA4}"
   : "${GPS_BAUD:=460800}"
+  : "${UNICORE_COM_PORT:=COM1}"
 
   : "${GPS_DEBUG_ENABLED:=false}"
   : "${GPS_DEBUG_PORT:=/dev/gps_debug}"
@@ -115,6 +116,7 @@ setup_env() {
   upsert_env_key "$env_file" "GPS_BY_ID" "$GPS_BY_ID"
   upsert_env_key "$env_file" "GPS_UART_DEVICE" "$GPS_UART_DEVICE"
   upsert_env_key "$env_file" "GPS_BAUD" "$GPS_BAUD"
+  upsert_env_key "$env_file" "UNICORE_COM_PORT" "$UNICORE_COM_PORT"
   upsert_env_key "$env_file" "GPS_DEBUG_ENABLED" "$GPS_DEBUG_ENABLED"
   upsert_env_key "$env_file" "GPS_DEBUG_PORT" "$GPS_DEBUG_PORT"
   upsert_env_key "$env_file" "GPS_DEBUG_UART_DEVICE" "$GPS_DEBUG_UART_DEVICE"

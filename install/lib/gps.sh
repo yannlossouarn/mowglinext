@@ -145,6 +145,7 @@ configure_gps() {
       if [ -n "$probe_port" ]; then
         prompt_or_probe_baud "$probe_port" "${GNSS_BACKEND:-gps}" "${GPS_PROTOCOL:-UBX}" "${GPS_BAUD:-460800}" "auto"
         GPS_BAUD="$REPLY"
+        maybe_upgrade_unicore_baud "$probe_port" "$GPS_BAUD" "auto"
       fi
     fi
 
@@ -264,6 +265,7 @@ configure_gps() {
     if [ -n "$probe_port" ]; then
       prompt_or_probe_baud "$probe_port" "${GNSS_BACKEND:-gps}" "${GPS_PROTOCOL:-UBX}" "$default_baud" "ask"
       GPS_BAUD="$REPLY"
+      maybe_upgrade_unicore_baud "$probe_port" "$GPS_BAUD" "ask"
     fi
 
     echo ""
