@@ -13,8 +13,8 @@ Le profil par défaut est `normal`.
 | --- | --- | --- | --- |
 | `normal` | runtime Nav2 / production légère | `PVTSLNA`, `GPGGA`, `BESTNAVA`, `GNHPR`, `RTKSTATUSA`, `RTCMSTATUSA` | aucun |
 | `debug` | essais terrain / Foxglove | profil `normal` | `BESTSATA`, `SATSINFOA`, `AGCA`, `HWSTATUSA`, `JAMSTATUSA`, `FREQJAMSTATUSA`, `GSV` |
-| `survey` | analyse GNSS avancée | profil `debug`, mais plus lent | `OBSVMCMPA` en ASCII lent |
-| `high_precision` | précision max / tuning RTK | profil `debug` | `CONFIG PVTALG MULTI`, `CONFIG RTCMDECAUTO ENABLE`, `CONFIG RTCMPHASERATE POSITIVE`, `CONFIG RTCMCLOCKOFFSET ENABLE` |
+| `survey` | analyse GNSS avancée | profil `debug`, mais plus lent | `OBSVMCMPB` en mode `hybrid/binary` si explicitement activé |
+| `high_precision` | précision max / tuning RTK | profil `debug` | `CONFIG PVTALG MULTI`, `CONFIG RTCMDECAUTO ENABLE`, `CONFIG RTCMPHASERATE POSITIVE`, `CONFIG RTCMCLOCKOFFSET ENABLE`, `OBSVMCMPB` optionnel |
 
 ## Périodes par défaut
 
@@ -28,7 +28,8 @@ Le profil par défaut est `normal`.
 Notes :
 
 - `normal` reste léger par défaut.
-- `survey` active `OBSVMCMPA`, mais ce log n’est pas encore parsé par le driver ROS 2.
+- `OBSVMCMPB` reste désactivé par défaut. Il est destiné au `survey/debug` avancé, pas au runtime Nav2.
+- Les résumés de diagnostics `GPS: raw observations` n’existent que si `UNICORE_ENABLE_RAW_OBSERVATIONS=true` et `UNICORE_OUTPUT_FORMAT=hybrid` ou `binary`.
 - `high_precision` ajoute des commandes dépendantes du firmware N4 ; elles sont volontairement limitées à ce profil.
 
 ## Variables `.env`
@@ -47,6 +48,7 @@ UNICORE_RAW_LOG_PERIOD=5
 UNICORE_ENABLE_SATELLITES=false
 UNICORE_ENABLE_RF=false
 UNICORE_ENABLE_JAMMING=false
+UNICORE_ENABLE_RAW_OBSERVATIONS=false
 ```
 
 Exemple terrain / debug Foxglove :
@@ -67,6 +69,15 @@ UNICORE_BESTNAV_LOG_PERIOD=0.1
 UNICORE_ENABLE_SATELLITES=true
 UNICORE_ENABLE_RF=true
 UNICORE_ENABLE_JAMMING=true
+```
+
+Exemple `survey` avec observations compressées binaires :
+
+```env
+UNICORE_PROFILE=survey
+UNICORE_OUTPUT_FORMAT=hybrid
+UNICORE_ENABLE_RAW_OBSERVATIONS=true
+UNICORE_RAW_LOG_PERIOD=5
 ```
 
 ## Recommandations

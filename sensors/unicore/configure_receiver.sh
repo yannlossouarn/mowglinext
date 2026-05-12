@@ -51,6 +51,7 @@ UNICORE_ENABLE_SATELLITES="${UNICORE_ENABLE_SATELLITES:-}"
 UNICORE_ENABLE_RF="${UNICORE_ENABLE_RF:-}"
 UNICORE_ENABLE_JAMMING="${UNICORE_ENABLE_JAMMING:-}"
 UNICORE_ENABLE_HARDWARE="${UNICORE_ENABLE_HARDWARE:-}"
+UNICORE_ENABLE_RAW_OBSERVATIONS="${UNICORE_ENABLE_RAW_OBSERVATIONS:-}"
 
 log() {
   echo "[configure_receiver.sh] $*" >&2
@@ -181,6 +182,7 @@ unicore_apply_profile_defaults() {
   UNICORE_ENABLE_RF="${UNICORE_ENABLE_RF:-$(unicore_profile_default_flag "$UNICORE_PROFILE" rf)}"
   UNICORE_ENABLE_JAMMING="${UNICORE_ENABLE_JAMMING:-$(unicore_profile_default_flag "$UNICORE_PROFILE" jamming)}"
   UNICORE_ENABLE_HARDWARE="${UNICORE_ENABLE_HARDWARE:-$(unicore_profile_default_flag "$UNICORE_PROFILE" hardware)}"
+  UNICORE_ENABLE_RAW_OBSERVATIONS="${UNICORE_ENABLE_RAW_OBSERVATIONS:-false}"
 }
 
 require_serial_port() {
@@ -358,9 +360,8 @@ signalgroup_for_model() {
 }
 
 build_log_commands() {
-  # PR6A keeps the receiver in ASCII mode by default. `UNICORE_OUTPUT_FORMAT`
-  # is normalized here for future binary/hybrid profile work but does not yet
-  # switch LOG commands to `...B`.
+  # ASCII remains the default transport, but selected survey/debug streams can
+  # switch to binary when `UNICORE_OUTPUT_FORMAT=hybrid|binary`.
   printf '%s\n' "LOG GPGGA ONTIME ${UNICORE_MAIN_LOG_PERIOD}"
   printf '%s\n' "LOG PVTSLNA ONTIME ${UNICORE_MAIN_LOG_PERIOD}"
   printf '%s\n' "LOG BESTNAVA ONTIME ${UNICORE_BESTNAV_LOG_PERIOD}"
@@ -390,10 +391,15 @@ build_log_commands() {
     printf '%s\n' "LOG FREQJAMSTATUSA ONTIME ${UNICORE_RF_LOG_PERIOD}"
   fi
 
-  if [ "$UNICORE_PROFILE" = "survey" ]; then
-    # OBSVMCMPA is ASCII and much more compact than OBSVMA, but it is not
-    # parsed by the current driver yet. Keep it survey-only and slow.
-    printf '%s\n' "LOG OBSVMCMPA ONTIME ${UNICORE_RAW_LOG_PERIOD}"
+  if unicore_is_truthy "$UNICORE_ENABLE_RAW_OBSERVATIONS" &&
+     { [ "$UNICORE_PROFILE" = "survey" ] || [ "$UNICORE_PROFILE" = "high_precision" ]; }; then
+    if unicore_is_truthy "$(unicore_binary_enabled_from_output_format "$UNICORE_OUTPUT_FORMAT")"; then
+      printf '%s\n' "LOG OBSVMCMPB ONTIME ${UNICORE_RAW_LOG_PERIOD}"
+    else
+      # ASCII OBSVMCMP remains useful for offline captures, but ROS-side
+      # summaries added in PR6E only decode the binary OBSVMCMPB payload.
+      printf '%s\n' "LOG OBSVMCMPA ONTIME ${UNICORE_RAW_LOG_PERIOD}"
+    fi
   fi
 }
 
@@ -526,7 +532,7 @@ apply_receiver_configuration() {
   cmds+=( "${log_cmds[@]}" )
 
   log "Applying UM98x rover config to ${port} @ ${TARGET_BAUD}..."
-  log "Profile=${UNICORE_PROFILE} output=${UNICORE_OUTPUT_FORMAT} main=${UNICORE_MAIN_LOG_PERIOD}s bestnav=${UNICORE_BESTNAV_LOG_PERIOD}s diag=${UNICORE_DIAGNOSTIC_LOG_PERIOD}s sat=${UNICORE_SATELLITE_LOG_PERIOD}s rf=${UNICORE_RF_LOG_PERIOD}s raw=${UNICORE_RAW_LOG_PERIOD}s sat_enabled=$(unicore_bool_string "$UNICORE_ENABLE_SATELLITES") rf_enabled=$(unicore_bool_string "$UNICORE_ENABLE_RF") jam_enabled=$(unicore_bool_string "$UNICORE_ENABLE_JAMMING")"
+  log "Profile=${UNICORE_PROFILE} output=${UNICORE_OUTPUT_FORMAT} main=${UNICORE_MAIN_LOG_PERIOD}s bestnav=${UNICORE_BESTNAV_LOG_PERIOD}s diag=${UNICORE_DIAGNOSTIC_LOG_PERIOD}s sat=${UNICORE_SATELLITE_LOG_PERIOD}s rf=${UNICORE_RF_LOG_PERIOD}s raw=${UNICORE_RAW_LOG_PERIOD}s sat_enabled=$(unicore_bool_string "$UNICORE_ENABLE_SATELLITES") rf_enabled=$(unicore_bool_string "$UNICORE_ENABLE_RF") jam_enabled=$(unicore_bool_string "$UNICORE_ENABLE_JAMMING") raw_enabled=$(unicore_bool_string "$UNICORE_ENABLE_RAW_OBSERVATIONS")"
   send_config_batch "$port" "${cmds[@]}"
 
   if ! verify_receiver_at_baud "$port" "$TARGET_BAUD"; then

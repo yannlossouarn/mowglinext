@@ -62,6 +62,7 @@ assert_contains "normal disables satellite diagnostics" "enable_satellite_status
 assert_contains "normal disables RF diagnostics" "enable_rf_status:=false" "$NORMAL_ARGS"
 assert_contains "normal disables hardware diagnostics" "enable_hw_status:=false" "$NORMAL_ARGS"
 assert_contains "normal disables jamming diagnostics" "enable_jamming_status:=false" "$NORMAL_ARGS"
+assert_contains "normal disables raw observation diagnostics" "enable_raw_observation_diag:=false" "$NORMAL_ARGS"
 assert_contains "normal keeps binary transport disabled" "enable_unicore_binary:=false" "$NORMAL_ARGS"
 
 DEBUG_ARGS="$(run_profile debug)"
@@ -72,6 +73,19 @@ assert_contains "debug enables jamming diagnostics" "enable_jamming_status:=true
 
 HYBRID_ARGS="$(run_profile debug hybrid)"
 assert_contains "hybrid output enables binary transport" "enable_unicore_binary:=true" "$HYBRID_ARGS"
+
+SURVEY_RAW_ARGS="$(
+  PATH="$WORKDIR/bin:$PATH" \
+  ROS2_LOG_PATH="$WORKDIR/survey_raw.log" \
+  MOWGLI_CONFIG_PATH="$WORKDIR/mowgli_robot.yaml" \
+  UNICORE_PROFILE="survey" \
+  UNICORE_OUTPUT_FORMAT="hybrid" \
+  UNICORE_ENABLE_RAW_OBSERVATIONS="true" \
+  "$SCRIPT_DIR/start_gps.sh" >/dev/null 2>&1 || true
+  cat "$WORKDIR/survey_raw.log"
+)"
+assert_contains "survey hybrid raw enables binary raw diagnostics" "enable_raw_observation_diag:=true" "$SURVEY_RAW_ARGS"
+assert_contains "survey hybrid raw uses binary observations" "use_binary_raw_observations:=true" "$SURVEY_RAW_ARGS"
 
 if [ "$failures" -ne 0 ]; then
   echo ""

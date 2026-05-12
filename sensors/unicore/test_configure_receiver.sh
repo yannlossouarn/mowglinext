@@ -74,6 +74,7 @@ reset_profile_env() {
   UNICORE_ENABLE_RF=""
   UNICORE_ENABLE_JAMMING=""
   UNICORE_ENABLE_HARDWARE=""
+  UNICORE_ENABLE_RAW_OBSERVATIONS=""
 }
 
 require_serial_port() { :; }
@@ -174,8 +175,24 @@ reset_profile_env
 UNICORE_PROFILE="survey"
 unicore_apply_profile_defaults
 SURVEY_LOGS="$(build_log_commands)"
-assert_contains "survey includes OBSVMCMPA" "OBSVMCMPA" "$SURVEY_LOGS"
+assert_not_contains "survey excludes raw observations by default" "OBSVMCMP" "$SURVEY_LOGS"
 assert_eq "survey main log period default" "1" "$UNICORE_MAIN_LOG_PERIOD"
+
+reset_profile_env
+UNICORE_PROFILE="survey"
+UNICORE_ENABLE_RAW_OBSERVATIONS="true"
+unicore_apply_profile_defaults
+SURVEY_RAW_ASCII_LOGS="$(build_log_commands)"
+assert_contains "survey raw ascii includes OBSVMCMPA" "OBSVMCMPA" "$SURVEY_RAW_ASCII_LOGS"
+
+reset_profile_env
+UNICORE_PROFILE="survey"
+UNICORE_OUTPUT_FORMAT="hybrid"
+UNICORE_ENABLE_RAW_OBSERVATIONS="true"
+unicore_apply_profile_defaults
+SURVEY_RAW_BINARY_LOGS="$(build_log_commands)"
+assert_contains "survey raw hybrid includes OBSVMCMPB" "OBSVMCMPB" "$SURVEY_RAW_BINARY_LOGS"
+assert_not_contains "survey raw hybrid excludes OBSVMCMPA" "OBSVMCMPA" "$SURVEY_RAW_BINARY_LOGS"
 
 reset_profile_env
 UNICORE_PROFILE="high_precision"

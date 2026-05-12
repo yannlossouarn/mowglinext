@@ -88,6 +88,17 @@ UNICORE_AUTO_CONFIGURE="${UNICORE_AUTO_CONFIGURE:-true}"
 
 unicore_apply_profile_defaults
 
+UNICORE_BINARY_ENABLED="$(unicore_binary_enabled_from_output_format "$UNICORE_OUTPUT_FORMAT")"
+UNICORE_ENABLE_RAW_OBSERVATIONS="${UNICORE_ENABLE_RAW_OBSERVATIONS:-false}"
+UNICORE_RAW_OBSERVATION_DIAG="false"
+UNICORE_USE_BINARY_RAW_OBSERVATIONS="false"
+if is_truthy "$UNICORE_ENABLE_RAW_OBSERVATIONS" &&
+   { [ "$UNICORE_PROFILE" = "survey" ] || [ "$UNICORE_PROFILE" = "high_precision" ]; } &&
+   is_truthy "$UNICORE_BINARY_ENABLED"; then
+  UNICORE_RAW_OBSERVATION_DIAG="true"
+  UNICORE_USE_BINARY_RAW_OBSERVATIONS="true"
+fi
+
 NTRIP_ENABLED=$(parse_yaml ntrip_enabled)
 NTRIP_ENABLED="${NTRIP_ENABLED:-false}"
 NTRIP_HOST=$(parse_yaml ntrip_host)
@@ -131,7 +142,11 @@ ros2 run mowgli_unicore_gnss um982_node --ros-args \
   -p "enable_hw_status:=$(unicore_bool_string "$UNICORE_ENABLE_HARDWARE")" \
   -p "enable_jamming_status:=$(unicore_bool_string "$UNICORE_ENABLE_JAMMING")" \
   -p "rf_diag_timeout_sec:=5.0" \
-  -p "enable_unicore_binary:=$(unicore_binary_enabled_from_output_format "$UNICORE_OUTPUT_FORMAT")" &
+  -p "enable_raw_observation_diag:=${UNICORE_RAW_OBSERVATION_DIAG}" \
+  -p "use_binary_raw_observations:=${UNICORE_USE_BINARY_RAW_OBSERVATIONS}" \
+  -p "raw_observation_timeout_sec:=5.0" \
+  -p "raw_observation_max_debug_entries:=0" \
+  -p "enable_unicore_binary:=${UNICORE_BINARY_ENABLED}" &
 GPS_PID=$!
 
 if is_truthy "$NTRIP_ENABLED"; then
