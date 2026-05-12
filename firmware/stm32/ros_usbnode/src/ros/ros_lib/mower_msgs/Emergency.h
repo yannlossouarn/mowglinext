@@ -92,7 +92,7 @@ namespace mower_msgs
     }
 
     virtual const char * getType() override { return "mower_msgs/Emergency"; };
-    virtual const char * getMD5() override { return "2112a27e21de2877ca8a9b4981213577"; };
+    virtual const char * getMD5() override { return "6dcfd299684b169865102369af95a2ce"; };
 
   };
 

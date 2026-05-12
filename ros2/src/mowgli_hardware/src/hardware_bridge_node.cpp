@@ -127,15 +127,15 @@ private:
     dock_yaw_ = declare_parameter<double>("dock_pose_yaw", 0.0);
 
     // Wheel kinematics — single source of truth lives in mowgli_robot.yaml.
-    // Previously hardcoded as kWheelBase=0.325 / kTicksPerMetre=300.0; that
+    // Previously hardcoded as kWheelBase=0.325 / kTicksPerMeter=300.0; that
     // duplicated the URDF args and the firmware TICKS_PER_M, so any
     // re-calibration touched three places. wheel_track is the centre-to-
-    // centre drive-wheel distance; ticks_per_metre is what the STM32
+    // centre drive-wheel distance; ticks_per_meter is what the STM32
     // firmware advertises in board.h and uses when reporting cumulative
     // tick deltas in the odom packet (so the conversion m = ticks /
-    // ticks_per_metre matches the firmware-side scaling).
+    // ticks_per_meter matches the firmware-side scaling).
     wheel_track_ = declare_parameter<double>("wheel_track", 0.325);
-    ticks_per_metre_ = declare_parameter<double>("ticks_per_metre", 300.0);
+    ticks_per_meter_ = declare_parameter<double>("ticks_per_meter", 300.0);
 
     // Dock pose comes solely from mowgli_robot.yaml (declared as ROS
     // parameters above). Calibration and manual GUI adjustments persist
@@ -164,7 +164,19 @@ private:
     // → 7°/min of yaw drift during mowing). Re-running the cal every N
     // seconds while the robot is stationary on dock keeps the offsets
     // fresh for temperature. Set to 0 to disable.
-    imu_cal_periodic_recal_sec_ = declare_parameter<double>("imu_cal_periodic_recal_sec", 600.0);
+    //
+    // Default lowered 600 → 60 s (2026-05-03): on-robot measurement showed
+    // the WT901 raw gyro_z bias drifted from -3.05°/s (calibration mean)
+    // to -4.36°/s (live) within seconds of completing a calibration —
+    // a 1.3°/s shift well above the gyro's noise floor. The thermal
+    // settling time of the chassis (mower ESC heat soaking the IMU
+    // board) means the calibration captured during a short dock-stop
+    // becomes stale within minutes. 60 s keeps the offset within the
+    // bias's first-order time constant on this robot. Cost is trivial:
+    // the docked-stationary gate (line 460) makes it a no-op when the
+    // robot is moving, and a single recal is ~2.2 s of sample collection
+    // at 91 Hz × 200 samples.
+    imu_cal_periodic_recal_sec_ = declare_parameter<double>("imu_cal_periodic_recal_sec", 60.0);
 
     RCLCPP_INFO(get_logger(),
                 "Parameters: serial_port=%s baud_rate=%d heartbeat_rate=%.1f Hz "
@@ -1174,8 +1186,8 @@ private:
     }
 
     const double dt_sec = static_cast<double>(acc_dt_ms) / 1000.0;
-    const double d_left_m = static_cast<double>(acc_d_left) / ticks_per_metre_;
-    const double d_right_m = static_cast<double>(acc_d_right) / ticks_per_metre_;
+    const double d_left_m = static_cast<double>(acc_d_left) / ticks_per_meter_;
+    const double d_right_m = static_cast<double>(acc_d_right) / ticks_per_meter_;
     double vx = (d_left_m + d_right_m) * 0.5 / dt_sec;
     double vyaw = (d_right_m - d_left_m) / wheel_track_ / dt_sec;
 
@@ -1419,7 +1431,7 @@ private:
   double dock_y_{0.0};
   double dock_yaw_{0.0};
   double wheel_track_{0.325};
-  double ticks_per_metre_{300.0};
+  double ticks_per_meter_{300.0};
   bool mow_enabled_{false};
   bool is_charging_{false};
   uint8_t current_mode_{0};
@@ -1455,7 +1467,7 @@ private:
   int imu_cal_samples_{200};
   std::string imu_cal_persist_path_{"/ros2_ws/maps/imu_calibration.txt"};
   double imu_cal_auto_rest_sec_{15.0};
-  double imu_cal_periodic_recal_sec_{600.0};  // 0 disables; default 10 min
+  double imu_cal_periodic_recal_sec_{60.0};  // 0 disables; default 60 s (was 600 — see ctor)
   rclcpp::Time imu_cal_at_rest_since_{};  // default-constructed (nanoseconds=0) = "not at rest yet"
   rclcpp::Time imu_cal_last_completed_{};  // when the last successful cal finished
   bool imu_cal_loaded_from_file_{false};
