@@ -87,11 +87,18 @@ public:
   {
     // ── Sample-pair gating thresholds ────────────────────────────────
     min_abs_wheel_ = declare_parameter<double>("min_abs_wheel_ms", 0.05);
-    // Above this |ω| (rad/s, wheel odom angular.z), the latched COG
-    // anchor is suppressed — the previous forward-motion yaw is
-    // stale within tens of ms once the robot starts pivoting. Default
-    // 0.05 rad/s ≈ 3°/s.
-    min_omega_for_anchor_ = declare_parameter<double>("min_omega_for_anchor_rps", 0.05);
+    // Upper bound on |ω| where the constant-rate approximation we use to
+    // unbias the COG (mid-baseline drift + lever-arm tangential velocity)
+    // still holds. Above this we hard-reject because the integrated
+    // antenna path deviates non-linearly from R(ψ)·[v, ω·r] and our
+    // variance model under-states the residual error. Below this, COG
+    // *is* published during turns — the lever-arm + drift biases are
+    // subtracted analytically and σ_yaw is inflated by their respective
+    // ω-noise sensitivities, so a tight headland turn naturally yields
+    // a high-σ measurement that ekf_map / fusion_graph down-weight.
+    // 0.50 rad/s ≈ 29°/s lets gentle corrections through and rejects
+    // full PRE_ROTATE pivots (typ. 0.6 rad/s).
+    min_omega_for_anchor_ = declare_parameter<double>("min_omega_for_anchor_rps", 0.50);
     // Number of consecutive non-rotating GPS samples required before we
     // start accumulating a new baseline after a pivot ends. 2 samples
     // at 5 Hz GPS ≈ 400 ms of confirmed straight motion before COG
@@ -123,6 +130,23 @@ public:
     datum_lon_ = declare_parameter<double>("datum_lon", 0.0);
     datum_seeded_ = (datum_lat_ != 0.0 || datum_lon_ != 0.0);
     cos_datum_lat_ = std::cos(datum_lat_ * kDegToRad);
+
+    // GPS antenna lever arm in base_link frame. Default matches the
+    // YardForce 500 mount (gps_x=0.30 m in mowgli_robot.yaml) but is
+    // expected to be overridden by the launch file from the same
+    // source navsat_to_absolute_pose_node and fusion_graph read.
+    // During a turn the antenna's velocity is v_body + ω × r_lever,
+    // so atan2(dy, dx) ≠ ψ_body. We subtract atan2(ω·rx − ω·0, |v|)
+    // (≈ ω·rx/|v| for small angles, exact for any angle via atan2)
+    // from the raw COG to recover the body heading.
+    lever_arm_x_ = declare_parameter<double>("lever_arm_x", 0.30);
+    lever_arm_y_ = declare_parameter<double>("lever_arm_y", 0.0);
+    // 1-σ noise on the ω used for bias correction. Covers both gyro
+    // sensor noise (~0.02 rad/s) and the "constant ω across the
+    // baseline" approximation we make by using the latest sample as a
+    // proxy for the time-averaged rate. Feeds the σ_yaw inflation for
+    // both the lever-arm and the mid-baseline drift corrections.
+    omega_noise_rps_ = declare_parameter<double>("omega_noise_rps", 0.10);
 
     // ── Online mag calibration parameters ───────────────────────────
     enable_mag_cal_ = declare_parameter<bool>("enable_mag_cal", true);
@@ -195,10 +219,18 @@ public:
     RCLCPP_INFO(get_logger(),
                 "cog_to_imu started — publish /imu/cog_heading once the "
                 "RTK-Fixed baseline accumulates %.3f m at |wheel_vx| > "
-                "%.2f m/s (forward + reverse, adaptive covariance, "
-                "anchor resets on stationary or direction change)",
+                "%.2f m/s. Turns up to |ω| = %.2f rad/s are accepted; "
+                "the antenna lever-arm (r=[%+.2f, %+.2f] m) and the "
+                "mid-baseline yaw drift are subtracted from the raw COG "
+                "and σ_yaw is inflated by their ω-noise sensitivities "
+                "(σ_ω=%.2f rad/s) so headland turns surface as high-σ "
+                "measurements rather than biased ones.",
                 min_baseline_displacement_m_,
-                min_abs_wheel_);
+                min_abs_wheel_,
+                min_omega_for_anchor_,
+                lever_arm_x_,
+                lever_arm_y_,
+                omega_noise_rps_);
   }
 
 private:
@@ -351,21 +383,70 @@ private:
       return;
     }
 
-    double yaw;
+    double base_yaw;
     if (wheel_sign > 0)
     {
-      yaw = std::atan2(dy, dx);
+      base_yaw = std::atan2(dy, dx);
       ++published_fwd_;
     }
     else
     {
-      yaw = std::atan2(-dy, -dx);
+      base_yaw = std::atan2(-dy, -dx);
       ++published_rev_;
     }
 
+    // ── Unbias the COG against constant-rate turning ─────────────────
+    // The antenna sits at r_lever in body frame, so its velocity is
+    //   v_ant_body = (v_x - ω·r_y, ω·r_x)
+    // and its world-frame velocity angle is
+    //   ψ_body + atan2(ω·r_x, v_x - ω·r_y)        (forward motion)
+    //   ψ_body + π - atan2(ω·r_x, |v_x| + ω·r_y)  (reverse motion)
+    // The displacement vector points along the *midpoint* yaw of the
+    // baseline (ψ_anchor + ω·dt/2), not the current yaw. Subtract both
+    // corrections to recover the heading at the current sample.
+    //
+    // Time-averaged ω is approximated by the latest gyro/wheel rate;
+    // the resulting model error is folded into σ_yaw via omega_noise_rps_.
+    const double omega_avg = 0.5 * (wheel_omega_.load() + gyro_z_.load());
+    const double dt_baseline = std::max(t - anchor_t_, 1e-3);
+    const double v_eff = std::max(std::abs(wheel_vx_.load()), min_abs_wheel_);
+
+    const double drift_corr = omega_avg * dt_baseline * 0.5;
+    // Forward:  body-x antenna velocity =  v_eff - ω·r_y
+    //           body-y antenna velocity =  ω·r_x
+    // Reverse:  body-x antenna velocity = -v_eff - ω·r_y  (still negative)
+    //           body-y antenna velocity =  ω·r_x
+    // Either way, since base_yaw was derived in the "body-forward" sense
+    // (atan2(-dy,-dx) for reverse), we apply the same forward-form bias.
+    const double lever_corr =
+        std::atan2(omega_avg * lever_arm_x_, v_eff - omega_avg * lever_arm_y_);
+
+    double yaw = base_yaw + drift_corr - lever_corr;
+    yaw = std::atan2(std::sin(yaw), std::cos(yaw));
+
+    // ── σ_yaw composition ────────────────────────────────────────────
+    // 1. Positional noise → angular noise across the baseline (existing).
+    // 2. Mid-baseline drift correction depends on ω; σ propagates as
+    //      ∂(ω·dt/2)/∂ω = dt/2.
+    // 3. Lever-arm correction:
+    //      ∂/∂ω atan2(ω·rx, v - ω·ry)
+    //        = (rx·(v - ω·ry) + ω·rx·ry) / ((v - ω·ry)² + (ω·rx)²)
+    //        ≈ rx / v_eff for small ω
+    //    Use the exact form so headland turns get a fair σ instead of
+    //    one that linearises away the dominant term.
     const double sigma_pos = std::hypot(pos_acc, anchor_pa_);
-    const double sigma_yaw = std::atan2(2.0 * sigma_pos, std::max(displacement, 1e-3));
-    const double yaw_var = std::max(min_yaw_var_, std::min(sigma_yaw * sigma_yaw, max_yaw_var_));
+    const double sigma_pos_yaw = std::atan2(2.0 * sigma_pos, std::max(displacement, 1e-3));
+    const double sigma_drift = 0.5 * dt_baseline * omega_noise_rps_;
+    const double denom_lever =
+        std::pow(v_eff - omega_avg * lever_arm_y_, 2.0) + std::pow(omega_avg * lever_arm_x_, 2.0);
+    const double dlever_domega =
+        (lever_arm_x_ * (v_eff - omega_avg * lever_arm_y_) +
+         omega_avg * lever_arm_x_ * lever_arm_y_) /
+        std::max(denom_lever, 1e-6);
+    const double sigma_lever = std::abs(dlever_domega) * omega_noise_rps_;
+    const double sigma_yaw_sq = sigma_pos_yaw * sigma_pos_yaw + sigma_drift * sigma_drift +
+                                sigma_lever * sigma_lever;
+    const double yaw_var = std::max(min_yaw_var_, std::min(sigma_yaw_sq, max_yaw_var_));
 
     // Advance the anchor to the current sample so the next baseline starts
     // fresh — keeps each published yaw independent and bounds the temporal
@@ -381,8 +462,10 @@ private:
     const double mono_now = static_cast<double>(get_clock()->now().nanoseconds()) * 1e-9;
     latched_yaw_ = LatchedYaw{mono_now, yaw, yaw_var};
 
-    // Online mag-cal sample collection.
-    if (enable_mag_cal_ && latest_mag_valid_ && sigma_yaw < (15.0 * kDegToRad))
+    // Online mag-cal sample collection — only fit against COG that
+    // survives the inflated-σ test (positional + drift + lever).
+    if (enable_mag_cal_ && latest_mag_valid_ &&
+        std::sqrt(sigma_yaw_sq) < (15.0 * kDegToRad))
     {
       mag_samples_.emplace_back(latest_mag_[0], latest_mag_[1], latest_mag_[2], yaw);
       while (static_cast<int>(mag_samples_.size()) > mag_max_samples_)
@@ -728,6 +811,10 @@ private:
   double datum_lat_{}, datum_lon_{};
   bool datum_seeded_{false};
   double cos_datum_lat_{1.0};
+
+  double lever_arm_x_{0.30};
+  double lever_arm_y_{0.0};
+  double omega_noise_rps_{0.10};
 
   bool enable_mag_cal_{true};
   std::string mag_cal_path_;
