@@ -5,6 +5,11 @@
 
 set -euo pipefail
 
+# Preserve the original argv so sync_repo_branch_to_image_channel can re-exec
+# us with the same flags after switching the git checkout to the requested
+# channel. Must be captured before parse_args() consumes anything.
+MOWGLI_INSTALLER_ARGV=("$@")
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_LIB_DIR="${SCRIPT_DIR}/lib"
 
@@ -104,6 +109,12 @@ main() {
     # previous IMAGE_TAG from .env as the default. Skipped if a preset or
     # --branch= flag already set it.
     select_image_channel
+
+    # If IMAGE_TAG ended up different from the current git branch (e.g. the
+    # bootstrap cloned :main but the user picked dev), check out the matching
+    # branch and re-exec so the rest of the install reads the new branch's
+    # compose files, scripts, and lib code.
+    sync_repo_branch_to_image_channel
 
     progress_run_interactive 1 "$TOTAL_STEPS" "Updating system" \
       run_system_update

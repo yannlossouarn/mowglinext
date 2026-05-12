@@ -67,6 +67,13 @@ assert_contains "tfluna group is disabled in ui" 'id="tfluna-group" aria-disable
 assert_contains "tfluna unavailability is explicit" "Temporarily disabled on this branch" "$html"
 assert_not_contains "web composer never emits gnss=nmea" "--gnss=nmea" "$html"
 
+assert_contains "channel group exists" 'data-group="channel"' "$html"
+assert_contains "channel option main exists" 'data-value="main"' "$html"
+assert_contains "channel option dev exists" 'data-value="dev"' "$html"
+assert_contains "channel state defaults to main" "channel: 'main'" "$html"
+assert_contains "channel flag emitted only when non-default" "if (state.channel !== 'main') {" "$html"
+assert_contains "channel flag uses --branch" "parts.push('--branch=' + state.channel);" "$html"
+
 echo ""
 echo "══════════════════════════════════════════"
 echo "  Tests: $TESTS_RUN  Passed: $TESTS_PASSED  Failed: $TESTS_FAILED"

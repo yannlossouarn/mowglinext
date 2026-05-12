@@ -407,6 +407,13 @@ fi
 
 chmod +x "$INSTALLER"
 
+# Forward the chosen channel to the installer so it skips the image-channel
+# prompt and stays consistent with the branch we just cloned.
+INSTALLER_ARGS=()
+if [[ "$REPO_BRANCH" == "main" || "$REPO_BRANCH" == "dev" ]]; then
+  INSTALLER_ARGS+=("--branch=$REPO_BRANCH")
+fi
+
 echo ""
 if $HAS_PRESET; then
   info "Hardware sensors pre-configured — installer will skip those prompts."
@@ -419,8 +426,8 @@ echo ""
 # `curl ... | bash`, stdin is the pipe and `read` prompts in the
 # interactive installer would otherwise return immediately.
 if [ -e /dev/tty ]; then
-  exec bash "$INSTALLER" </dev/tty
+  exec bash "$INSTALLER" "${INSTALLER_ARGS[@]+"${INSTALLER_ARGS[@]}"}" </dev/tty
 else
   warn "No /dev/tty available — interactive prompts may not work."
-  exec bash "$INSTALLER"
+  exec bash "$INSTALLER" "${INSTALLER_ARGS[@]+"${INSTALLER_ARGS[@]}"}"
 fi

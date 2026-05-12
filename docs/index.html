@@ -433,6 +433,25 @@
         </div>
       </div>
 
+      <!-- Image channel -->
+      <div class="composer-group" id="channel-group">
+        <h3>Release Channel</h3>
+        <p class="composer-hint">`main` is the stable channel. `dev` tracks the dev branch and pulls `:dev` container images — pick this if you want to iterate alongside upstream development.</p>
+        <div class="composer-options" data-group="channel">
+          <button class="composer-option active" data-value="main">
+            <span class="option-icon">🟢</span>
+            <span class="option-label">main</span>
+            <span class="option-desc">Stable — built from the main branch</span>
+          </button>
+          <button class="composer-option" data-value="dev">
+            <span class="option-icon">🧪</span>
+            <span class="option-badge">Iteration</span>
+            <span class="option-label">dev</span>
+            <span class="option-desc">Pulls `:dev` images and checks out the dev branch</span>
+          </button>
+        </div>
+      </div>
+
       <!-- Generated command -->
       <div class="composer-result">
         <h3>Your install command</h3>
@@ -475,7 +494,7 @@
 <!-- ─── Composer JS ─────────────────────────────────── -->
 <script>
 (function() {
-  var state = { backend: 'mowgli', gnss: 'ublox', gps: 'ubx-uart', lidar: 'ldlidar-uart', tfluna: 'none' };
+  var state = { backend: 'mowgli', gnss: 'ublox', gps: 'ubx-uart', lidar: 'ldlidar-uart', tfluna: 'none', channel: 'main' };
   var baseUrl = 'https://mowgli.garden/install.sh';
   var defaultGpsHint = 'Protocol + wiring for the selected GNSS path. Unicore completes its real serial device selection inside the installer, so this web preset is omitted there.';
   var unicoreGpsHint = 'Unicore port/device selection is completed in the installer. The web composer keeps --gnss=unicore but does not emit a GPS protocol or wiring preset.';
@@ -531,6 +550,14 @@
 
     parts.push('--lidar=' + state.lidar);
     parts.push('--tfluna=' + state.tfluna);
+
+    // Channel: only emit when non-default. --branch is used by both the
+    // bootstrap (git clone) and the installer (image tag), keeping them
+    // aligned in a single switch.
+    if (state.channel !== 'main') {
+      parts.push('--branch=' + state.channel);
+    }
+
     document.getElementById('install-command').textContent = parts.join(' \\\n  ');
   }
 
