@@ -241,8 +241,8 @@ mowgli:
     # -----------------------------------------------------------------
     # Navigation tolerances (garden terrain)
     # -----------------------------------------------------------------
-    xy_goal_tolerance: 0.75        # metres — acceptable goal position error
-    yaw_goal_tolerance: 1.0        # radians — acceptable heading error
+    xy_goal_tolerance: 0.10        # metres — acceptable goal position error (transit)
+    yaw_goal_tolerance: 0.20       # radians — acceptable heading error (~11°, transit)
     # coverage_xy_tolerance MUST stay below tool_width (0.18 m). The
     # SimpleGoalChecker (used by FollowCoveragePath) fires when the robot
     # is within tolerance of the strip's END pose. Coverage strips are

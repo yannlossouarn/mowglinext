@@ -147,8 +147,8 @@ mowgli:
         outline_passes: 1
         progress_timeout_sec: 60
         transit_speed: 0.5
-        xy_goal_tolerance: 0.75
-        yaw_goal_tolerance: 1
+        xy_goal_tolerance: 0.10
+        yaw_goal_tolerance: 0.20
 
         # ── Persistence ─────────────────────────────────────────────
         map_save_on_dock: true
