@@ -300,8 +300,18 @@ TickOutput GraphManager::CreateNodeLocked(double now_s)
   // sigma_theta was already selected above with the same wheel/gyro/
   // stationary logic that drove dtheta — reuse it here so both halves
   // of the BetweenFactor stay consistent.
+  //
+  // sigma_x gates on the per-tick gyro yaw delta: during fast pivots
+  // the wheels report phantom forward velocity (see GraphParams
+  // comment) so swap to a loose sigma and let GPS / scan-matching
+  // constrain XY. Gating on the gyro (not wheel-derived) dtheta
+  // avoids feedback from the same encoder that's misreporting.
+  const double wheel_sigma_x_eff =
+      std::abs(accum_.dtheta_gyro) > params_.pivot_gate_dtheta_rad
+          ? params_.pivot_wheel_sigma_x
+          : params_.wheel_sigma_x;
   auto between_noise = MakeDiagonal({
-      params_.wheel_sigma_x,
+      wheel_sigma_x_eff,
       params_.wheel_sigma_y,
       sigma_theta,
   });

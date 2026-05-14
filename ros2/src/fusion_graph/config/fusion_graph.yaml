@@ -41,6 +41,22 @@ fusion_graph_node:
     stationary_thresh_theta: 0.002
     stationary_sigma_theta: 0.001
 
+    # ── Pivot-mode wheel-translation downweight ───────────────────────
+    # When |per-tick gyro dtheta| exceeds pivot_gate_dtheta_rad, the
+    # wheel between-factor uses pivot_wheel_sigma_x instead of
+    # wheel_sigma_x. Mitigates the phantom forward vx that diff-drive
+    # encoders report during fast in-place rotation (motor deadband on
+    # the backward-running wheel makes it under-magnitude its tick
+    # count; the diff-drive arithmetic then produces a same-sign vx
+    # bias in BOTH CW and CCW spins — measured at ~+0.025 m/s on
+    # 2026-05-14 with a 1 rad/s spin, drifting fusion's base_link by
+    # 0.2-0.4 m per spin and tripping Nav2 replans).
+    # Default 0.012 rad/tick = 0.3 rad/s at 25 Hz; pivot_wheel_sigma_x
+    # 0.5 m effectively releases the X constraint without disconnecting
+    # the graph (sigma_y stays tight so non-holo is preserved).
+    pivot_gate_dtheta_rad: 0.012
+    pivot_wheel_sigma_x: 0.5
+
     # ── GPS unary noise floor ──────────────────────────────────────────
     # Below this sigma, NavSatFix.covariance is treated as unrealistic
     # and clamped. RTK-Fixed reports σ ~3 mm; below that is numerical

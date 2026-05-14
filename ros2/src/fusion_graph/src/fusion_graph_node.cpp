@@ -71,6 +71,10 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
       declare_parameter<double>("stationary_thresh_theta", 2.0e-3);
   gp.stationary_sigma_theta =
       declare_parameter<double>("stationary_sigma_theta", 1.0e-3);
+  gp.pivot_gate_dtheta_rad =
+      declare_parameter<double>("pivot_gate_dtheta_rad", 0.012);
+  gp.pivot_wheel_sigma_x =
+      declare_parameter<double>("pivot_wheel_sigma_x", 0.5);
 
   datum_lat_ = declare_parameter<double>("datum_lat", 0.0);
   datum_lon_ = declare_parameter<double>("datum_lon", 0.0);

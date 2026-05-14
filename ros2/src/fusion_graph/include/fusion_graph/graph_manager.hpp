@@ -113,6 +113,24 @@ struct GraphParams
   double stationary_thresh_xy_m = 1.0e-3;  // 1 mm per node tick
   double stationary_thresh_theta = 2.0e-3;  // 0.11° per node tick (wheel noise floor)
   double stationary_sigma_theta = 1.0e-3;  // ≈ 0.057° BetweenFactor sigma when stationary
+
+  // Pivot-mode wheel-translation downweight. During fast in-place
+  // rotation the wheel encoders report a phantom forward vx in both
+  // CW and CCW directions — measured 2026-05-14 at +0.021 m/s CW and
+  // +0.026 m/s CCW under a 1 rad/s spin. The same-sign bias rules out
+  // wheel-radius mismatch and points to one wheel under-magnituding
+  // its backward rotation (motor deadband / encoder phase). With the
+  // default wheel_sigma_x=0.05 m the wheel between-factor pulls
+  // base_link forward by 0.2-0.4 m per spin, which Nav2 sees as path
+  // deviation and re-plans on. When |per-tick gyro dtheta| crosses
+  // pivot_gate_dtheta_rad, swap wheel_sigma_x for
+  // pivot_wheel_sigma_x (effectively releasing the X constraint) so
+  // GPS + scan-matching set XY. The gate scales with node_period_s
+  // implicitly because dtheta = omega * dt; defaults are tuned for
+  // 25 Hz (gate fires above ~0.3 rad/s) and remain reasonable for
+  // 10 Hz (gate fires above ~0.12 rad/s).
+  double pivot_gate_dtheta_rad = 0.012;  // rad per tick
+  double pivot_wheel_sigma_x = 0.5;  // m — inflated sigma during pivot
 };
 
 // What goes out to the publisher every tick.
