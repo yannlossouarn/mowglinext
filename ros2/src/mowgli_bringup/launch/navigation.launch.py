@@ -298,10 +298,12 @@ def generate_launch_description() -> LaunchDescription:
     # Nav2 YAMLs (controller + docking) alongside the dock pose.
     #   transit_speed    → FollowPath.desired_linear_vel + max_speed_xy
     #   mowing_speed     → FollowCoveragePath.max_speed_xy
-    #   undock_speed     → BackUp backup_speed attribute in main_tree.xml
-    #                      (hardcoded in the XML so not injected here, but
-    #                      the comment keeps the three values together
-    #                      for discoverability).
+    #   undock_speed     → behavior_tree_node param of the same name,
+    #                      pushed onto the BT blackboard at startup and
+    #                      read by undock-flow BackUp instances via
+    #                      backup_speed="{undock_speed}" in main_tree.xml.
+    #                      Wired in full_system.launch.py (Node parameters
+    #                      list). See issue #191.
     transit_speed = 0.3
     mowing_speed = 0.25
     datum_lat = 0.0
@@ -335,6 +337,14 @@ def generate_launch_description() -> LaunchDescription:
     headland_width = 0.35
     min_turning_radius = 0.05
     progress_timeout_sec = 300.0
+    # Dock approach distance: how far behind the dock the opennav_docking
+    # staging pose sits. Edited as `dock_approach_distance` in the GUI
+    # (positive metres), injected here as the negative-X
+    # `home_dock.staging_x_offset` consumed by docking_server. The yaml
+    # value was orphan before this — editing the slider produced no
+    # operational change because docking_server kept its hardcoded
+    # -1.5 m default. See issue #192.
+    dock_approach_distance = 1.5
     # Phantom-tuning knobs surfaced through mowgli_robot.yaml so the GUI
     # can edit them without an SSH session. Defaults match the C++ node
     # defaults; override on the Settings page.
@@ -362,6 +372,8 @@ def generate_launch_description() -> LaunchDescription:
             rt_rp.get("yaw_goal_tolerance", yaw_goal_tolerance))
         coverage_xy_tolerance = float(
             rt_rp.get("coverage_xy_tolerance", coverage_xy_tolerance))
+        dock_approach_distance = float(
+            rt_rp.get("dock_approach_distance", dock_approach_distance))
         # Defensive clip: a stale per-site mowgli_robot.yaml can carry
         # the legacy 0.5 m default that breaks cell-based mowing (the
         # SimpleGoalChecker fires on tick 1 because the strip end is
@@ -429,10 +441,18 @@ def generate_launch_description() -> LaunchDescription:
         with open(src_path, "r") as fh:
             doc = yaml.safe_load(fh) or {}
         # home_dock.pose must be a YAML list (PARAMETER_DOUBLE_ARRAY).
-        (doc.setdefault("docking_server", {})
-            .setdefault("ros__parameters", {})
-            .setdefault("home_dock", {}))["pose"] = [
-                dock_pose_x, dock_pose_y, dock_pose_yaw]
+        home_dock = (doc.setdefault("docking_server", {})
+                        .setdefault("ros__parameters", {})
+                        .setdefault("home_dock", {}))
+        home_dock["pose"] = [dock_pose_x, dock_pose_y, dock_pose_yaw]
+        # Staging pose offset along the dock's X axis (negative = behind
+        # the dock, the side the robot approaches from). yaml exposes
+        # dock_approach_distance as a positive metres knob in the GUI;
+        # opennav_docking expects the same value negative. Wiring the
+        # two replaces the previously-orphan dock_approach_distance —
+        # the GUI slider now drives the actual staging point. See
+        # issue #192.
+        home_dock["staging_x_offset"] = -float(dock_approach_distance)
 
         # FollowPath (transit controller = RPP via RotationShim).
         fp = (doc.setdefault("controller_server", {})

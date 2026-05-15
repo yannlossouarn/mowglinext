@@ -385,6 +385,17 @@ private:
     blackboard_->set("dock_pose", dock_pose);
     blackboard_->set("undock_pose", undock_pose);
 
+    // Undock reverse speed, sourced from mowgli_robot.yaml.undock_speed
+    // and consumed by the BackUp BT instances in main_tree.xml via the
+    // {undock_speed} blackboard reference. Previously the speed was
+    // hardcoded as a string attribute in three undock-flow BackUps,
+    // which kept the yaml value orphan — editing the GUI slider did
+    // nothing. Recovery-side BackUps (e.g. OBSTACLE_BACKOFF) intentionally
+    // stay hardcoded; they are not "undocking" so they should not move
+    // when the operator tunes undock speed. See issue #191.
+    const double undock_speed = declare_parameter<double>("undock_speed", 0.15);
+    blackboard_->set("undock_speed", undock_speed);
+
     // Rain delay: parameter in minutes, blackboard in seconds.
     const double rain_delay_minutes = declare_parameter<double>("rain_delay_minutes", 30.0);
     blackboard_->set("rain_delay_sec", rain_delay_minutes * 60.0);
