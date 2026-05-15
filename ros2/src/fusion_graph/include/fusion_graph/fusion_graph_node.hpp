@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -72,8 +73,14 @@ private:
   // Publish TF map->odom and /odometry/filtered_map.
   void PublishOutputs(const TickOutput& out);
 
+  // Launch GraphManager::Save on a detached worker. No-op if a
+  // previous async save is still running. `reason` is logged.
+  void DispatchAsyncSave(const char* reason);
+
   // ── Members ────────────────────────────────────────────────────────
-  std::unique_ptr<GraphManager> graph_;
+  // shared_ptr (not unique_ptr) so background save / rebase threads
+  // captured by-value keep the GraphManager alive past node teardown.
+  std::shared_ptr<GraphManager> graph_;
   std::unique_ptr<ScanMatcher> scan_matcher_;
   bool use_scan_matching_ = false;
   bool use_magnetometer_ = false;
@@ -86,6 +93,15 @@ private:
   // Cold-boot relocalization state.
   bool autoload_succeeded_ = false;
   bool relocalize_done_ = false;
+  // Set true once an RTK-Fixed GPS sample has overridden the autoloaded
+  // pose with ForceAnchor. One-shot per boot — subsequent RTK fixes flow
+  // through as normal GnssLeverArmFactor observations.
+  bool rtk_autoload_override_done_ = false;
+  // Distance threshold (m) above which an RTK-Fixed GPS sample is
+  // considered to disagree with the autoloaded pose enough to force a
+  // re-anchor. Below this, the autoloaded pose is trusted and GPS just
+  // contributes factors normally.
+  double rtk_autoload_override_threshold_m_ = 0.3;
   double dock_pose_yaw_ = 0.0;
 
   // Latched datum (read from parameters at startup).
@@ -119,6 +135,16 @@ private:
   std::string map_frame_ = "map";
   std::string odom_frame_ = "odom";
   std::string base_frame_ = "base_footprint";
+
+  // Forward-stamps the published map→odom TF by this many seconds so that
+  // controllers/costmaps querying lookupTransform at clock_->now() always
+  // find a TF stamp in the buffer that is >= their request time, letting
+  // tf2 interpolate back instead of throwing ExtrapolationException. Only
+  // needed under sim_time, where Nav2 cycles can fall a few ms ahead of
+  // the latest publish; safe on real hardware too because map→odom moves
+  // very slowly relative to typical lead times (~100 ms = sub-cm error
+  // even at full transit speed).
+  double tf_publish_lead_s_ = 0.0;
 
   // Subscriptions.
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_wheel_;
@@ -184,6 +210,20 @@ private:
   uint64_t scans_received_ = 0;
   uint64_t scan_matches_ok_ = 0;
   uint64_t scan_matches_fail_ = 0;
+
+  // In-flight guards for the async maintenance jobs. Save and rebase
+  // each run in a detached worker so the executor callback returns
+  // immediately; the atomic flag prevents a second worker from
+  // launching while the first is still running. (Save would race on
+  // the output files; rebase is internally guarded too but skipping
+  // here avoids paying the snapshot cost for nothing.)
+  // shared_ptr because a detached worker may outlive the node at
+  // shutdown — the worker captures this shared_ptr by value and
+  // writes false on completion without touching `this`.
+  std::shared_ptr<std::atomic<bool>> save_in_flight_ =
+      std::make_shared<std::atomic<bool>>(false);
+  std::shared_ptr<std::atomic<bool>> rebase_in_flight_ =
+      std::make_shared<std::atomic<bool>>(false);
 };
 
 }  // namespace fusion_graph

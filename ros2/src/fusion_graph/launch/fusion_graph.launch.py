@@ -22,7 +22,7 @@ from launch_ros.actions import Node
 
 def _read_robot_config() -> dict:
     """Load mowgli_robot.yaml and return the inner mower section."""
-    runtime = "/ros2_ws/config/mowgli/mowgli_robot.yaml"
+    runtime = "/ros2_ws/config/mowgli_robot.yaml"
     fallback = os.path.join(
         get_package_share_directory("mowgli_bringup"),
         "config", "mowgli_robot.yaml",
@@ -64,11 +64,28 @@ def generate_launch_description() -> LaunchDescription:
         "primary_mode", default_value="true",
         description="True: fusion_graph owns the map→odom TF and /odometry/filtered_map (replaces ekf_map_node). False: observer mode — output is remapped to /fusion_graph/odometry, no TF broadcast (ekf_map_node keeps owning the map frame). Set by navigation.launch.py based on whether a persisted graph file already exists.",
     )
+    # tf_publish_lead_s default 0.0 = HARDWARE-correct (no forward
+    # extrapolation). Sim launch overrides to 0.1 to absorb sim_time
+    # publish/lookup phase jitter that otherwise throws
+    # ExtrapolationException in Nav2 controller_server.
+    tf_publish_lead_s_arg = DeclareLaunchArgument(
+        "tf_publish_lead_s", default_value="0.0",
+        description="Forward-stamp the published map→odom TF by this many seconds. Hardware: 0.0. Sim: 0.1.",
+    )
+    # node_period_s default 0.04 = 25 Hz, sustainable on Pi. Sim
+    # overrides to 0.02 (50 Hz) where a tighter TF cadence is needed
+    # to keep up with sim_time clock drift.
+    node_period_s_arg = DeclareLaunchArgument(
+        "node_period_s", default_value="0.04",
+        description="Factor-graph node cadence (seconds). Hardware: 0.04 (25 Hz). Sim: 0.02 (50 Hz).",
+    )
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_magnetometer = LaunchConfiguration("use_magnetometer")
     use_scan_matching = LaunchConfiguration("use_scan_matching")
     use_loop_closure = LaunchConfiguration("use_loop_closure")
     primary_mode = LaunchConfiguration("primary_mode")
+    tf_publish_lead_s = LaunchConfiguration("tf_publish_lead_s")
+    node_period_s = LaunchConfiguration("node_period_s")
 
     cfg = _read_robot_config()
     datum_lat = float(cfg.get("datum_lat", 0.0) or 0.0)
@@ -93,6 +110,8 @@ def generate_launch_description() -> LaunchDescription:
             "use_scan_matching": use_scan_matching,
             "use_loop_closure": use_loop_closure,
             "dock_pose_yaw": float(cfg.get("dock_pose_yaw", 0.0) or 0.0),
+            "tf_publish_lead_s": tf_publish_lead_s,
+            "node_period_s": node_period_s,
         },
     ]
 
@@ -126,6 +145,8 @@ def generate_launch_description() -> LaunchDescription:
         use_scan_matching_arg,
         use_loop_closure_arg,
         primary_mode_arg,
+        tf_publish_lead_s_arg,
+        node_period_s_arg,
         fusion_graph_primary,
         fusion_graph_observer,
     ])

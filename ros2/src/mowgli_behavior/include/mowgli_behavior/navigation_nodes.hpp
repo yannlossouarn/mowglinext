@@ -21,6 +21,7 @@
 
 #include "behaviortree_cpp/behavior_tree.h"
 #include "behaviortree_cpp/bt_factory.h"
+#include "geometry_msgs/msg/pose.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "mowgli_behavior/bt_context.hpp"
 #include "mowgli_interfaces/srv/get_recovery_point.hpp"
@@ -215,22 +216,33 @@ public:
 
 /// Recovery node used when the robot has drifted past a polygon edge.
 ///
-/// Two-phase action:
-///   1. Call `/map_server_node/get_recovery_point` to ask the map server for
-///      a pose ~boundary_recovery_offset_m inside the nearest polygon, facing
-///      inward.
-///   2. Hand that pose to the Nav2 `/navigate_to_pose` action and wait for
-///      completion.
+/// Phases:
+///   1. Call `/map_server_node/get_recovery_point` for a pose
+///      ~boundary_recovery_offset_m inside the nearest polygon, facing inward.
+///   2. Temporarily disable the global_costmap's `keepout_filter`. Without
+///      this Smac refuses the plan with `"Start occupied"` because the
+///      robot's current cell is in the keepout-lethal zone (that's exactly
+///      what triggered the recovery — robot drifted past the line). Disable
+///      → clear-costmap → plan-against-clean-costmap → re-enable on exit.
+///   3. Hand the recovery pose to Nav2 `/navigate_to_pose`.
+///   4. On any termination (success / abort / cancel / halt), re-enable
+///      `keepout_filter` so the boundary safety is back as soon as the
+///      robot is inside.
 ///
-/// Returns FAILURE if the service is unreachable, returns no success, or if
+/// Returns FAILURE if the recovery service is unreachable / unhappy, or if
 /// Nav2 aborts/cancels the recovery goal. In that case the BT escalates to
-/// the lethal-boundary emergency path.
+/// the lethal-boundary emergency path. The keepout toggle is best-effort:
+/// failures to disable/re-enable are logged but do not themselves fail the
+/// recovery — we still try the Nav2 leg, and the next costmap update with
+/// `enabled=true` restores the filter.
 class NavigateInsideBoundary : public BT::StatefulActionNode
 {
 public:
   using Nav2Goal = nav2_msgs::action::NavigateToPose;
   using GoalHandle = rclcpp_action::ClientGoalHandle<Nav2Goal>;
   using RecoverySrv = mowgli_interfaces::srv::GetRecoveryPoint;
+  using ClearSrv = nav2_msgs::srv::ClearEntireCostmap;
+  using SetParamsResult = std::vector<rcl_interfaces::msg::SetParametersResult>;
 
   NavigateInsideBoundary(const std::string& name, const BT::NodeConfig& config)
       : BT::StatefulActionNode(name, config)
@@ -249,17 +261,55 @@ public:
 private:
   enum class Phase
   {
-    WaitingForService,
-    WaitingForGoalHandle,
+    WaitingForService,    // /map_server_node/get_recovery_point
+    DisablingKeepout,     // global_costmap.set_parameters(keepout_filter.enabled=false)
+    ClearingCostmap,      // global_costmap/clear_entirely_global_costmap
+    WaitingForGoalHandle, // /navigate_to_pose
     WaitingForResult,
+    ReEnablingKeepout,    // global_costmap.set_parameters(keepout_filter.enabled=true)
   };
 
+  // Reset Phase + tracking state for a fresh recovery attempt.
+  void ResetState();
+
+  // Best-effort fire-and-forget re-enable of the keepout filter. Used by
+  // onHalted to leave the costmap in its normal state even if we never
+  // reach Phase::ReEnablingKeepout cleanly.
+  void RequestKeepoutEnable(bool enabled);
+
+  // Send the /navigate_to_pose goal using recovery_pose_, transition into
+  // WaitingForGoalHandle, and return RUNNING. Falls into BeginReEnableKeepout
+  // if the action server isn't reachable. Always returns a tickable status.
+  BT::NodeStatus SendNav2Goal();
+
+  // Kick off the keepout re-enable using AsyncParametersClient and transition
+  // into ReEnablingKeepout. Short-circuits to the pending Nav2 result if
+  // there is nothing to re-enable.
+  BT::NodeStatus BeginReEnableKeepout();
+
   rclcpp::Client<RecoverySrv>::SharedPtr service_client_;
+  rclcpp::Client<ClearSrv>::SharedPtr clear_client_;
+  rclcpp::AsyncParametersClient::SharedPtr keepout_params_client_;
   rclcpp_action::Client<Nav2Goal>::SharedPtr action_client_;
 
   std::shared_future<RecoverySrv::Response::SharedPtr> service_future_;
+  std::shared_future<SetParamsResult> set_param_future_;
+  std::shared_future<ClearSrv::Response::SharedPtr> clear_future_;
   std::shared_future<GoalHandle::SharedPtr> goal_handle_future_;
   GoalHandle::SharedPtr goal_handle_;
+
+  // Cached recovery target from the map_server, held across the
+  // disable-keepout / clear-costmap phases until we actually send the
+  // Nav2 goal.
+  geometry_msgs::msg::Pose recovery_pose_;
+  double distance_outside_{0.0};
+
+  // Latched Nav2 outcome carried through ReEnablingKeepout so we return
+  // the right BT status after the re-enable round-trip.
+  BT::NodeStatus pending_nav_result_{BT::NodeStatus::FAILURE};
+  // Set true between DisablingKeepout and ReEnablingKeepout — onHalted
+  // checks this to fire the safety re-enable.
+  bool keepout_disabled_{false};
 
   Phase phase_{Phase::WaitingForService};
 };

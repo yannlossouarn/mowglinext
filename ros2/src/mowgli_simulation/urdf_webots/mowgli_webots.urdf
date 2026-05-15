@@ -1,0 +1,222 @@
+<?xml version="1.0" ?>
+<!--
+  Webots-side URDF for the Mowgli mower.
+
+  This URDF mirrors the kinematic structure of the inline Robot {} node
+  in worlds_webots/mowgli_garden.wbt:
+    * chassis (base_link) at z = 0.10
+    * two rear drive wheels at ±0.1625 m on Y, axis along Y, radius 0.093
+    * two front passive casters (kept simple here as fixed mounts; they
+      are real BallJoints in the .wbt, so the wheel TFs published by RSP
+      from this URDF will be slightly off in pitch — irrelevant to the
+      navigation stack which ignores caster TFs).
+    * sensor frames (lidar, imu, gps) matching the Webots device
+      placements
+
+  It is consumed by:
+    * hardware_interface — needs <joint name="…"/> elements for every
+      ros2_control joint to extract joint limits (kilted+ requirement).
+    * robot_state_publisher — publishes the static TF tree from the
+      <joint> elements + the joint_state_broadcaster's wheel positions.
+    * webots_ros2_driver / webots_ros2_control — wires Webots devices
+      (declared in the <webots> block below) to ROS2, and binds
+      Webots motors to ros2_control joints by name.
+
+  base_link == base_footprint here (flat outdoor mower, no significant
+  tilt). diff_drive_controller publishes odometry with
+  child_frame_id="base_footprint", which we satisfy by the explicit
+  fixed joint base_link → base_footprint below.
+-->
+<robot name="MowgliMower">
+
+  <!-- ── Kinematic structure ───────────────────────────────────────── -->
+  <!--
+    Inertials are intentionally omitted on the chassis: the actual
+    physics is owned by the inline Robot {} in mowgli_garden.wbt
+    (Webots' physics engine), and KDL warns when the URDF root link
+    carries an <inertial> block. URDF visual/collision are kept so
+    that downstream tools (RViz, Foxglove, MoveIt) render correctly.
+  -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.60 0.40 0.19"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.60 0.40 0.19"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- REP-105: base_footprint is on the ground, base_link above it.
+       odom→base_footprint is published by ekf_odom_node (Phase 2 sim
+       and production). RSP must therefore make base_footprint the
+       PARENT of base_link, otherwise base_footprint has two parents
+       (odom AND base_link) and tf2 silently picks one — Nav2 lookups
+       then resolve against a stale or wrong chain.
+
+       Phase 1 worked with the old direction because no ekf_odom was
+       running; Phase 2 brings it up. Inline Robot {} in mowgli_garden.wbt
+       sits at world z=0.10, so base_footprint at world z=0 ⇒ base_link
+       offset of +0.10 m above base_footprint. -->
+  <link name="base_footprint"/>
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <!-- base_link sits at the rear-wheel axis center (per OpenMower
+         convention, matches mowgli_robot.yaml). wheel_radius = 0.093 m. -->
+    <origin xyz="0 0 0.093" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Left rear drive wheel (physics in .wbt — see comment on base_link). -->
+  <link name="left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="0.04" radius="0.093"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="0.04" radius="0.093"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_wheel_motor" type="continuous">
+    <parent link="base_link"/>
+    <child link="left_wheel"/>
+    <!-- Rear-wheel axis IS base_link (per OpenMower convention).
+         Wheel centre at base_link frame z=0; wheel-bottom flush with
+         the floor (radius 0.093 below base_link, base_link at world
+         z=0.093). track = wheel_track = 0.325 → ±0.1625 on Y. -->
+    <origin xyz="0 0.1625 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="20.0" velocity="100.0"/>
+  </joint>
+
+  <!-- Right rear drive wheel (physics in .wbt — see comment on base_link). -->
+  <link name="right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="0.04" radius="0.093"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="0.04" radius="0.093"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_wheel_motor" type="continuous">
+    <parent link="base_link"/>
+    <child link="right_wheel"/>
+    <!-- See left_wheel_motor — symmetric -Y placement. -->
+    <origin xyz="0 -0.1625 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="20.0" velocity="100.0"/>
+  </joint>
+
+  <!-- Sensor frames (static — RSP publishes these directly). -->
+  <link name="lidar_link"/>
+  <joint name="base_link_to_lidar" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_link"/>
+    <!-- LiDAR centred on base_link (x=0, y=0.024 lateral) at +20 cm
+         above the chassis top. chassis_top above base_link = 0.190 m
+         (= chassis_height/2 + chassis_center offset), so
+         z = 0.190 + 0.20 = 0.390. Bumped from +10 cm because Webots'
+         LiDAR was clipping the chassis top edge at 10 cm clearance,
+         flooding collision_monitor's PolygonStop with ~80 false hits.
+         Yaw=π for the back-to-front mount (cable side aft);
+         composes with the .wbt-side rotation to net 0 yaw between
+         base_link and lidar_link. -->
+    <origin xyz="0 0.024 0.390" rpy="0 0 3.1408"/>
+  </joint>
+
+  <link name="imu_link"/>
+  <joint name="base_link_to_imu" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <!-- IMU mounted at chassis centre (mowgli_robot.yaml imu_x/y/z). -->
+    <origin xyz="0.18 0 0.095" rpy="0 0 0"/>
+  </joint>
+
+  <link name="gps_link"/>
+  <joint name="base_link_to_gps" type="fixed">
+    <parent link="base_link"/>
+    <child link="gps_link"/>
+    <!-- GPS antenna +30 cm forward of base_link, on the chassis top
+         (gps_x=0.30, chassis_top above base_link = 0.19 m). -->
+    <origin xyz="0.30 0 0.19" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ── Webots device + plugin wiring ─────────────────────────────── -->
+  <webots>
+    <device reference="lidar" type="Lidar">
+      <ros>
+        <enabled>true</enabled>
+        <updateRate>10</updateRate>
+        <topicName>/scan</topicName>
+        <alwaysOn>true</alwaysOn>
+        <frameName>lidar_link</frameName>
+      </ros>
+    </device>
+
+    <device reference="gps" type="GPS">
+      <ros>
+        <enabled>true</enabled>
+        <updateRate>5</updateRate>
+        <topicName>/gps/fix_raw</topicName>
+        <alwaysOn>true</alwaysOn>
+        <frameName>gps_link</frameName>
+      </ros>
+    </device>
+
+    <plugin type="webots_ros2_driver::Ros2IMU">
+      <enabled>true</enabled>
+      <updateRate>100</updateRate>
+      <topicName>/imu/data_sim</topicName>
+      <alwaysOn>true</alwaysOn>
+      <frameName>imu_link</frameName>
+      <inertialUnitName>inertial_unit</inertialUnitName>
+      <gyroName>gyro</gyroName>
+      <accelerometerName>accelerometer</accelerometerName>
+    </plugin>
+
+    <plugin type="webots_ros2_control::Ros2Control" />
+
+    <!-- Phase 2.2: kinematic drivetrain. Replaces wheel-friction body
+         coupling with Supervisor.setVelocity() driven directly from
+         /cmd_vel. Without this plugin the chassis pitches ~12° forward
+         under cmd_vel and only ~10 % of the commanded velocity reaches
+         the body (90 % wheel-floor slip). See
+         mowgli_simulation/kinematic_drive.py for the full rationale. -->
+    <plugin type="mowgli_simulation.kinematic_drive.KinematicDrive">
+      <cmdVelTopic>/cmd_vel</cmdVelTopic>
+    </plugin>
+  </webots>
+
+  <!-- ── ros2_control joint declarations ───────────────────────────── -->
+  <ros2_control name="WebotsControl" type="system">
+    <hardware>
+      <plugin>webots_ros2_control::Ros2ControlSystem</plugin>
+    </hardware>
+    <joint name="left_wheel_motor">
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <command_interface name="velocity"/>
+    </joint>
+    <joint name="right_wheel_motor">
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <command_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+</robot>

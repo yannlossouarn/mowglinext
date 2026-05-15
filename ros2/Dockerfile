@@ -39,6 +39,42 @@ RUN cd gtsam && mkdir build && cd build && \
  && make -j$(nproc) install
 
 # =============================================================================
+# Stage 0b: fields2cover-builder
+# Builds Fields2Cover 2.0.0 from source into /opt/fields2cover-200. The
+# upstream repo (https://github.com/Fields2Cover/Fields2Cover) has no
+# debian package for v2 on Noble. mowgli_coverage's CMakeLists pins
+#   find_package(Fields2Cover 2.0.0 REQUIRED PATHS /opt/fields2cover-200)
+# so the install prefix matters. Runtime stages COPY /opt/fields2cover-200
+# across; libgdal/libgeos/libortools/libtinyxml2 are installed in `base`.
+# =============================================================================
+FROM ros:kilted-ros-base AS fields2cover-builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake git pkg-config \
+      libeigen3-dev libgdal-dev libgeos++-dev libgeos-dev libgsl-dev \
+      libtinyxml2-dev libpython3-dev python3-dev libtbb-dev \
+      ros-kilted-ortools-vendor \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp
+RUN git clone --depth 1 -b v2.0.0 https://github.com/Fields2Cover/Fields2Cover.git f2c
+
+RUN . /opt/ros/kilted/setup.sh && \
+    cd f2c && mkdir build && cd build && \
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/fields2cover-200 \
+        -DBUILD_TESTS=OFF \
+        -DBUILD_PYTHON=OFF \
+        -DBUILD_TUTORIALS=OFF \
+        -DBUILD_DOC=OFF \
+        -DALLOW_PARALLELIZATION=ON \
+        -DBUILD_SHARED_LIBS=ON \
+ && make -j$(nproc) install
+
+# =============================================================================
 # Stage 1: base
 # Installs all runtime ROS2 dependencies. Both runtime and simulation stages
 # inherit from here, keeping the image lean.
@@ -100,9 +136,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-kilted-nav2-util \
     # Nav2 msgs (CostmapFilterInfo for costmap filters)
     ros-kilted-nav2-msgs \
-    # Simulation bridge (needed at runtime for ros_gz_bridge topic bridging)
-    ros-kilted-ros-gz-sim \
-    ros-kilted-ros-gz-bridge \
     # DDS middleware — Cyclone DDS is more reliable than FastRTPS on ARM
     # (no shared memory, no stale /dev/shm segments, better service discovery)
     ros-kilted-rmw-cyclonedds-cpp \
@@ -112,6 +145,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # that GTSAM's exported CMake target references at link time.
     # libboost-* runtime libs are pulled in transitively.
     libmetis-dev \
+    # Fields2Cover 2.0.0 runtime deps. libFields2Cover.so links
+    # against libgdal, libgeos_c, libortools, libtinyxml2 + bundles
+    # its own libsteering_functions and libmatplot under
+    # /opt/fields2cover-200/lib. -dev variants are needed because
+    # mowgli_coverage's find_package pulls in transitive headers via
+    # the exported Fields2Cover CMake target.
+    libgdal-dev libgeos++-dev libtinyxml2-dev libtbb12 \
+    ros-kilted-ortools-vendor \
     # Utilities
     python3-argcomplete \
  && rm -rf /var/lib/apt/lists/*
@@ -123,6 +164,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=gtsam-builder /opt/gtsam /opt/gtsam
 RUN echo '/opt/gtsam/lib' > /etc/ld.so.conf.d/gtsam.conf && ldconfig
 ENV CMAKE_PREFIX_PATH=/opt/gtsam:${CMAKE_PREFIX_PATH}
+
+# Pull source-built Fields2Cover 2.0.0 into /opt/fields2cover-200.
+# mowgli_coverage's CMakeLists pins PATHS /opt/fields2cover-200 in
+# find_package(Fields2Cover 2.0.0 REQUIRED), so the install prefix is
+# what matters — no CMAKE_PREFIX_PATH change needed. Register its
+# /opt/fields2cover-200/lib with ldconfig so the runtime loader
+# resolves libFields2Cover.so + libsteering_functions.so + libmatplot.so.1.
+COPY --from=fields2cover-builder /opt/fields2cover-200 /opt/fields2cover-200
+RUN echo '/opt/fields2cover-200/lib' > /etc/ld.so.conf.d/fields2cover-200.conf && ldconfig
 
 # =============================================================================
 # Stage 2: deps
@@ -171,6 +221,12 @@ COPY src/fusion_graph/package.xml         src/fusion_graph/package.xml
 COPY src/fusion_graph/CMakeLists.txt      src/fusion_graph/CMakeLists.txt
 # fusion_graph is the opt-in factor-graph replacement for ekf_map_node;
 # depends on libgtsam-dev installed in the base stage.
+COPY src/mowgli_coverage/package.xml      src/mowgli_coverage/package.xml
+COPY src/mowgli_coverage/CMakeLists.txt   src/mowgli_coverage/CMakeLists.txt
+# opennav_coverage submodule provides opennav_coverage_msgs (action types
+# consumed by mowgli_coverage). Pulled by checkout submodules: recursive.
+COPY src/opennav_coverage/opennav_coverage_msgs/package.xml    src/opennav_coverage/opennav_coverage_msgs/package.xml
+COPY src/opennav_coverage/opennav_coverage_msgs/CMakeLists.txt src/opennav_coverage/opennav_coverage_msgs/CMakeLists.txt
 
 # Resolve rosdep dependencies (cached until package.xml changes)
 RUN rosdep update --rosdistro kilted \
@@ -209,6 +265,18 @@ ARG BUILD_TYPE=Release
 
 # Now copy the rest of the source tree
 COPY src/ src/
+
+# Skip every opennav_coverage subpackage except _msgs. The upstream server
+# is pinned to F2C 1.2.1 (no TrapezoidalDecomp / generateHeadlandSwaths /
+# planPathForConnection); we use mowgli_coverage with F2C 2.0 instead, and
+# only need the action types from opennav_coverage_msgs. Marker files
+# aren't tracked in the submodule, so create them here.
+RUN touch \
+      src/opennav_coverage/opennav_coverage/COLCON_IGNORE \
+      src/opennav_coverage/opennav_coverage_bt/COLCON_IGNORE \
+      src/opennav_coverage/opennav_coverage_demo/COLCON_IGNORE \
+      src/opennav_coverage/opennav_coverage_navigator/COLCON_IGNORE \
+      src/opennav_coverage/opennav_row_coverage/COLCON_IGNORE
 
 # Build all packages (mowgli_interfaces is already built and cached)
 RUN /bin/bash -c "\
@@ -280,20 +348,21 @@ CMD ["ros2", "launch", "mowgli_bringup", "mowgli.launch.py"]
 
 # =============================================================================
 # Stage 6: simulation
-# Extends runtime with a full Gazebo installation for headless/web simulation.
+# Extends runtime with the Webots simulator for headless/web simulation.
+#
+# NOTE: This stage is mid-migration from Gazebo Ignition to Webots. The
+# Gazebo apt packages have been removed; the Webots binary + ROS2 driver
+# install steps are TODO (Phase 2 of the Webots migration). Running the
+# simulation image as-is will fail until Webots is installed here.
 # =============================================================================
 FROM runtime AS simulation
 
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Gazebo Harmonic comes via ros-kilted-ros-gz-sim (Jazzy default pairing)
-    ros-kilted-ros-gz-sim \
-    ros-kilted-ros-gz-bridge \
-    ros-kilted-ros-gz-interfaces \
     # Headless rendering (sensors need a virtual display when no GPU)
     xvfb \
-    # VNC + lightweight desktop for Gazebo GUI access from macOS
+    # VNC + lightweight desktop for sim GUI access from macOS
     tigervnc-standalone-server \
     tigervnc-common \
     novnc \
@@ -301,6 +370,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openbox \
     xterm \
     x11-utils \
+    # TODO(webots): install Webots binary + ros-kilted-webots-ros2-driver
  && rm -rf /var/lib/apt/lists/*
 
 # Copy VNC startup script
@@ -313,7 +383,7 @@ COPY foxglove/ /ros2_ws/foxglove/
 
 # Foxglove Bridge WebSocket port
 EXPOSE 8765
-# noVNC web port (Gazebo GUI via browser)
+# noVNC web port (sim GUI via browser)
 EXPOSE 6080
 
 CMD ["ros2", "launch", "mowgli_bringup", "sim_full_system.launch.py", "headless:=true", "use_rviz:=false"]

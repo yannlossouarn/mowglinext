@@ -217,11 +217,66 @@ std::optional<TickOutput> GraphManager::Tick(double now_s)
 
 TickOutput GraphManager::CreateNodeLocked(double now_s)
 {
+  // Guard against next_index_ == 0: would underflow PoseKey(next_index_ - 1)
+  // and crash GTSAM with "Symbol index is too large" when j wraps to 2^64-1.
+  // Reachable historically when Load() restored an empty persisted graph
+  // (next_index=0) and marked the manager initialized; both Save() and Load()
+  // now refuse the empty case, but keep this defensive — the cost of the
+  // check is one compare and the upside is no abort if a future code path
+  // reintroduces the same hole.
+  if (next_index_ == 0)
+  {
+    return latest_.value_or(TickOutput{});
+  }
+
   // 1. Build the wheel between-factor: relative pose from X_{k-1} to X_k.
-  //    Pose2(dx, dy, dtheta_gyro) — gyro for yaw, wheel for translation.
-  //    If gyro accumulator is zero (no IMU received) fall back to wheel.
-  const double dtheta =
-      std::abs(accum_.dtheta_gyro) > 1e-9 ? accum_.dtheta_gyro : accum_.dtheta_wheel;
+  //    Yaw selection rules:
+  //    a. Wheel encoder is ground truth when it reads zero. Encoders
+  //       cannot slip "into stationary" — when the per-tick wheel
+  //       accumulator shows no motion (|dx|, |dy|, |dtheta_wheel| all
+  //       under their thresholds), the robot really isn't moving under
+  //       power. Trust the wheel regardless of residual gyro
+  //       bias / noise and snap dtheta to 0 with a tight sigma. The
+  //       previous version of this block also gated on |dtheta_gyro| <
+  //       stationary_thresh_theta, which on this robot's live IMU
+  //       (residual wz ≈ -0.023 rad/s ≈ -1.32°/s after hardware_bridge
+  //       calibration, dominated by thermal drift) was always false —
+  //       the AND fell through to the gyro path and yaw drifted
+  //       -4.28°/min vs the +0.43°/min pre-suppressor baseline.
+  //
+  //       Edge case: a hand-pushed robot has wheels off the ground but
+  //       is physically rotating. We accept the trade-off — a manually
+  //       repositioned robot will lose its yaw estimate, but it is far
+  //       more common to be parked with a noisy gyro than to be hand
+  //       spun, and the next session's GPS-COG fusion + dock_yaw seed
+  //       re-anchor yaw when the robot starts moving again.
+  //    b. Otherwise, prefer gyro: at speed the differential-drive yaw
+  //       estimate is dominated by encoder slip and the gyro is strictly
+  //       better. The wheel sigma_theta path only fires when no gyro
+  //       sample arrived this tick (pre-cog seed window, IMU restart).
+  const bool wheel_stationary =
+      std::abs(accum_.dx) < params_.stationary_thresh_xy_m &&
+      std::abs(accum_.dy) < params_.stationary_thresh_xy_m &&
+      std::abs(accum_.dtheta_wheel) < params_.stationary_thresh_theta;
+
+  double dtheta;
+  double sigma_theta;
+  if (wheel_stationary)
+  {
+    dtheta = 0.0;
+    sigma_theta = params_.stationary_sigma_theta;
+  }
+  else if (std::abs(accum_.dtheta_gyro) > 1e-9)
+  {
+    dtheta = accum_.dtheta_gyro;
+    sigma_theta = params_.gyro_sigma_theta;
+  }
+  else
+  {
+    dtheta = accum_.dtheta_wheel;
+    sigma_theta = params_.wheel_sigma_theta;
+  }
+
   const gtsam::Pose2 between(accum_.dx, accum_.dy, dtheta);
 
   const auto k_prev = PoseKey(next_index_ - 1);
@@ -242,11 +297,21 @@ TickOutput GraphManager::CreateNodeLocked(double now_s)
   new_values_.insert(k_curr, X_pred);
 
   // 2. Wheel between-factor.
-  // Use gyro_sigma_theta when gyro contributed, wheel sigma otherwise.
-  const double sigma_theta =
-      std::abs(accum_.dtheta_gyro) > 1e-9 ? params_.gyro_sigma_theta : params_.wheel_sigma_theta;
+  // sigma_theta was already selected above with the same wheel/gyro/
+  // stationary logic that drove dtheta — reuse it here so both halves
+  // of the BetweenFactor stay consistent.
+  //
+  // sigma_x gates on the per-tick gyro yaw delta: during fast pivots
+  // the wheels report phantom forward velocity (see GraphParams
+  // comment) so swap to a loose sigma and let GPS / scan-matching
+  // constrain XY. Gating on the gyro (not wheel-derived) dtheta
+  // avoids feedback from the same encoder that's misreporting.
+  const double wheel_sigma_x_eff =
+      std::abs(accum_.dtheta_gyro) > params_.pivot_gate_dtheta_rad
+          ? params_.pivot_wheel_sigma_x
+          : params_.wheel_sigma_x;
   auto between_noise = MakeDiagonal({
-      params_.wheel_sigma_x,
+      wheel_sigma_x_eff,
       params_.wheel_sigma_y,
       sigma_theta,
   });
@@ -296,7 +361,7 @@ TickOutput GraphManager::CreateNodeLocked(double now_s)
   //    that need ALL poses (viz / Save / LC search fallback) will
   //    refresh on demand. Per-Tick / per-LC lookups go through
   //    PoseAt() / HasPoseAt() which are O(depth) on the Bayes tree.
-  isam_.update(new_factors_, new_values_);
+  ApplyIsamUpdateLocked(new_factors_, new_values_);
   estimate_dirty_ = true;
   new_factors_.resize(0);
   new_values_.clear();
@@ -432,7 +497,7 @@ void GraphManager::ForceAnchor(uint64_t node_index,
   auto noise = MakeDiagonal({sigma_xy, sigma_xy, sigma_theta});
   gtsam::NonlinearFactorGraph fg;
   fg.add(gtsam::PriorFactor<gtsam::Pose2>(PoseKey(node_index), pose, noise));
-  isam_.update(fg, gtsam::Values());
+  ApplyIsamUpdateLocked(fg, gtsam::Values());
   estimate_dirty_ = true;
   // Update latest_ snapshot so PublishOutputs sees the new pose.
   if (latest_ && latest_->node_index == node_index)
@@ -508,19 +573,41 @@ void GraphManager::PruneOldScans(uint64_t max_age_nodes)
 
 void GraphManager::RebaseISAM2()
 {
-  std::lock_guard<std::mutex> lock(mu_);
-  // Rebase needs the full pose set. This is one of the rare callers
-  // where the O(N) extraction is unavoidable — we need every variable
-  // to seed the fresh tree.
-  RefreshEstimateLocked();
-  if (current_estimate_.empty())
-    return;
+  // Phase 1: snapshot under the lock. The heavy work (building the
+  // fresh iSAM2 from N PriorFactors) is then done WITHOUT the lock
+  // so per-tick Tick() can keep publishing TF — see the comment on
+  // rebase_in_progress_ in graph_manager.hpp for the 2026-05-14
+  // incident that motivated this. While we're outside the lock,
+  // Tick / ForceAnchor / AddLoopClosure go through
+  // ApplyIsamUpdateLocked, which mirrors their factors+values into
+  // rebase_pending_factors_ / rebase_pending_values_ so the fresh
+  // iSAM2 catches up at phase 3.
+  gtsam::Values estimate_snapshot;
+  int relinearize_skip = 1;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (rebase_in_progress_)
+    {
+      // Another rebase is already running; bail rather than racing.
+      return;
+    }
+    RefreshEstimateLocked();
+    if (current_estimate_.empty())
+      return;
+    estimate_snapshot = current_estimate_;
+    relinearize_skip = params_.isam2_relinearize_skip;
+    rebase_in_progress_ = true;
+    rebase_pending_factors_.resize(0);
+    rebase_pending_values_.clear();
+  }
 
-  // Build a fresh iSAM2 with the same parameters as the live one.
+  // Phase 2: build the fresh iSAM2 with priors-from-snapshot. This is
+  // the O(N) expensive call (~1 s for 50k nodes on this robot).
+  // Runs without mu_, so Tick() is free to advance the live iSAM2.
   gtsam::ISAM2Params p;
   p.optimizationParams = gtsam::ISAM2GaussNewtonParams(0.001);
   p.relinearizeThreshold = 0.05;
-  p.relinearizeSkip = std::max(1, params_.isam2_relinearize_skip);
+  p.relinearizeSkip = std::max(1, relinearize_skip);
   gtsam::ISAM2 fresh(p);
 
   // Re-anchor every existing variable with a tight prior. The exact
@@ -529,19 +616,52 @@ void GraphManager::RebaseISAM2()
   // RTK + COG noise floors and keeps the rebase non-destructive.
   gtsam::NonlinearFactorGraph fg;
   auto noise = MakeDiagonal({0.05, 0.05, 0.05});
-  for (const auto& kv : current_estimate_)
+  for (const auto& kv : estimate_snapshot)
   {
     fg.add(gtsam::PriorFactor<gtsam::Pose2>(kv.key, kv.value.cast<gtsam::Pose2>(), noise));
   }
+  fresh.update(fg, estimate_snapshot);
 
-  fresh.update(fg, current_estimate_);
-  isam_ = std::move(fresh);
-  estimate_dirty_ = true;
+  // Phase 3: replay anything Tick / ForceAnchor / AddLoopClosure
+  // added while we were rebuilding, then atomically swap isam_.
+  // The lock is held only for this replay (typically a handful of
+  // factors/values — ms-scale), so the TF publisher unblocks quickly.
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!rebase_in_progress_)
+    {
+      // Reset() ran between phase 1 and phase 3 — the graph we
+      // built is now stale (its priors reference a state that no
+      // longer exists). Discard fresh, leave isam_ alone.
+      return;
+    }
+    if (rebase_pending_factors_.size() > 0 || rebase_pending_values_.size() > 0)
+    {
+      fresh.update(rebase_pending_factors_, rebase_pending_values_);
+    }
+    isam_ = std::move(fresh);
+    estimate_dirty_ = true;
+    // Loop-closure edges accumulated so far were collapsed into the
+    // priors; reset the visualization list so future LCs are
+    // distinguishable from the rebased history.
+    loop_closure_edges_.clear();
+    rebase_pending_factors_.resize(0);
+    rebase_pending_values_.clear();
+    rebase_in_progress_ = false;
+  }
+}
 
-  // Loop-closure edges accumulated so far were collapsed into the
-  // priors; reset the visualization list so future LCs are
-  // distinguishable from the rebased history.
-  loop_closure_edges_.clear();
+void GraphManager::ApplyIsamUpdateLocked(const gtsam::NonlinearFactorGraph& fg,
+                                         const gtsam::Values& values)
+{
+  isam_.update(fg, values);
+  if (rebase_in_progress_)
+  {
+    // Mirror everything onto the pending buffer so phase 3 of the
+    // rebase can replay it on the fresh iSAM2 before the swap.
+    rebase_pending_factors_.push_back(fg);
+    rebase_pending_values_.insert(values);
+  }
 }
 
 void GraphManager::AddLoopClosure(uint64_t prev_index,
@@ -565,7 +685,7 @@ void GraphManager::AddLoopClosure(uint64_t prev_index,
   gtsam::NonlinearFactorGraph fg;
   fg.add(gtsam::BetweenFactor<gtsam::Pose2>(k_prev, k_curr, delta, noise));
 
-  isam_.update(fg, gtsam::Values());
+  ApplyIsamUpdateLocked(fg, gtsam::Values());
   estimate_dirty_ = true;
   ++loop_closures_added_;
   loop_closure_edges_.emplace_back(prev_index, curr_index);
@@ -685,38 +805,74 @@ void GraphManager::Reset()
   ticks_since_cov_ = 0;
   loop_closure_edges_.clear();
   scans_.clear();
+
+  // Cancel any in-flight async rebase: phase 3 of RebaseISAM2 checks
+  // this flag before swapping isam_, so clearing it here makes the
+  // in-flight worker discard its freshly-built tree instead of
+  // overwriting our just-cleared one.
+  rebase_in_progress_ = false;
+  rebase_pending_factors_.resize(0);
+  rebase_pending_values_.clear();
 }
 
 bool GraphManager::Save(const std::string& prefix) const
 {
-  std::lock_guard<std::mutex> lock(mu_);
-  // Manual / on-checkpoint path. Always refreshes from iSAM2 — the
-  // serialized state must reflect all factor updates since the last
-  // RefreshEstimateLocked() call.
-  RefreshEstimateLocked();
+  // Phase 1: snapshot under the lock. Holding the lock for the full
+  // I/O duration (~500 ms on this robot's eMMC) is what stalled Nav2's
+  // map→odom TF lookups during periodic 5-min auto-saves on
+  // 2026-05-14 — controller_server hit `Transform data too old` and
+  // aborted FollowStrip / DockRobot. Copy out everything Save needs
+  // (gtsam::Values is value-copyable; scans_ is write-once after the
+  // entry is inserted, so the map copy is consistent without further
+  // synchronization), then release the lock so Tick can keep running
+  // while the bytes hit disk.
+  gtsam::Values estimate_snapshot;
+  std::map<uint64_t, std::vector<Eigen::Vector2d>> scans_snapshot;
+  uint64_t next_index_snapshot = 0;
+  double last_node_time_s_snapshot = 0.0;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    // Refuse to persist an empty graph. An auto-save fired right after a
+    // Reset() would otherwise overwrite the on-disk files with
+    // next_index=0 / count=0; on next launch Load() restored that state,
+    // marked initialized_, and the first Tick crashed with a Symbol-index
+    // underflow. Keep whatever good state was on disk before the reset.
+    if (!initialized_ || next_index_ == 0)
+      return false;
+    // Manual / on-checkpoint path. Always refreshes from iSAM2 — the
+    // serialized state must reflect all factor updates since the last
+    // RefreshEstimateLocked() call.
+    RefreshEstimateLocked();
+    estimate_snapshot = current_estimate_;
+    scans_snapshot = scans_;
+    next_index_snapshot = next_index_;
+    last_node_time_s_snapshot = last_node_time_s_;
+  }
+
+  // Phase 2: I/O without the lock.
   try
   {
     std::ofstream graph_os(prefix + ".graph");
     if (!graph_os)
       return false;
-    graph_os << gtsam::serializeXML(current_estimate_);
+    graph_os << gtsam::serializeXML(estimate_snapshot);
     graph_os.close();
 
     std::ofstream scans_os(prefix + ".scans", std::ios::binary);
     if (!scans_os)
       return false;
-    SerializeScansBinary(scans_, scans_os);
+    SerializeScansBinary(scans_snapshot, scans_os);
     scans_os.close();
 
     std::ofstream meta_os(prefix + ".meta");
     if (!meta_os)
       return false;
-    meta_os << "next_index=" << next_index_ << "\n";
+    meta_os << "next_index=" << next_index_snapshot << "\n";
     // Wall-clock seconds need ≥10 integer digits + a few fractional, so
     // default 6-digit iostream precision (1.7774e+09) silently corrupts
     // the timestamp. setprecision(15) is safe for double round-trip.
-    meta_os << "last_node_time_s=" << std::fixed << std::setprecision(6) << last_node_time_s_
-            << "\n";
+    meta_os << "last_node_time_s=" << std::fixed << std::setprecision(6)
+            << last_node_time_s_snapshot << "\n";
     meta_os.close();
   }
   catch (const std::exception& e)
@@ -787,6 +943,15 @@ bool GraphManager::Load(const std::string& prefix)
   {
     return false;
   }
+
+  // Refuse to restore a degenerate persisted state. With next_idx == 0
+  // (or no values at all) marking initialized_ would let CreateNodeLocked
+  // form PoseKey(next_idx - 1) and underflow into a 2^64-1 Symbol index
+  // — GTSAM throws std::invalid_argument and the process aborts. Treat
+  // this as "no graph on disk" so the node bootstraps from the next GPS
+  // / set_pose seed.
+  if (next_idx == 0 || loaded_values.empty())
+    return false;
 
   // Re-seed iSAM2 with each loaded pose pinned by a tight prior; the
   // priors keep optimization stable as new wheel/GPS factors arrive.

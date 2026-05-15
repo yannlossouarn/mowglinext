@@ -97,6 +97,40 @@ struct GraphParams
   double stationary_motion_thresh_m = 0.02;  // m
   double stationary_motion_thresh_theta = 0.01;  // rad (~0.6°)
   double stationary_node_period_s = 5.0;  // 1 node / 5 s when still
+
+  // Stationary detection (per-node wheel-accumulator thresholds). When
+  // the wheel encoder reports motion strictly under all three thresholds
+  // (|dx|, |dy|, |dtheta_wheel|), the BetweenFactor uses dtheta=0 with
+  // stationary_sigma_theta — encoders cannot slip "into stationary", so
+  // a zero wheel reading is taken as ground truth and the gyro bias
+  // residual is suppressed regardless of its magnitude. (An earlier
+  // iteration also required |dtheta_gyro| under stationary_thresh_theta;
+  // on the live robot the gyro residual was ~10× the threshold, the AND
+  // never fired, and yaw drift went the wrong way. Wheel-only is the
+  // robust gate.) Set stationary_thresh_xy_m to a value smaller than
+  // encoder noise per tick, and stationary_thresh_theta just above the
+  // wheel-derived dtheta noise floor.
+  double stationary_thresh_xy_m = 1.0e-3;  // 1 mm per node tick
+  double stationary_thresh_theta = 2.0e-3;  // 0.11° per node tick (wheel noise floor)
+  double stationary_sigma_theta = 1.0e-3;  // ≈ 0.057° BetweenFactor sigma when stationary
+
+  // Pivot-mode wheel-translation downweight. During fast in-place
+  // rotation the wheel encoders report a phantom forward vx in both
+  // CW and CCW directions — measured 2026-05-14 at +0.021 m/s CW and
+  // +0.026 m/s CCW under a 1 rad/s spin. The same-sign bias rules out
+  // wheel-radius mismatch and points to one wheel under-magnituding
+  // its backward rotation (motor deadband / encoder phase). With the
+  // default wheel_sigma_x=0.05 m the wheel between-factor pulls
+  // base_link forward by 0.2-0.4 m per spin, which Nav2 sees as path
+  // deviation and re-plans on. When |per-tick gyro dtheta| crosses
+  // pivot_gate_dtheta_rad, swap wheel_sigma_x for
+  // pivot_wheel_sigma_x (effectively releasing the X constraint) so
+  // GPS + scan-matching set XY. The gate scales with node_period_s
+  // implicitly because dtheta = omega * dt; defaults are tuned for
+  // 25 Hz (gate fires above ~0.3 rad/s) and remain reasonable for
+  // 10 Hz (gate fires above ~0.12 rad/s).
+  double pivot_gate_dtheta_rad = 0.012;  // rad per tick
+  double pivot_wheel_sigma_x = 0.5;  // m — inflated sigma during pivot
 };
 
 // What goes out to the publisher every tick.
@@ -356,6 +390,23 @@ private:
   int ticks_since_cov_ = 0;
   std::vector<std::pair<uint64_t, uint64_t>> loop_closure_edges_;
 
+  // ── Async-rebase pipeline ───────────────────────────────────────
+  // RebaseISAM2 rebuilds the iSAM2 Bayes tree from scratch with one
+  // PriorFactor per existing variable. For a 50k-node graph that
+  // update() call is ~1 s, and holding mu_ for that long stalls the
+  // tick that publishes map→odom (observed 2026-05-14, caused
+  // DockRobot to abort with `Transform data too old`). The fix is to
+  // do the heavy iSAM2 rebuild OUTSIDE the lock: phase 1 snapshots
+  // current_estimate_ under mu_; phase 2 builds the fresh iSAM2 on
+  // that snapshot without holding mu_; phase 3 takes mu_ briefly to
+  // replay anything Tick() added in the meantime and atomically swap
+  // isam_. Tick() accumulates its post-snapshot factors/values into
+  // rebase_pending_factors_ / rebase_pending_values_ when
+  // rebase_in_progress_ is true.
+  bool rebase_in_progress_ = false;
+  gtsam::NonlinearFactorGraph rebase_pending_factors_;
+  gtsam::Values rebase_pending_values_;
+
   // Scan storage. Map keeps memory bounded by the number of nodes
   // (we never delete; persistence drops everything to disk and a
   // reboot re-loads). Eigen::aligned_allocator is unnecessary for
@@ -368,6 +419,12 @@ private:
   // Internal — actually creates the node and runs iSAM2. Caller must
   // hold mu_.
   TickOutput CreateNodeLocked(double now_s);
+
+  // Internal — wrap isam_.update so any factors/values added while an
+  // async rebase is in progress are also captured in the pending
+  // buffer (replayed onto the fresh iSAM2 before the swap). Caller
+  // must hold mu_.
+  void ApplyIsamUpdateLocked(const gtsam::NonlinearFactorGraph& fg, const gtsam::Values& values);
 };
 
 }  // namespace fusion_graph

@@ -4,6 +4,7 @@
 #include "fusion_graph/fusion_graph_node.hpp"
 
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <limits>
 
@@ -65,6 +66,16 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   gp.stationary_motion_thresh_theta =
       declare_parameter<double>("stationary_motion_thresh_theta", 0.01);
   gp.stationary_node_period_s = declare_parameter<double>("stationary_node_period_s", 5.0);
+  gp.stationary_thresh_xy_m =
+      declare_parameter<double>("stationary_thresh_xy_m", 1.0e-3);
+  gp.stationary_thresh_theta =
+      declare_parameter<double>("stationary_thresh_theta", 2.0e-3);
+  gp.stationary_sigma_theta =
+      declare_parameter<double>("stationary_sigma_theta", 1.0e-3);
+  gp.pivot_gate_dtheta_rad =
+      declare_parameter<double>("pivot_gate_dtheta_rad", 0.012);
+  gp.pivot_wheel_sigma_x =
+      declare_parameter<double>("pivot_wheel_sigma_x", 0.5);
 
   datum_lat_ = declare_parameter<double>("datum_lat", 0.0);
   datum_lon_ = declare_parameter<double>("datum_lon", 0.0);
@@ -73,8 +84,9 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   map_frame_ = declare_parameter<std::string>("map_frame", "map");
   odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
   base_frame_ = declare_parameter<std::string>("base_frame", "base_footprint");
+  tf_publish_lead_s_ = declare_parameter<double>("tf_publish_lead_s", 0.0);
 
-  graph_ = std::make_unique<GraphManager>(gp);
+  graph_ = std::make_shared<GraphManager>(gp);
 
   // ── Scan matching (optional) ─────────────────────────────────────
   use_scan_matching_ = declare_parameter<bool>("use_scan_matching", false);
@@ -143,6 +155,16 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   // a persisted graph exists — the robot is on the dock so this is
   // a tight prior.
   dock_pose_yaw_ = declare_parameter<double>("dock_pose_yaw", 0.0);
+
+  // RTK-Fixed override of the autoloaded pose: if the autoloaded graph
+  // disagrees with the first incoming RTK-Fixed sample by more than this
+  // many metres, force a re-anchor at the GPS pose. Handles the case of
+  // booting away from the dock — the persisted graph's last node is
+  // typically the dock, so without this the published map→odom would
+  // claim the robot is on the dock until the optimizer slowly walks the
+  // trajectory over.
+  rtk_autoload_override_threshold_m_ =
+      declare_parameter<double>("rtk_autoload_override_threshold_m", 0.3);
 
   if (autoload)
   {
@@ -249,8 +271,21 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   // dual-publishes to /ekf_map_node/set_pose AND to this topic so
   // the dock-yaw seeding works regardless of which localizer is the
   // map-frame primary.
+  //
+  // QoS: TRANSIENT_LOCAL with depth-1, matching dock_yaw_to_set_pose's
+  // publisher. The boot seed is a one-shot rising-edge event; with
+  // VOLATILE either side, a subscriber that hasn't finished discovery
+  // when the message is published silently loses it and the graph
+  // never bootstraps (observed 2026-05-03 after a force-recreate). With
+  // TL on both sides, a late-joining subscriber gets the last seed
+  // pose latched on connect — node bootstraps without manual republish.
+  rclcpp::QoS set_pose_qos(rclcpp::KeepLast(1));
+  set_pose_qos.reliable();
+  set_pose_qos.transient_local();
   sub_set_pose_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-      "~/set_pose", 1, std::bind(&FusionGraphNode::OnSetPose, this, std::placeholders::_1));
+      "~/set_pose",
+      set_pose_qos,
+      std::bind(&FusionGraphNode::OnSetPose, this, std::placeholders::_1));
 
   // ── Save-graph service ──────────────────────────────────────────
   // Trigger from the GUI / a BT node when transitioning out of
@@ -306,25 +341,46 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
                                   std::bind(&FusionGraphNode::OnTimer, this));
 
   // Maintenance timer at 30 s: prune old scans + check if iSAM2
-  // needs to be rebased. Both operations briefly hold the graph
-  // mutex; running off the main tick keeps Tick latency clean.
-  maintenance_timer_ =
-      create_wall_timer(std::chrono::seconds(30),
-                        [this]()
-                        {
-                          if (!graph_->IsInitialized())
-                            return;
-                          graph_->PruneOldScans(scan_retention_nodes_);
-                          const auto stats = graph_->Stats();
-                          if (stats.total_nodes - last_rebase_index_ >= isam2_rebase_every_nodes_)
-                          {
-                            graph_->RebaseISAM2();
-                            last_rebase_index_ = stats.total_nodes;
-                            RCLCPP_INFO(get_logger(),
-                                        "fusion_graph: iSAM2 rebased at node %lu",
-                                        static_cast<unsigned long>(stats.total_nodes));
-                          }
-                        });
+  // needs to be rebased. PruneOldScans is cheap (just erasing old
+  // entries under the lock) and stays inline. The rebase, however,
+  // rebuilds the Bayes tree from ~50k PriorFactors — ~1 s of CPU
+  // that used to block the executor and stall the map→odom TF
+  // (observed 2026-05-14, caused DockRobot to abort with
+  // `Transform data too old`). Dispatch it to a detached worker so
+  // the callback returns immediately; GraphManager::RebaseISAM2
+  // now does the heavy reconstruction outside the graph mutex and
+  // only takes the lock briefly to replay pending factors + swap.
+  maintenance_timer_ = create_wall_timer(
+      std::chrono::seconds(30),
+      [this]()
+      {
+        if (!graph_->IsInitialized())
+          return;
+        graph_->PruneOldScans(scan_retention_nodes_);
+        const auto stats = graph_->Stats();
+        if (stats.total_nodes - last_rebase_index_ < isam2_rebase_every_nodes_)
+          return;
+        bool expected = false;
+        if (!rebase_in_flight_->compare_exchange_strong(expected, true))
+        {
+          // Previous async rebase still running — skip and try again
+          // at the next maintenance tick.
+          return;
+        }
+        // Commit the bookkeeping NOW so the next 30 s maintenance
+        // tick doesn't re-trigger while the worker is still building.
+        last_rebase_index_ = stats.total_nodes;
+        std::thread(
+            [graph = graph_, logger = get_logger(),
+             total = stats.total_nodes, flag = rebase_in_flight_]()
+            {
+              graph->RebaseISAM2();
+              RCLCPP_INFO(logger, "fusion_graph: iSAM2 rebased at node %lu",
+                          static_cast<unsigned long>(total));
+              flag->store(false);
+            })
+            .detach();
+      });
 
   // Diagnostics timer at 1 Hz — coarse, just for the session monitor.
   diag_timer_ =
@@ -550,6 +606,54 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
   // seed itself.
   seed_xy_rtk_fixed_ = rtk_fixed;
 
+  // RTK-Fixed override of an autoloaded init: the persisted graph's last
+  // node is almost always the dock (auto-save fires on dock arrival), so
+  // booting away from the dock leaves IsInitialized()=true at the wrong
+  // pose and TrySeedInitialPose() short-circuits — GPS observations then
+  // fight the dock prior for many seconds before the trajectory walks
+  // over. RTK-Fixed is sub-cm and trustworthy: re-anchor the latest
+  // loaded node at the GPS pose with a tight prior. One-shot per boot.
+  if (rtk_fixed && autoload_succeeded_ && !rtk_autoload_override_done_ &&
+      graph_->IsInitialized())
+  {
+    auto snap = graph_->LatestSnapshot();
+    if (snap)
+    {
+      const double dx = mx - snap->pose.x();
+      const double dy = my - snap->pose.y();
+      const double dist = std::hypot(dx, dy);
+      if (dist > rtk_autoload_override_threshold_m_)
+      {
+        // Use the freshest yaw seed if we have one (COG/mag have already
+        // populated seed_yaw_ if they're alive); otherwise keep the
+        // autoloaded yaw — it's better than nothing and the next COG
+        // sample will pull it.
+        const double yaw = seed_yaw_.value_or(snap->pose.theta());
+        const gtsam::Pose2 anchor(mx, my, yaw);
+        // σ=5mm matches RTK-Fixed reported precision; σ_yaw 5° is loose
+        // enough to let COG correct it without fighting if the
+        // autoloaded yaw is wrong.
+        graph_->ForceAnchor(snap->node_index, anchor, 0.005, 5.0 * M_PI / 180.0);
+        rtk_autoload_override_done_ = true;
+        RCLCPP_WARN(get_logger(),
+                    "fusion_graph: RTK-Fixed override of autoloaded pose — "
+                    "re-anchored node %lu (%.2f, %.2f) → (%.2f, %.2f), Δ=%.2f m",
+                    static_cast<unsigned long>(snap->node_index),
+                    snap->pose.x(),
+                    snap->pose.y(),
+                    mx,
+                    my,
+                    dist);
+      }
+      else
+      {
+        // Within threshold — autoload is consistent with RTK, no
+        // override needed. Latch so we don't keep checking.
+        rtk_autoload_override_done_ = true;
+      }
+    }
+  }
+
   TrySeedInitialPose();
 }
 
@@ -681,12 +785,10 @@ void FusionGraphNode::OnHighLevelStatus(mowgli_interfaces::msg::HighLevelStatus:
   {
     constexpr uint8_t kRecording =
         mowgli_interfaces::msg::HighLevelStatus::HIGH_LEVEL_STATE_RECORDING;
-    if (last_hl_state_ == kRecording && msg->state != kRecording)
+    if (last_hl_state_ == kRecording && msg->state != kRecording &&
+        graph_->IsInitialized())
     {
-      const bool ok = graph_->Save(graph_save_prefix_);
-      RCLCPP_INFO(get_logger(),
-                  "fusion_graph: auto-save on RECORDING exit → %s",
-                  ok ? "ok" : "failed");
+      DispatchAsyncSave("recording-exit");
     }
   }
   last_hl_state_ = msg->state;
@@ -735,13 +837,43 @@ void FusionGraphNode::OnSetPose(geometry_msgs::msg::PoseWithCovarianceStamped::C
               pose.theta());
 }
 
+// Dispatch a Save to a detached worker. Returns true if the worker
+// was launched, false if a previous save is still in flight (in which
+// case the caller's reason for saving — dock arrival / periodic /
+// state transition — gets skipped this round; another opportunity
+// will come along). GraphManager::Save now does its file I/O outside
+// the graph mutex, but the file writes themselves are still serial,
+// so the in-flight guard prevents two writers fighting on the same
+// .graph / .scans / .meta files.
+void FusionGraphNode::DispatchAsyncSave(const char* reason)
+{
+  bool expected = false;
+  if (!save_in_flight_->compare_exchange_strong(expected, true))
+  {
+    RCLCPP_INFO(get_logger(),
+                "fusion_graph: %s save skipped — previous save still in flight",
+                reason);
+    return;
+  }
+  std::thread(
+      [graph = graph_, logger = get_logger(), prefix = graph_save_prefix_,
+       reason = std::string(reason), flag = save_in_flight_]()
+      {
+        const bool ok = graph->Save(prefix);
+        RCLCPP_INFO(logger, "fusion_graph: %s auto-save → %s", reason.c_str(),
+                    ok ? "ok" : "failed");
+        flag->store(false);
+      })
+      .detach();
+}
+
 void FusionGraphNode::OnHardwareStatus(mowgli_interfaces::msg::Status::ConstSharedPtr msg)
 {
   // Rising edge of is_charging = robot just docked.
-  if (last_is_charging_valid_ && !last_is_charging_ && msg->is_charging)
+  if (last_is_charging_valid_ && !last_is_charging_ && msg->is_charging &&
+      graph_->IsInitialized())
   {
-    const bool ok = graph_->Save(graph_save_prefix_);
-    RCLCPP_INFO(get_logger(), "fusion_graph: auto-save on dock arrival → %s", ok ? "ok" : "failed");
+    DispatchAsyncSave("dock-arrival");
   }
   last_is_charging_ = msg->is_charging;
   last_is_charging_valid_ = true;
@@ -758,8 +890,7 @@ void FusionGraphNode::OnPeriodicSaveTimer()
     return;
   if (!graph_->IsInitialized())
     return;
-  const bool ok = graph_->Save(graph_save_prefix_);
-  RCLCPP_INFO(get_logger(), "fusion_graph: periodic auto-save → %s", ok ? "ok" : "failed");
+  DispatchAsyncSave("periodic");
 }
 
 void FusionGraphNode::OnTimer()
@@ -1003,7 +1134,12 @@ void FusionGraphNode::PublishOutputs(const TickOutput& out)
   const tf2::Transform T_map_odom = T_map_base * T_odom_base.inverse();
 
   geometry_msgs::msg::TransformStamped t_map_odom;
-  t_map_odom.header.stamp = this->now();
+  // Forward-stamp by tf_publish_lead_s_ so Nav2 controller_server /
+  // RotationShim queries at clock_->now() find a TF in the buffer that
+  // is >= the request time and tf2 interpolates back instead of raising
+  // ExtrapolationException. Default 0 (real hardware); sim sets ~0.1s.
+  t_map_odom.header.stamp =
+      this->now() + rclcpp::Duration::from_seconds(tf_publish_lead_s_);
   t_map_odom.header.frame_id = map_frame_;
   t_map_odom.child_frame_id = odom_frame_;
   t_map_odom.transform = tf2::toMsg(T_map_odom);

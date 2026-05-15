@@ -318,7 +318,11 @@ export function HeroCard({data, compact, onStart, onHome, onPause, onEmergency, 
     );
   }
 
-  // IDLE / IDLE_DOCKED (default)
+  // IDLE / IDLE_DOCKED (default).
+  // Show Home only when off-dock (state === 'IDLE') — see #175. From the
+  // dock there's nowhere to go home to, so we'd just emit COMMAND_HOME
+  // for the robot to ignore.
+  const idleOffDock = state === 'IDLE';
   return (
     <DashCard padding={compact ? 16 : 22} style={{
       background: `linear-gradient(135deg, rgba(123,198,255,0.14), rgba(62,224,132,0.06))`,
@@ -344,10 +348,10 @@ export function HeroCard({data, compact, onStart, onHome, onPause, onEmergency, 
                 fontSize: 10, color: colors.accent, fontWeight: 700,
                 letterSpacing: '0.12em', textTransform: 'uppercase' as const,
               }}>
-                Mowgli is ready
+                {idleOffDock ? 'Mowgli is parked' : 'Mowgli is ready'}
               </div>
               <div style={{fontSize: 20, fontWeight: 700, color: colors.text, marginTop: 2, letterSpacing: '-0.02em'}}>
-                All rested at {Math.round(data.battery)}%
+                {idleOffDock ? `Out on the lawn at ${Math.round(data.battery)}%` : `All rested at ${Math.round(data.battery)}%`}
               </div>
             </div>
           )}
@@ -358,24 +362,32 @@ export function HeroCard({data, compact, onStart, onHome, onPause, onEmergency, 
               fontSize: 11, color: colors.accent, fontWeight: 700,
               letterSpacing: '0.12em', textTransform: 'uppercase' as const,
             }}>
-              Mowgli is ready
+              {idleOffDock ? 'Mowgli is parked' : 'Mowgli is ready'}
             </div>
             <div style={{fontSize: 26, fontWeight: 700, color: colors.text, marginTop: 4, letterSpacing: '-0.02em'}}>
-              All rested at {Math.round(data.battery)}%
+              {idleOffDock ? `Out on the lawn at ${Math.round(data.battery)}%` : `All rested at ${Math.round(data.battery)}%`}
             </div>
             <div style={{fontSize: 14, color: colors.textDim, marginTop: 6}}>
-              Tap Start mowing to begin, or wait for the next scheduled run.
+              {idleOffDock
+                ? 'Tap Home to send the robot back to the dock, or Start to mow from here.'
+                : 'Tap Start mowing to begin, or wait for the next scheduled run.'}
             </div>
           </div>
         )}
         {compact && (
           <div style={{fontSize: 13, color: colors.textDim}}>
-            Tap Start to begin, or wait for the next scheduled run.
+            {idleOffDock
+              ? 'Tap Home to dock, or Start to mow from here.'
+              : 'Tap Start to begin, or wait for the next scheduled run.'}
           </div>
         )}
         <div style={{display: 'flex', gap: 8, width: compact ? '100%' : undefined}}>
           <ActionButton label="Start mowing" primary icon={<IconPlay size={16}/>} onClick={onStart}
                    style={compact ? {flex: 1, justifyContent: 'center'} : undefined}/>
+          {idleOffDock && (
+            <ActionButton label="Home" icon={<IconHome size={16}/>} onClick={onHome}
+                     style={compact ? {flex: 1, justifyContent: 'center'} : undefined}/>
+          )}
           <ActionButton icon={<IconAlert size={14}/>} danger onClick={onEmergency} style={{padding: '12px 14px'}}/>
         </div>
       </div>

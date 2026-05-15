@@ -8,50 +8,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(ament_cmake REQUIRED)
+# Phase 2.2: ament_cmake_python is needed to install the
+# `mowgli_simulation` Python package, which holds the kinematic
+# drivetrain plugin loaded by webots_ros2_driver.
+find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(mowgli_interfaces REQUIRED)
-
-# ---------------------------------------------------------------------------
-# GPS degradation simulator node
-# ---------------------------------------------------------------------------
-add_executable(gps_degradation_sim_node
-  src/gps_degradation_sim_node.cpp
-)
-
-target_include_directories(gps_degradation_sim_node
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
-
-ament_target_dependencies(gps_degradation_sim_node
-  rclcpp
-  geometry_msgs
-  std_msgs
-)
-
-# ---------------------------------------------------------------------------
-# NavSat → Pose converter for simulation GPS pipeline
-# ---------------------------------------------------------------------------
-add_executable(navsat_to_pose_node
-  src/navsat_to_pose_node.cpp
-)
-
-target_include_directories(navsat_to_pose_node
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
-
-ament_target_dependencies(navsat_to_pose_node
-  rclcpp
-  geometry_msgs
-  sensor_msgs
-)
 
 # ---------------------------------------------------------------------------
 # Fake hardware bridge for simulation
@@ -74,8 +40,6 @@ ament_target_dependencies(fake_hardware_bridge_node
 )
 
 install(TARGETS
-  gps_degradation_sim_node
-  navsat_to_pose_node
   fake_hardware_bridge_node
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -87,18 +51,28 @@ install(
   PROGRAMS
     scripts/sim_imu_noise.py
     scripts/sim_navsat_rtk_fix.py
+    scripts/sim_wheel_slip.py
   DESTINATION lib/${PROJECT_NAME}
 )
+
+# ---------------------------------------------------------------------------
+# Webots driver plugins (Python — loaded in-process by webots_ros2_driver)
+# ---------------------------------------------------------------------------
+# Installs the `mowgli_simulation/` Python package into PYTHON_INSTALL_DIR
+# so that webots_ros2_driver can resolve `mowgli_simulation.<module>.<Class>`
+# plugin paths declared in urdf_webots/mowgli_webots.urdf.
+ament_python_install_package(${PROJECT_NAME})
 
 # ---------------------------------------------------------------------------
 # Install data directories
 # ---------------------------------------------------------------------------
 install(
   DIRECTORY
-    worlds
-    models
+    worlds_webots
+    urdf_webots
     launch
-    config
+    config_webots
+    protos
     rviz
   DESTINATION share/${PROJECT_NAME}
 )

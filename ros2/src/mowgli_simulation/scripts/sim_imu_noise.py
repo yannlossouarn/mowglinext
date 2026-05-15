@@ -104,6 +104,31 @@ class SimImuNoise(Node):
         ]
         self._prev_t: Optional[float] = None
 
+        # Optional perfect-IMU mode (sim only). When enabled, the script
+        # ignores the Webots-side gyro/accel readings entirely and emits
+        # an IMU synthesized from the latest /cmd_vel: gyro_z = cmd.az,
+        # gx/gy = 0, accel = (0, 0, g) in IMU frame, orientation = identity.
+        # Webots' kinematic teleport leaks ODE physics noise (~0.03 rad/s
+        # gyro_z drift) between teleport ticks; with EKF process noise on
+        # yaw at 0.06, this bias accumulates into a 5°/s yaw drift on
+        # /odometry/filtered_map even when the robot is stationary, which
+        # makes obstacles drift on the map and FTC PRE_ROTATE diverge.
+        # This mode bypasses that by using cmd_vel as the source of truth.
+        self._synth_from_cmd = bool(
+            self.declare_parameter("synthesize_from_cmd_vel", False).value
+        )
+        self._cmd_vel_topic = str(
+            self.declare_parameter("cmd_vel_topic", "/cmd_vel").value
+        )
+        self._cmd_az = 0.0  # latest commanded yaw rate (rad/s)
+        if self._synth_from_cmd:
+            from geometry_msgs.msg import TwistStamped
+
+            def _on_cmd(msg: TwistStamped) -> None:
+                self._cmd_az = float(msg.twist.angular.z)
+
+            self.create_subscription(TwistStamped, self._cmd_vel_topic, _on_cmd, 10)
+
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -153,18 +178,41 @@ class SimImuNoise(Node):
                 self._gyro_bias[i] += self._rng.gauss(0.0, gyro_step)
                 self._accel_bias[i] += self._rng.gauss(0.0, accel_step)
 
-        gx = msg.angular_velocity.x + self._gyro_bias[0] + self._rng.gauss(0.0, self._gyro_white)
-        gy = msg.angular_velocity.y + self._gyro_bias[1] + self._rng.gauss(0.0, self._gyro_white)
-        gz = msg.angular_velocity.z + self._gyro_bias[2] + self._rng.gauss(0.0, self._gyro_white)
+        if self._synth_from_cmd:
+            # Perfect IMU from cmd_vel — see comment in __init__.
+            gx = 0.0
+            gy = 0.0
+            gz = self._cmd_az
+            ax = 0.0
+            ay = 0.0
+            az = 9.80665  # gravity in IMU body Z (robot is upright)
+        else:
+            gx = msg.angular_velocity.x + self._gyro_bias[0] + self._rng.gauss(0.0, self._gyro_white)
+            gy = msg.angular_velocity.y + self._gyro_bias[1] + self._rng.gauss(0.0, self._gyro_white)
+            gz = msg.angular_velocity.z + self._gyro_bias[2] + self._rng.gauss(0.0, self._gyro_white)
 
-        ax = msg.linear_acceleration.x + self._accel_bias[0] + self._rng.gauss(0.0, self._accel_white)
-        ay = msg.linear_acceleration.y + self._accel_bias[1] + self._rng.gauss(0.0, self._accel_white)
-        az = msg.linear_acceleration.z + self._accel_bias[2] + self._rng.gauss(0.0, self._accel_white)
+            ax = msg.linear_acceleration.x + self._accel_bias[0] + self._rng.gauss(0.0, self._accel_white)
+            ay = msg.linear_acceleration.y + self._accel_bias[1] + self._rng.gauss(0.0, self._accel_white)
+            az = msg.linear_acceleration.z + self._accel_bias[2] + self._rng.gauss(0.0, self._accel_white)
 
         out = Imu()
         out.header = msg.header
-        out.orientation = msg.orientation
-        out.orientation_covariance = msg.orientation_covariance
+        if self._synth_from_cmd:
+            # Identity orientation — robot is perfectly upright in sim.
+            out.orientation.x = 0.0
+            out.orientation.y = 0.0
+            out.orientation.z = 0.0
+            out.orientation.w = 1.0
+            # Zero covariance on roll/pitch so EKF trusts them; loose
+            # yaw cov per the existing /imu/data convention.
+            out.orientation_covariance = [
+                1e-6, 0.0,    0.0,
+                0.0,  1e-6,   0.0,
+                0.0,  0.0,    99.0,  # yaw — keep loose, EKF uses gyro_z
+            ]
+        else:
+            out.orientation = msg.orientation
+            out.orientation_covariance = msg.orientation_covariance
         out.angular_velocity.x = gx
         out.angular_velocity.y = gy
         out.angular_velocity.z = gz

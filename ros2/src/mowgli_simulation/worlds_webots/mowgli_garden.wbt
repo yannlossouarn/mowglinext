@@ -1,0 +1,117 @@
+#VRML_SIM R2025a utf8
+
+# Minimal Webots world for the Mowgli simulation slice.
+# - Flat 20x20 m green plane (the "lawn").
+# - WGS84 GPS reference matches mowgli_robot.yaml datum.
+# - A single static obstacle for runtime-deviation testing.
+# - The Mowgli robot is instantiated from the local PROTO at
+#   protos/MowgliMower.proto (Phase 2.1 — replaces the inline Robot {}
+#   that suffered chassis-tip / wheel-slip pathologies under ODE).
+
+EXTERNPROTO "../protos/MowgliMower.proto"
+
+WorldInfo {
+  # 20 ms physics step matches the controller_manager update_rate (50 Hz)
+  # in config_webots/ros2_control.yaml — Webots warns otherwise.
+  basicTimeStep 20
+  coordinateSystem "ENU"
+  gpsCoordinateSystem "WGS84"
+  gpsReference 48.137154 11.576124 0
+}
+Viewpoint {
+  orientation -0.3 0.3 0.9 1.6
+  position 5 -5 8
+}
+Background {
+  skyColor [ 0.4 0.7 1.0 ]
+}
+DirectionalLight {
+  direction -0.5 -0.5 -1
+  intensity 4
+  castShadows TRUE
+}
+
+Floor {
+  size 20 20
+  tileSize 1 1
+  appearance PBRAppearance {
+    baseColor 0.25 0.55 0.20
+    roughness 1.0
+    metalness 0
+  }
+}
+
+# A static obstacle on the (+x, +y) side of the lawn so the controller
+# has something to skirt during coverage runs.
+Solid {
+  translation 3.0 1.5 0.25
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.7 0.2 0.2
+        roughness 1
+        metalness 0
+      }
+      geometry Box { size 0.5 0.5 0.5 }
+    }
+  ]
+  name "test_obstacle"
+  boundingObject Box { size 0.5 0.5 0.5 }
+}
+
+# Mowgli robot — instantiated from the local PROTO. Wheel-bottom is at
+# robot frame z=0, so the world translation places the chassis at z=0
+# (wheels resting on the floor; the PROTO lifts the chassis visual
+# +0.10 m above the wheel axis).
+#
+# Sensor placements in the extensionSlot mirror the static TF tree
+# published by robot_state_publisher from urdf_webots/mowgli_webots.urdf.
+# The slot is itself lifted +0.10 m by the PROTO so a sensor at slot
+# (x, y, z) ends up at robot frame (x, y, 0.10 + z).
+MowgliMower {
+  translation 0 0 0
+  rotation 0 0 1 0
+  name "MowgliMower"
+  controller "<extern>"
+  controllerArgs [ "" ]
+  # Phase 2.2: supervisor mode is required so the kinematic_drive plugin
+  # (loaded by webots_ros2_driver — see urdf_webots/mowgli_webots.urdf)
+  # can call Supervisor.getSelf() and write the translation + rotation
+  # fields to teleport the body each tick from the integrated /cmd_vel.
+  supervisor TRUE
+  extensionSlot [
+    # IMU trio (mounted on chassis top).
+    InertialUnit { name "inertial_unit" }
+    Gyro { name "gyro" }
+    Accelerometer { name "accelerometer" }
+
+    # GPS antenna at +30 cm forward of base_link, sitting on the
+    # chassis top (slot z=0 ⇒ world z=0.283 after PROTO slot lift).
+    GPS {
+      translation 0.30 0 0.0
+      name "gps"
+    }
+
+    # 360° 2D LiDAR centred on base_link (lidar_x=0, lidar_y=0.024).
+    # Slot is at world z=0.283 (chassis top), so slot z=0.20 ⇒ world
+    # z=0.483 — 20 cm above chassis top. Bumped from 10 cm because at
+    # 10 cm clearance Webots' LiDAR was emitting ~80 returns at
+    # ~0.18 m radius (chassis edge), tripping collision_monitor's
+    # PolygonStop and freezing the robot. 20 cm is well clear.
+    # URDF-side rotation rpy="0 0 3.1408" composes with the rotation
+    # here so net lidar_link yaw = 0 in base_link, matching the
+    # production back-to-front cable mount.
+    Lidar {
+      translation 0 0.024 0.20
+      rotation 0 0 1 3.1408
+      name "lidar"
+      horizontalResolution 720
+      fieldOfView 6.2832
+      numberOfLayers 1
+      near 0.05
+      minRange 0.10
+      maxRange 12.0
+      defaultFrequency 10
+    }
+  ]
+}

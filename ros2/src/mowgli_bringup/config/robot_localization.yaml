@@ -43,6 +43,14 @@ ekf_odom_node:
     frequency: 25.0
     sensor_timeout: 0.5
     two_d_mode: true            # forces Z=0, roll=0, pitch=0
+    # transform_time_offset = 0.0 is the HARDWARE-correct default.
+    # sim_full_system.launch.py overrides to 0.1 because under
+    # sim_time, Nav2 lookups can fall 1-3 ms past the latest publish
+    # and tf2 raises ExtrapolationException, freezing controller_server.
+    # On real hardware, 100 ms of forward extrapolation costs ~5° of
+    # yaw error per pivot at 0.5 rad/s — visible on Foxglove and
+    # pushed into FTC's heading PID. Override key (set by
+    # navigation.launch.py): ekf_transform_time_offset.
     transform_time_offset: 0.0
     transform_timeout: 0.1
     print_diagnostics: false
@@ -129,9 +137,21 @@ ekf_odom_node:
 # Inputs: same as ekf_odom PLUS /odometry/gps. Publishes map → odom TF.
 ekf_map_node:
   ros__parameters:
-    frequency: 10.0
+    # 25 Hz so map→odom TF refresh is faster than the LiDAR scan rate
+    # (10 Hz). At 10 Hz EKF, the worst-case TF lag at scan time was
+    # ~50 ms = 0.4 rad/s × 0.05 s = 1.1° of yaw error → visible LiDAR
+    # point drift between consecutive scans during turns.
+    frequency: 25.0
     sensor_timeout: 0.5
     two_d_mode: true
+    # transform_time_offset = 0.0 is the HARDWARE-correct default.
+    # sim_full_system.launch.py overrides to 0.1 because under
+    # sim_time, Nav2 lookups can fall 1-3 ms past the latest publish
+    # and tf2 raises ExtrapolationException, freezing controller_server.
+    # On real hardware, 100 ms of forward extrapolation costs ~5° of
+    # yaw error per pivot at 0.5 rad/s — visible on Foxglove and
+    # pushed into FTC's heading PID. Override key (set by
+    # navigation.launch.py): ekf_transform_time_offset.
     transform_time_offset: 0.0
     transform_timeout: 0.1
     print_diagnostics: false

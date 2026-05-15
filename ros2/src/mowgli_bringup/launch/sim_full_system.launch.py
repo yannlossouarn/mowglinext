@@ -17,18 +17,29 @@
 """
 sim_full_system.launch.py
 
-Simulation full system launch for the Mowgli robot mower.
+Simulation full-system launch for the Mowgli robot mower (Webots backend).
 
-Combines the Gazebo simulation environment with the full navigation and
+Combines the Webots simulation environment with the full navigation and
 behavior stack, using simulated time throughout.
 
 Brings up:
-  1. mowgli_simulation/launch/simulation.launch.py — Gazebo world + spawned robot
-  2. navigation.launch.py                          — robot_localization (dual EKF), Nav2
-  3. Behavior tree node                             — mowgli_behavior
-  4. Map server                                     — mowgli_map
-  5. Coverage server                                — opennav_coverage
-  6. Diagnostics                                    — mowgli_monitoring
+  1. mowgli_simulation/launch/webots_minimal.launch.py — Webots world +
+     spawned robot + ros2_control diff_drive_controller.
+  2. navigation.launch.py                              — robot_localization
+     (dual EKF), Nav2.
+  3. Behavior tree node                                 — mowgli_behavior.
+  4. Map server                                         — mowgli_map.
+  5. Diagnostics                                        — mowgli_monitoring.
+  6. Foxglove bridge                                    — GUI bridge.
+  7. Simulation helpers (IMU noise, NavSat RTK status promotion, wheel slip,
+     fake hardware bridge, navsat→absolute_pose).
+
+NOTE: This file is in transition from the old Gazebo Ignition pipeline to
+Webots. Phase 1 of the Webots migration boots the simulator + diff-drive
+controller (see ``webots_minimal.launch.py``). Topic remapping for the
+Webots driver outputs (e.g. ``/wheel_odom_raw``, ``/imu``, ``/scan``,
+``/gps/fix_raw``) into the namespaces the rest of the stack expects is
+Phase 2 work — until that lands the helpers below may not see live data.
 """
 
 import os
@@ -60,14 +71,8 @@ def generate_launch_description() -> LaunchDescription:
     # ------------------------------------------------------------------
     world_arg = DeclareLaunchArgument(
         "world",
-        default_value="garden",
-        description="Gazebo world name (garden, empty_garden) or path to SDF.",
-    )
-
-    headless_arg = DeclareLaunchArgument(
-        "headless",
-        default_value="true",
-        description="Run Gazebo in headless mode (no GUI).",
+        default_value="mowgli_garden.wbt",
+        description="Webots world filename inside worlds_webots/.",
     )
 
     use_rviz_arg = DeclareLaunchArgument(
@@ -76,16 +81,34 @@ def generate_launch_description() -> LaunchDescription:
         description="Launch RViz2.",
     )
 
-    gps_degradation_arg = DeclareLaunchArgument(
-        "simulate_gps_degradation",
+    # Back-compat shim: ``headless`` was a Gazebo-era flag controlling
+    # the embedded Xvfb. Webots is launched in ``fast`` mode (no GUI
+    # window) by default via webots_minimal.launch.py, so the flag is
+    # accepted for CLI/Makefile compatibility but currently ignored.
+    headless_arg = DeclareLaunchArgument(
+        "headless",
         default_value="true",
-        description="Enable GPS degradation simulation (periodic float mode).",
+        description="(Deprecated, Gazebo-era) ignored — Webots runs in 'fast' mode with no GUI by default.",
     )
 
     use_lidar_arg = DeclareLaunchArgument(
         "use_lidar",
         default_value="true",
         description="Enable LiDAR-dependent nodes (obstacle tracker, fusion_graph scan-matching). Set to false for GPS-only.",
+    )
+
+    # Webots execution mode. ``realtime`` is the default — sim time
+    # advances at wall-clock rate (1×). Required because controller_server
+    # at 20 Hz sim time gets CPU-starved under fast mode (sim runs ~5×
+    # wall on this hardware → controller dt clamps to 0.5 s → PRE_ROTATE
+    # PID can't close large heading errors before goal_timeout). The
+    # kinematic_drive plugin handles pacing fine in either mode; the
+    # bottleneck is the Nav2 controller loop. Override with ``mode:=fast``
+    # for E2E test runtime when the timing budget allows.
+    mode_arg = DeclareLaunchArgument(
+        "mode",
+        default_value="realtime",
+        description="Webots execution mode: realtime | fast | pause.",
     )
 
     # use_fusion_graph + use_magnetometer come from
@@ -97,54 +120,34 @@ def generate_launch_description() -> LaunchDescription:
     # use_sim_time is always true in simulation — no argument needed.
     # ------------------------------------------------------------------
     world = LaunchConfiguration("world")
-    headless = LaunchConfiguration("headless")
     use_rviz = LaunchConfiguration("use_rviz")
-    simulate_gps_degradation = LaunchConfiguration("simulate_gps_degradation")
     use_lidar = LaunchConfiguration("use_lidar")
+    mode = LaunchConfiguration("mode")
 
     # ------------------------------------------------------------------
     # Config paths
     # ------------------------------------------------------------------
     behavior_params = os.path.join(behavior_dir, "config", "behavior_tree.yaml")
     map_params = os.path.join(map_dir, "config", "map_server.yaml")
-    nav2_params_file = os.path.join(bringup_dir, "config", "nav2_params.yaml")
     monitoring_params = os.path.join(monitoring_dir, "config", "diagnostics.yaml")
+
     # ------------------------------------------------------------------
-    # 1. Gazebo simulation — world + spawned robot
+    # 1. Webots simulation — world + spawned robot + diff_drive_controller
+    #    (Phase 1 slice — does not yet bring up sensor topic remaps to
+    #    /mowgli/hardware/*.)
     # ------------------------------------------------------------------
     simulation_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(simulation_dir, "launch", "simulation.launch.py")
+            os.path.join(simulation_dir, "launch", "webots_minimal.launch.py")
         ),
         launch_arguments={
             "world": world,
-            "headless": headless,
-            "use_rviz": use_rviz,
+            "use_sim_time": "true",
+            # See the comment on ``mode_arg`` above. Defaults to ``fast``
+            # which is what the E2E test commands and the human-in-the-
+            # loop iteration loop both use.
+            "mode": mode,
         }.items(),
-    )
-
-    # ------------------------------------------------------------------
-    # 1b. Topic relays: simulation topics → hardware namespace
-    #     The EKF config (localization.yaml) expects /mowgli/hardware/*
-    #     topics that come from hardware_bridge on real hardware. In sim,
-    #     the Gazebo bridge publishes /wheel_odom and /imu/data directly.
-    # ------------------------------------------------------------------
-    relay_wheel_odom = Node(
-        package="topic_tools",
-        executable="relay",
-        name="relay_wheel_odom",
-        output="screen",
-        parameters=[{"use_sim_time": True}],
-        arguments=["/wheel_odom", "/mowgli/hardware/wheel_odom"],
-    )
-
-    relay_imu = Node(
-        package="topic_tools",
-        executable="relay",
-        name="relay_imu",
-        output="screen",
-        parameters=[{"use_sim_time": True}],
-        arguments=["/imu/data", "/mowgli/hardware/imu"],
     )
 
     # ------------------------------------------------------------------
@@ -161,6 +164,22 @@ def generate_launch_description() -> LaunchDescription:
             "use_sim_time": "true",
             "use_ekf": "True",
             "use_lidar": use_lidar,
+            # cog_to_imu defaults are fine in sim now that the node
+            # self-gates the stationary anchor on |wheel_omega| (won't
+            # republish a stale forward-motion yaw while the robot is
+            # pivoting in place).
+            #
+            # Sim-only TF / cadence overrides. Hardware defaults
+            # (declared in navigation.launch.py / fusion_graph.launch.py)
+            # are 0.0 forward-stamp + 25 Hz factor-graph because the
+            # 100 ms lead costs ~5° yaw error per pivot at 0.5 rad/s on
+            # real hardware. Under sim_time, the publish/lookup phase
+            # offset routinely throws ExtrapolationException without the
+            # lead, and the controller queries align poorly with the
+            # 25 Hz TF cadence — restore the sim-tested values here.
+            "ekf_transform_time_offset": "0.1",
+            "fusion_graph_tf_lead_s": "0.1",
+            "fusion_graph_node_period_s": "0.02",
         }.items(),
     )
 
@@ -189,6 +208,19 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             map_params,
             {"use_sim_time": True},
+            # Inject the simulation test field. The default map_server.yaml
+            # ships with empty area_* arrays so a fresh real-robot install
+            # never tries to mow a phantom polygon at the GPS datum (see
+            # commit history for BLOCKER #1). The sim needs a polygon to
+            # exercise coverage, so override here. 9×6 m rectangle, no
+            # pre-defined obstacles — runtime obstacle tracker handles
+            # whatever appears in the world file.
+            {
+                "area_names": ["main_mow"],
+                "area_polygons": ["-7.0,-3.0;2.0,-3.0;2.0,3.0;-7.0,3.0"],
+                "area_is_navigation": [False],
+                "area_obstacles": [""],
+            },
         ],
     )
 
@@ -207,7 +239,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 7. Foxglove Bridge — binary WebSocket bridge for Foxglove Studio
+    # 6. Foxglove Bridge — binary WebSocket bridge for Foxglove Studio
     #    Connect via: ws://localhost:8765 (Foxglove WebSocket protocol)
     # ------------------------------------------------------------------
     foxglove_bridge_node = Node(
@@ -232,7 +264,7 @@ def generate_launch_description() -> LaunchDescription:
     # lifecycle conflicts.
 
     # ------------------------------------------------------------------
-    # 8. Obstacle tracker — persistent LiDAR obstacle detection
+    # 7. Obstacle tracker — persistent LiDAR obstacle detection
     # ------------------------------------------------------------------
     obstacle_tracker_params = os.path.join(map_dir, "config", "obstacle_tracker.yaml")
 
@@ -249,17 +281,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 9. GPS notes
-    #    navsat_transform_node takes /gps/fix (NavSatFix) directly from Gazebo.
-    #    navsat_to_pose_node is no longer needed.
-    #    GPS degradation simulator needs rewriting to intercept NavSatFix
-    #    instead of PoseWithCovarianceStamped — disabled for now.
-    # TODO: rewrite gps_degradation_sim_node to modify NavSatFix messages
-    #       (inflate covariance, inject position drift on /gps/fix).
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # 10. Fake hardware bridge — stub services/topics for simulation
+    # 8. Fake hardware bridge — stub services/topics for simulation
     # ------------------------------------------------------------------
     fake_hardware_bridge_node = Node(
         package="mowgli_simulation",
@@ -270,13 +292,12 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 11. Sim NavSat RTK status promoter
-    #     Gazebo emits NavSatFix with STATUS_FIX (0); production code
-    #     (navsat_to_absolute_pose_node) requires
-    #     STATUS_GBAS_FIX (2) for the GPS path. The ros_gz_bridge now publishes Gazebo's
-    #     output on /gps/fix_raw; this relay rewrites status -> GBAS_FIX
-    #     and republishes on /gps/fix with a realistic RTK-Fixed
-    #     covariance (sigma ~3 mm).
+    # 9. Sim NavSat RTK status promoter
+    #     Production code (navsat_to_absolute_pose_node) requires
+    #     STATUS_GBAS_FIX (2) for the GPS path. The sim GPS source
+    #     publishes on /gps/fix_raw with default STATUS_FIX (0); this
+    #     relay rewrites status -> GBAS_FIX and republishes on /gps/fix
+    #     with a realistic RTK-Fixed covariance (sigma ~3 mm).
     # ------------------------------------------------------------------
     sim_navsat_rtk_fix_node = Node(
         package="mowgli_simulation",
@@ -290,23 +311,28 @@ def generate_launch_description() -> LaunchDescription:
                 "output_topic": "/gps/fix",
                 # Realistic mowing scenario: 90 s RTK-Fixed (open sky),
                 # 30 s RTK-Float (light tree cover), 10 s no-fix (dense
-                # canopy / multipath). Set to "" for always-FIXED.
-                "quality_pattern": "90,RTK_FIXED;30,RTK_FLOAT;10,NO_FIX",
+                # canopy / multipath). Empty pattern → always RTK_FIXED
+                # (σ=3 mm, no Python noise injection — sensor only sees
+                # the simulator GPS plugin's intrinsic ~2 cm noise). Bias
+                # disabled while debugging fusion_graph; restore the
+                # cycle pattern once the baseline is clean.
+                "quality_pattern": "",
                 "noise_seed": 42,
             }
         ],
     )
 
     # ------------------------------------------------------------------
-    # 11.5 NavSat -> AbsolutePose converter (production node, but full_system
-    #      .launch.py launches it directly rather than via navigation.launch.py
-    #      so the sim path needs its own copy). Reads /gps/fix and publishes
-    #      /gps/pose_cov (PoseWithCovarianceStamped in map frame) which
-    #      ekf_map_node fuses as pose0. Without this, no GPS reaches the EKF
-    #      in sim and the BT cannot transition out of IDLE.
+    # 10. NavSat -> AbsolutePose converter (production node, but
+    #     full_system.launch.py launches it directly rather than via
+    #     navigation.launch.py so the sim path needs its own copy).
+    #     Reads /gps/fix and publishes /gps/pose_cov
+    #     (PoseWithCovarianceStamped in map frame) which ekf_map_node
+    #     fuses as pose0. Without this, no GPS reaches the EKF in sim
+    #     and the BT cannot transition out of IDLE.
     #
-    #      Datum matches garden.sdf <spherical_coordinates>; if you change
-    #      the sim world's lat/lon, change these too.
+    #     Datum matches the simulator world; if you change the sim
+    #     world's lat/lon, change these too.
     # ------------------------------------------------------------------
     sim_localization_params = os.path.join(
         bringup_dir, "config", "robot_localization.yaml"
@@ -327,11 +353,65 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 12. Sim IMU noise injector
-    #     Adds gyro/accel bias-random-walk + white noise to Gazebo's
-    #     perfect IMU stream (/imu/data_gz from bridge) and republishes
-    #     on /imu/data with realistic MEMS noise. Set all *_white_std and
-    #     *_walk_std parameters to 0 for a noiseless A/B baseline.
+    # 11. twist_mux
+    #
+    # In production, mowgli.launch.py runs twist_mux with output remapped
+    # to /cmd_vel (TwistStamped) directly into hardware_bridge. The sim
+    # path skips mowgli.launch.py and the Webots diff_drive_controller
+    # consumes TwistStamped natively (use_stamped_vel: true), so the
+    # mux output goes straight to /cmd_vel.
+    # ------------------------------------------------------------------
+    twist_mux_params = os.path.join(bringup_dir, "config", "twist_mux.yaml")
+    twist_mux_node = Node(
+        package="twist_mux",
+        executable="twist_mux",
+        name="twist_mux",
+        output="screen",
+        parameters=[
+            twist_mux_params,
+            {"use_sim_time": True},
+        ],
+        remappings=[("cmd_vel_out", "/cmd_vel")],
+    )
+
+    # ------------------------------------------------------------------
+    # 12. Sim wheel-odom adapter — relays /wheel_odom_raw → /wheel_odom
+    #     and stamps the production-grade twist covariance that the real
+    #     hardware_bridge_node sets (vy variance = 1e-4 enforces the
+    #     non-holonomic constraint, vx σ ≈ 0.1 m/s, wz σ ≈ 0.03 rad/s).
+    #     The sim diff-drive controller publishes default zero
+    #     covariance, which lets GPS lateral noise leak into the EKF as
+    #     apparent sideways drift and broke strip tracking in sim runs
+    #     (boundary violations, COVERAGE_FAILED loops). Also injects
+    #     modest periodic slip events so EKF/fusion_graph see realistic
+    #     encoder/GPS divergence.
+    # ------------------------------------------------------------------
+    sim_wheel_slip_node = Node(
+        package="mowgli_simulation",
+        executable="sim_wheel_slip.py",
+        name="sim_wheel_slip",
+        output="screen",
+        parameters=[
+            {
+                "use_sim_time": True,
+                "input_topic": "/wheel_odom_raw",
+                "output_topic": "/wheel_odom",
+                "slip_period_s": 30.0,
+                "slip_duration_s": 1.0,
+                # Bias temporarily zeroed for fusion_graph debugging —
+                # we want to isolate algorithm behaviour from sensor
+                # noise. Reset to 0.05 once the baseline is clean.
+                "slip_vx_bias": 0.0,
+            }
+        ],
+    )
+
+    # ------------------------------------------------------------------
+    # 13. Sim IMU noise injector
+    #     Adds gyro/accel bias-random-walk + white noise to the
+    #     simulator's perfect IMU stream and republishes on /imu/data
+    #     with realistic MEMS noise. Set all *_white_std and *_walk_std
+    #     parameters to 0 for a noiseless A/B baseline.
     # ------------------------------------------------------------------
     sim_imu_noise_node = Node(
         package="mowgli_simulation",
@@ -341,16 +421,37 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             {
                 "use_sim_time": True,
-                "input_topic": "/imu/data_gz",
+                # Webots IMU plugin (Ros2IMU in mowgli_webots.urdf) emits
+                # /imu/data_sim. The previous /imu/data_raw matched the
+                # Gazebo-era topic name and silently produced nothing in
+                # Webots — robot_localization saw zero IMU input and the
+                # map→odom TF never converged.
+                "input_topic": "/imu/data_sim",
                 "output_topic": "/imu/data",
-                # MPU-9250 / LIS6DSL-class MEMS defaults.
-                "gyro_white_std": 0.005,
-                "gyro_bias_walk_std": 1.0e-4,
-                "gyro_bias_init_std": 1.0e-3,
-                "accel_white_std": 0.05,
-                "accel_bias_walk_std": 1.0e-3,
-                "accel_bias_init_std": 0.05,
+                # All bias + white noise temporarily zeroed for
+                # fusion_graph debugging — gives a perfect-sensor sim so
+                # we can isolate algorithm behaviour from sensor noise.
+                # Restore the MPU-9250 / LIS6DSL defaults once the
+                # baseline is clean (gyro_white_std=0.005, walk=1e-4,
+                # init=1e-3; accel_white_std=0.05, walk=1e-3,
+                # init=0.05).
+                "gyro_white_std": 0.0,
+                "gyro_bias_walk_std": 0.0,
+                "gyro_bias_init_std": 0.0,
+                "accel_white_std": 0.0,
+                "accel_bias_walk_std": 0.0,
+                "accel_bias_init_std": 0.0,
                 "noise_seed": 42,
+                # Perfect-IMU sim mode: bypass Webots gyro/accel entirely
+                # and synthesize from /cmd_vel. The Webots IMU is gyro-
+                # noisy by construction (ODE physics leaks angular drift
+                # between kinematic-drive teleport ticks → ~0.03 rad/s
+                # phantom yaw rate even when stationary, which the EKF
+                # accumulates into a 5°/s map-yaw drift). Setting
+                # white/walk noise to 0 was not enough because that
+                # noise comes from /imu/data_sim, not from this node.
+                "synthesize_from_cmd_vel": True,
+                "cmd_vel_topic": "/cmd_vel",
             }
         ],
     )
@@ -362,13 +463,10 @@ def generate_launch_description() -> LaunchDescription:
         [
             # Arguments
             world_arg,
-            headless_arg,
             use_rviz_arg,
-            gps_degradation_arg,
+            headless_arg,
             use_lidar_arg,
-            # Topic relays (sim → hardware namespace)
-            relay_wheel_odom,
-            relay_imu,
+            mode_arg,
             # Subsystem includes
             simulation_launch,
             navigation_launch,
@@ -376,6 +474,8 @@ def generate_launch_description() -> LaunchDescription:
             fake_hardware_bridge_node,
             sim_navsat_rtk_fix_node,
             navsat_converter_node,
+            twist_mux_node,
+            sim_wheel_slip_node,
             sim_imu_noise_node,
             behavior_tree_node,
             map_server_node,

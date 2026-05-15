@@ -23,10 +23,12 @@ import {useMapBearing} from "./map/hooks/useMapBearing.ts";
 import {useManualMode} from "./map/hooks/useManualMode.ts";
 import {useMapEditing} from "./map/hooks/useMapEditing.ts";
 import {useMapStreams} from "./map/hooks/useMapStreams.ts";
-import {useMapFiles} from "./map/hooks/useMapFiles.ts";
+import {useMapFiles, type ImportOpenMowerSummary} from "./map/hooks/useMapFiles.ts";
+import {ImportOpenMowerModal} from "./map/components/ImportOpenMowerModal.tsx";
 import {NewAreaModal} from "./map/components/NewAreaModal.tsx";
 import {EditAreaModal} from "./map/components/EditAreaModal.tsx";
 import {AreasListPanel} from "./map/components/AreasListPanel.tsx";
+import {TrackedObstaclesPanel} from "./map/components/TrackedObstaclesPanel.tsx";
 import {MapOffsetPanel} from "./map/components/MapOffsetPanel.tsx";
 import {MapToolbar} from "./map/components/MapToolbar.tsx";
 import {MapToolbarMobile} from "./map/components/MapToolbarMobile.tsx";
@@ -54,6 +56,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const [editMap, setEditMap] = useState<boolean>(false)
     const [features, setFeatures] = useState<Record<string, MowingFeature>>({});
     const [dockPlacementMode, setDockPlacementMode] = useState<boolean>(false);
+    // OpenMower import preview — populated by handleImportOpenMower after
+    // the file is uploaded + parsed server-side. Modal renders when set.
+    const [importPreview, setImportPreview] = useState<ImportOpenMowerSummary | null>(null);
     // Track whether the user actually moved the dock during this edit
     // session. The dock feature is rebuilt from the live /map topic on
     // every render, and saving without this flag would clobber the
@@ -133,7 +138,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
 
     const [mowingAreas, setMowingAreas] = useState<{ key: string, label: string, feat: Feature }[]>([])
 
-    const {map, setMap, path, plan, lidarCollection, coverageCellsImage, highLevelStatus, joyStream} = useMapStreams({
+    const {map, setMap, path, plan, lidarCollection, coverageCellsImage, highLevelStatus, joyStream, dynamicObstacles} = useMapStreams({
         editMap,
         settings,
         offsetX,
@@ -251,6 +256,77 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         }))
     }, [features]);
 
+    // For each tracked obstacle (transient /obstacle_tracker/obstacles
+    // observation), figure out which mowing area's polygon contains its
+    // centroid. The result is the area_index map_server expects when we
+    // promote the obstacle — the position of the matching area in
+    // map_server's areas_ vector. Workareas are written first (per
+    // useMapFiles.ts), then navigation areas; obstacles only attach to
+    // workareas, so the index is the workarea's own ordinal in mowing_order.
+    // Returns null when no workarea contains the centroid → promote button
+    // is disabled because we'd have nowhere to attach it.
+    const obstacleAreaIndex = useMemo(() => {
+        const result: Record<number, number | null> = {};
+        const workareas = Object.values(features)
+            .filter((f): f is MowingAreaFeature => f instanceof MowingAreaFeature)
+            .sort((a, b) => (a.getMowingOrder() ?? 9999) - (b.getMowingOrder() ?? 9999));
+        for (const obs of dynamicObstacles) {
+            const id = obs.id ?? 0;
+            // Compute centroid of the obstacle polygon in ROS coords. The
+            // tracker publishes points in ROS map frame (x/y metres).
+            const pts = obs.polygon?.points ?? [];
+            if (pts.length < 3) {
+                result[id] = null;
+                continue;
+            }
+            let cxRos = 0;
+            let cyRos = 0;
+            for (const p of pts) {
+                cxRos += p.x ?? 0;
+                cyRos += p.y ?? 0;
+            }
+            cxRos /= pts.length;
+            cyRos /= pts.length;
+            // Transpose to lng/lat so we can use the GeoJSON polygons.
+            const [cLon, cLat] = transpose(offsetX, offsetY, datum, cyRos, cxRos);
+            // Find the first workarea whose polygon contains the centroid.
+            // Manual ray-casting (point-in-polygon) — avoids pulling in
+            // turf-boolean-point-in-polygon for one call.
+            let matchedIdx: number | null = null;
+            for (let i = 0; i < workareas.length; ++i) {
+                const ring = workareas[i].geometry.coordinates[0] ?? [];
+                let inside = false;
+                for (let j = 0, k = ring.length - 1; j < ring.length; k = j++) {
+                    const xj = ring[j][0];
+                    const yj = ring[j][1];
+                    const xk = ring[k][0];
+                    const yk = ring[k][1];
+                    const intersect =
+                        (yj > cLat) !== (yk > cLat) &&
+                        cLon < ((xk - xj) * (cLat - yj)) / (yk - yj + 1e-12) + xj;
+                    if (intersect) inside = !inside;
+                }
+                if (inside) {
+                    matchedIdx = i;
+                    break;
+                }
+            }
+            result[id] = matchedIdx;
+        }
+        return result;
+    }, [dynamicObstacles, features, offsetX, offsetY, datum]);
+
+    const obstacleAreaNames = useMemo(() => {
+        const names: Record<number, string> = {};
+        const workareas = Object.values(features)
+            .filter((f): f is MowingAreaFeature => f instanceof MowingAreaFeature)
+            .sort((a, b) => (a.getMowingOrder() ?? 9999) - (b.getMowingOrder() ?? 9999));
+        for (let i = 0; i < workareas.length; ++i) {
+            names[i] = workareas[i].getLabel();
+        }
+        return names;
+    }, [features]);
+
     // Build the areas list for the sidebar panel
     const areasList = useMemo(() => {
         const polygons = Object.values(features).filter(
@@ -348,6 +424,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         handleRestoreMap,
         handleDownloadGeoJSON,
         handleUploadGeoJSON,
+        handleImportOpenMower,
     } = useMapFiles({
         features,
         setFeatures,
@@ -384,6 +461,17 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         setHasUnsavedChanges(true);
         setDockDirty(true);
     }, [dockPlacementMode, setHasUnsavedChanges]);
+
+    // Belt-and-suspenders: any time dockDirty flips to true, ensure
+    // hasUnsavedChanges is also true so the Save Map button glows. The
+    // inline setHasUnsavedChanges(true) above + the useMapEditHistory
+    // features-watcher should already cover this, but a stale closure
+    // or a state-batching race used to leave the dock-only case where
+    // the user pinned a new dock pose but the save toolbar stayed
+    // calm. This effect makes the dirty signal sticky.
+    useEffect(() => {
+        if (dockDirty) setHasUnsavedChanges(true);
+    }, [dockDirty, setHasUnsavedChanges]);
 
     // Mower action callbacks shared between desktop and mobile toolbars
     const mowerActions = useMemo(() => ({
@@ -762,6 +850,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onRestoreMap={handleRestoreMap}
                         onDownloadGeoJSON={handleDownloadGeoJSON}
                         onUploadGeoJSON={handleUploadGeoJSON}
+                        onImportOpenMower={() => handleImportOpenMower(setImportPreview)}
                         onMowArea={(key) => {
                             const item = mowingAreas.find(item => item.key == key)
                             return mowerAction("start_in_area", {
@@ -812,6 +901,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             onBackupMap={handleBackupMap}
                             onRestoreMap={handleRestoreMap}
                             onDownloadGeoJSON={handleDownloadGeoJSON}
+                            onImportOpenMower={() => handleImportOpenMower(setImportPreview)}
                             onMowArea={(key) => {
                                 const item = mowingAreas.find(item => item.key == key)
                                 return mowerAction("start_in_area", {
@@ -831,6 +921,15 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             onReorder={editMap ? handleReorder : undefined}
                             selectedId={editMap ? selectedFeatureIds[0] : undefined}
                         />
+                        {dynamicObstacles.length > 0 && (
+                            <div style={{borderTop: `1px solid ${colors.borderSubtle}`}}>
+                                <TrackedObstaclesPanel
+                                    obstacles={dynamicObstacles}
+                                    obstacleAreaIndex={obstacleAreaIndex}
+                                    areaNames={obstacleAreaNames}
+                                />
+                            </div>
+                        )}
                         <div style={{borderTop: `1px solid ${colors.borderSubtle}`, padding: 8}}>
                             <MapOffsetPanel
                                 offsetX={offsetX}
@@ -844,6 +943,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     </div>
                 )}
             </div>
+            <ImportOpenMowerModal
+                preview={importPreview}
+                onClose={() => setImportPreview(null)}
+            />
         </div>
     );
 }

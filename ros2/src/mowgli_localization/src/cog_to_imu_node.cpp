@@ -14,6 +14,7 @@
 // implementation 1:1.
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -86,11 +87,38 @@ public:
   {
     // ── Sample-pair gating thresholds ────────────────────────────────
     min_abs_wheel_ = declare_parameter<double>("min_abs_wheel_ms", 0.05);
+    // Upper bound on |ω| where the constant-rate approximation we use to
+    // unbias the COG (mid-baseline drift + lever-arm tangential velocity)
+    // still holds. Above this we hard-reject because the integrated
+    // antenna path deviates non-linearly from R(ψ)·[v, ω·r] and our
+    // variance model under-states the residual error. Below this, COG
+    // *is* published during turns — the lever-arm + drift biases are
+    // subtracted analytically and σ_yaw is inflated by their respective
+    // ω-noise sensitivities, so a tight headland turn naturally yields
+    // a high-σ measurement that ekf_map / fusion_graph down-weight.
+    // 0.50 rad/s ≈ 29°/s lets gentle corrections through and rejects
+    // full PRE_ROTATE pivots (typ. 0.6 rad/s).
+    min_omega_for_anchor_ = declare_parameter<double>("min_omega_for_anchor_rps", 0.50);
+    // Number of consecutive non-rotating GPS samples required before we
+    // start accumulating a new baseline after a pivot ends. 2 samples
+    // at 5 Hz GPS ≈ 400 ms of confirmed straight motion before COG
+    // becomes a valid heading estimate again.
+    rotation_quiet_min_samples_ = declare_parameter<int>("rotation_quiet_min_samples", 2);
     max_pos_accuracy_ = declare_parameter<double>("max_pos_accuracy_m", 0.05);
     min_dt_ = declare_parameter<double>("min_sample_dt_s", 0.05);
     max_dt_ = declare_parameter<double>("max_sample_dt_s", 0.50);
     max_yaw_var_ = declare_parameter<double>("max_yaw_variance", 3.0);
     min_yaw_var_ = declare_parameter<double>("min_yaw_variance", 7.6e-5);
+
+    // Multi-sample baseline accumulator: don't publish a COG yaw until
+    // the robot has travelled this distance since the anchor sample.
+    // Per-pair F9P fixes at 8 Hz / 0.20 m/s yield ~25 mm displacement
+    // and σ_yaw ≈ 18°, which floods fusion_graph with near-useless yaws
+    // that the optimizer must integrate over many nodes before it
+    // converges. Accumulating to e.g. 0.10 m gives σ_yaw ≈ 5° per
+    // publish, so a single COG correction is enough to pull the graph.
+    min_baseline_displacement_m_ =
+        declare_parameter<double>("min_baseline_displacement_m", 0.10);
 
     // ── Stationary yaw latch ────────────────────────────────────────
     stationary_seed_rate_hz_ = declare_parameter<double>("stationary_seed_rate_hz", 2.0);
@@ -102,6 +130,23 @@ public:
     datum_lon_ = declare_parameter<double>("datum_lon", 0.0);
     datum_seeded_ = (datum_lat_ != 0.0 || datum_lon_ != 0.0);
     cos_datum_lat_ = std::cos(datum_lat_ * kDegToRad);
+
+    // GPS antenna lever arm in base_link frame. Default matches the
+    // YardForce 500 mount (gps_x=0.30 m in mowgli_robot.yaml) but is
+    // expected to be overridden by the launch file from the same
+    // source navsat_to_absolute_pose_node and fusion_graph read.
+    // During a turn the antenna's velocity is v_body + ω × r_lever,
+    // so atan2(dy, dx) ≠ ψ_body. We subtract atan2(ω·rx − ω·0, |v|)
+    // (≈ ω·rx/|v| for small angles, exact for any angle via atan2)
+    // from the raw COG to recover the body heading.
+    lever_arm_x_ = declare_parameter<double>("lever_arm_x", 0.30);
+    lever_arm_y_ = declare_parameter<double>("lever_arm_y", 0.0);
+    // 1-σ noise on the ω used for bias correction. Covers both gyro
+    // sensor noise (~0.02 rad/s) and the "constant ω across the
+    // baseline" approximation we make by using the latest sample as a
+    // proxy for the time-averaged rate. Feeds the σ_yaw inflation for
+    // both the lever-arm and the mid-baseline drift corrections.
+    omega_noise_rps_ = declare_parameter<double>("omega_noise_rps", 0.10);
 
     // ── Online mag calibration parameters ───────────────────────────
     enable_mag_cal_ = declare_parameter<bool>("enable_mag_cal", true);
@@ -126,6 +171,17 @@ public:
         [this](nav_msgs::msg::Odometry::ConstSharedPtr msg)
         {
           on_wheel(*msg);
+        });
+    // Subscribe to /imu/data for the gyro_z rotation gate. At 100 Hz the
+    // IMU sees the start of a pivot ~20 ms before /wheel_odom (50 Hz)
+    // does, which is exactly the window in which a stale on_fix would
+    // otherwise publish a wrong COG yaw.
+    imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
+        "/imu/data",
+        qos,
+        [this](sensor_msgs::msg::Imu::ConstSharedPtr msg)
+        {
+          gyro_z_ = msg->angular_velocity.z;
         });
     pub_ = create_publisher<sensor_msgs::msg::Imu>("/imu/cog_heading", qos);
 
@@ -161,16 +217,27 @@ public:
     }
 
     RCLCPP_INFO(get_logger(),
-                "cog_to_imu started — publish /imu/cog_heading on every "
-                "RTK-Fixed sample with |wheel_vx| > %.2f m/s (forward + "
-                "reverse, adaptive covariance, no hard speed gate)",
-                min_abs_wheel_);
+                "cog_to_imu started — publish /imu/cog_heading once the "
+                "RTK-Fixed baseline accumulates %.3f m at |wheel_vx| > "
+                "%.2f m/s. Turns up to |ω| = %.2f rad/s are accepted; "
+                "the antenna lever-arm (r=[%+.2f, %+.2f] m) and the "
+                "mid-baseline yaw drift are subtracted from the raw COG "
+                "and σ_yaw is inflated by their ω-noise sensitivities "
+                "(σ_ω=%.2f rad/s) so headland turns surface as high-σ "
+                "measurements rather than biased ones.",
+                min_baseline_displacement_m_,
+                min_abs_wheel_,
+                min_omega_for_anchor_,
+                lever_arm_x_,
+                lever_arm_y_,
+                omega_noise_rps_);
   }
 
 private:
   void on_wheel(const nav_msgs::msg::Odometry& msg)
   {
     wheel_vx_ = msg.twist.twist.linear.x;
+    wheel_omega_ = msg.twist.twist.angular.z;
   }
 
   void on_mag_raw(const sensor_msgs::msg::MagneticField& msg)
@@ -225,73 +292,180 @@ private:
                      static_cast<double>(msg.header.stamp.nanosec) * 1e-9;
     pos_acc = std::max(pos_acc, 0.002);
 
-    if (!have_prev_)
+    // Sample-to-sample dt sanity. A long gap means we lost lock or paused;
+    // the anchor's age would inflate σ_pos and the wheel direction may
+    // have flipped silently — drop the anchor and restart accumulation.
+    if (have_last_sample_)
     {
-      prev_t_ = t;
-      prev_x_ = x;
-      prev_y_ = y;
-      prev_pa_ = pos_acc;
-      have_prev_ = true;
-      return;
-    }
-
-    const double dt = t - prev_t_;
-    if (dt < min_dt_ || dt > max_dt_)
-    {
-      if (dt > max_dt_)
+      const double dt_sample = t - last_sample_t_;
+      if (dt_sample > max_dt_)
       {
-        prev_t_ = t;
-        prev_x_ = x;
-        prev_y_ = y;
-        prev_pa_ = pos_acc;
+        have_anchor_ = false;
+        have_last_sample_ = false;
       }
+      else if (dt_sample < min_dt_)
+      {
+        // Duplicate / out-of-order; ignore but don't disturb anchor.
+        return;
+      }
+    }
+    last_sample_t_ = t;
+    have_last_sample_ = true;
+
+    // Rotation gate. During in-place pivots (PRE_ROTATE, headland turns)
+    // the GPS antenna swings on a lever-arm arc around base_link. Each
+    // arrival sees a 1–3 cm displacement in a direction perpendicular
+    // to the current heading — atan2(dy, dx) of that displacement is
+    // 90° off, and if the anchor was seeded just before the pivot the
+    // accumulated baseline crosses min_baseline_displacement_m_ and a
+    // wrong COG yaw gets published with a very tight (min_yaw_var_)
+    // covariance, snapping the EKF map-frame yaw by tens of degrees.
+    //
+    // Watch BOTH /wheel_odom.twist.angular.z and /imu/data.gyro_z so
+    // the rejection is robust to a brief lag in the wheel encoder
+    // sample — the IMU updates at 100 Hz while wheel_odom is 50 Hz,
+    // and at the transition translation→rotation the IMU sees the
+    // pivot first. The latch also stays asserted for one extra cycle
+    // (rotation_quiet_count_ debounce) so a single low gyro sample
+    // doesn't unlatch us during the rotation.
+    const bool rotating_wheels = std::abs(wheel_omega_) >= min_omega_for_anchor_;
+    const bool rotating_imu = std::abs(gyro_z_) >= min_omega_for_anchor_;
+    if (rotating_wheels || rotating_imu)
+    {
+      rotation_quiet_count_ = 0;
+      ++rejected_rotating_;
+      have_anchor_ = false;
+      return;
+    }
+    // Require a few consecutive non-rotating samples before we trust
+    // wheel_vx_ enough to seed a new anchor. Without this, the very
+    // first GPS arrival after a pivot ends will already have a stale
+    // antenna position from the rotation tail.
+    if (rotation_quiet_count_ < rotation_quiet_min_samples_)
+    {
+      ++rotation_quiet_count_;
+      ++rejected_rotating_;
+      have_anchor_ = false;
       return;
     }
 
-    const double dx = x - prev_x_;
-    const double dy = y - prev_y_;
-    const double displacement = std::hypot(dx, dy);
-    const double pa0 = prev_pa_;
-    prev_t_ = t;
-    prev_x_ = x;
-    prev_y_ = y;
-    prev_pa_ = pos_acc;
+    // Stationary samples don't extend the baseline (GPS noise would just
+    // pollute the integrated displacement). Drop the anchor so we don't
+    // bake a stationary segment into the next yaw computation.
+    if (std::abs(wheel_vx_) < min_abs_wheel_)
+    {
+      ++rejected_stationary_;
+      have_anchor_ = false;
+      return;
+    }
 
-    if (displacement < 0.005)
+    const int wheel_sign = (wheel_vx_ >= 0.0) ? 1 : -1;
+
+    // Anchor seeding / direction-change reset.
+    if (!have_anchor_ || (anchor_wheel_sign_ != 0 && anchor_wheel_sign_ != wheel_sign))
+    {
+      anchor_t_ = t;
+      anchor_x_ = x;
+      anchor_y_ = y;
+      anchor_pa_ = pos_acc;
+      anchor_wheel_sign_ = wheel_sign;
+      have_anchor_ = true;
+      return;
+    }
+
+    const double dx = x - anchor_x_;
+    const double dy = y - anchor_y_;
+    const double displacement = std::hypot(dx, dy);
+
+    if (displacement < min_baseline_displacement_m_)
     {
       ++rejected_displacement_;
       return;
     }
 
-    if (std::abs(wheel_vx_) < min_abs_wheel_)
+    double base_yaw;
+    if (wheel_sign > 0)
     {
-      ++rejected_stationary_;
-      return;
-    }
-
-    double yaw;
-    if (wheel_vx_ >= 0.0)
-    {
-      yaw = std::atan2(dy, dx);
+      base_yaw = std::atan2(dy, dx);
       ++published_fwd_;
     }
     else
     {
-      yaw = std::atan2(-dy, -dx);
+      base_yaw = std::atan2(-dy, -dx);
       ++published_rev_;
     }
 
-    const double sigma_pos = std::hypot(pos_acc, pa0);
-    const double sigma_yaw = std::atan2(2.0 * sigma_pos, std::max(displacement, 1e-3));
-    const double yaw_var = std::max(min_yaw_var_, std::min(sigma_yaw * sigma_yaw, max_yaw_var_));
+    // ── Unbias the COG against constant-rate turning ─────────────────
+    // The antenna sits at r_lever in body frame, so its velocity is
+    //   v_ant_body = (v_x - ω·r_y, ω·r_x)
+    // and its world-frame velocity angle is
+    //   ψ_body + atan2(ω·r_x, v_x - ω·r_y)        (forward motion)
+    //   ψ_body + π - atan2(ω·r_x, |v_x| + ω·r_y)  (reverse motion)
+    // The displacement vector points along the *midpoint* yaw of the
+    // baseline (ψ_anchor + ω·dt/2), not the current yaw. Subtract both
+    // corrections to recover the heading at the current sample.
+    //
+    // Time-averaged ω is approximated by the latest gyro/wheel rate;
+    // the resulting model error is folded into σ_yaw via omega_noise_rps_.
+    const double omega_avg = 0.5 * (wheel_omega_.load() + gyro_z_.load());
+    const double dt_baseline = std::max(t - anchor_t_, 1e-3);
+    const double v_eff = std::max(std::abs(wheel_vx_.load()), min_abs_wheel_);
+
+    const double drift_corr = omega_avg * dt_baseline * 0.5;
+    // Forward:  body-x antenna velocity =  v_eff - ω·r_y
+    //           body-y antenna velocity =  ω·r_x
+    // Reverse:  body-x antenna velocity = -v_eff - ω·r_y  (still negative)
+    //           body-y antenna velocity =  ω·r_x
+    // Either way, since base_yaw was derived in the "body-forward" sense
+    // (atan2(-dy,-dx) for reverse), we apply the same forward-form bias.
+    const double lever_corr =
+        std::atan2(omega_avg * lever_arm_x_, v_eff - omega_avg * lever_arm_y_);
+
+    double yaw = base_yaw + drift_corr - lever_corr;
+    yaw = std::atan2(std::sin(yaw), std::cos(yaw));
+
+    // ── σ_yaw composition ────────────────────────────────────────────
+    // 1. Positional noise → angular noise across the baseline (existing).
+    // 2. Mid-baseline drift correction depends on ω; σ propagates as
+    //      ∂(ω·dt/2)/∂ω = dt/2.
+    // 3. Lever-arm correction:
+    //      ∂/∂ω atan2(ω·rx, v - ω·ry)
+    //        = (rx·(v - ω·ry) + ω·rx·ry) / ((v - ω·ry)² + (ω·rx)²)
+    //        ≈ rx / v_eff for small ω
+    //    Use the exact form so headland turns get a fair σ instead of
+    //    one that linearises away the dominant term.
+    const double sigma_pos = std::hypot(pos_acc, anchor_pa_);
+    const double sigma_pos_yaw = std::atan2(2.0 * sigma_pos, std::max(displacement, 1e-3));
+    const double sigma_drift = 0.5 * dt_baseline * omega_noise_rps_;
+    const double denom_lever =
+        std::pow(v_eff - omega_avg * lever_arm_y_, 2.0) + std::pow(omega_avg * lever_arm_x_, 2.0);
+    const double dlever_domega =
+        (lever_arm_x_ * (v_eff - omega_avg * lever_arm_y_) +
+         omega_avg * lever_arm_x_ * lever_arm_y_) /
+        std::max(denom_lever, 1e-6);
+    const double sigma_lever = std::abs(dlever_domega) * omega_noise_rps_;
+    const double sigma_yaw_sq = sigma_pos_yaw * sigma_pos_yaw + sigma_drift * sigma_drift +
+                                sigma_lever * sigma_lever;
+    const double yaw_var = std::max(min_yaw_var_, std::min(sigma_yaw_sq, max_yaw_var_));
+
+    // Advance the anchor to the current sample so the next baseline starts
+    // fresh — keeps each published yaw independent and bounds the temporal
+    // window over which wheel direction is assumed constant.
+    anchor_t_ = t;
+    anchor_x_ = x;
+    anchor_y_ = y;
+    anchor_pa_ = pos_acc;
+    anchor_wheel_sign_ = wheel_sign;
 
     publish_imu(now(), yaw, yaw_var);
 
     const double mono_now = static_cast<double>(get_clock()->now().nanoseconds()) * 1e-9;
     latched_yaw_ = LatchedYaw{mono_now, yaw, yaw_var};
 
-    // Online mag-cal sample collection.
-    if (enable_mag_cal_ && latest_mag_valid_ && sigma_yaw < (15.0 * kDegToRad))
+    // Online mag-cal sample collection — only fit against COG that
+    // survives the inflated-σ test (positional + drift + lever).
+    if (enable_mag_cal_ && latest_mag_valid_ &&
+        std::sqrt(sigma_yaw_sq) < (15.0 * kDegToRad))
     {
       mag_samples_.emplace_back(latest_mag_[0], latest_mag_[1], latest_mag_[2], yaw);
       while (static_cast<int>(mag_samples_.size()) > mag_max_samples_)
@@ -308,6 +482,26 @@ private:
       return;
     }
     if (std::abs(wheel_vx_) >= min_abs_wheel_)
+    {
+      return;
+    }
+    // Also skip the republish while the robot is *rotating in place*.
+    // The latched yaw is the absolute heading from the last forward
+    // motion segment — once the robot pivots, that anchor becomes
+    // stale at ω rad/s. Republishing it as a tight-covariance EKF
+    // measurement would pin the EKF's yaw against the gyro
+    // integration that's correctly tracking the rotation. Threshold
+    // 0.05 rad/s ≈ 3°/s is well above wheel-encoder noise but well
+    // below any deliberate pivot. Watch BOTH /wheel_odom and /imu —
+    // during tight FTC arcs the diff-drive wheel_odom.angular.z
+    // momentarily reports near zero (one wheel near-still) while the
+    // IMU correctly reports the body's rotation rate. Without the
+    // IMU gate, the seed slips through, dumps a +90° (stale)
+    // measurement into the EKF with min_yaw_var_ covariance, and
+    // snaps map→odom by tens of degrees — see the 153° jump at
+    // session 2026-05-11-cog-gate-boundary-debounce, t≈78.28.
+    if (std::abs(wheel_omega_) >= min_omega_for_anchor_ ||
+        std::abs(gyro_z_) >= min_omega_for_anchor_)
     {
       return;
     }
@@ -350,7 +544,7 @@ private:
   {
     RCLCPP_INFO(get_logger(),
                 "cog_to_imu stats: published fwd=%d rev=%d seed=%d, "
-                "rejected fix=%d accuracy=%d stationary=%d displacement=%d, "
+                "rejected fix=%d accuracy=%d stationary=%d rotating=%d displacement=%d, "
                 "mag_cal samples=%zu (writes=%d)",
                 published_fwd_,
                 published_rev_,
@@ -358,6 +552,7 @@ private:
                 rejected_fix_,
                 rejected_accuracy_,
                 rejected_stationary_,
+                rejected_rotating_,
                 rejected_displacement_,
                 mag_samples_.size(),
                 mag_fit_count_);
@@ -367,6 +562,7 @@ private:
     rejected_fix_ = 0;
     rejected_accuracy_ = 0;
     rejected_stationary_ = 0;
+    rejected_rotating_ = 0;
     rejected_displacement_ = 0;
   }
 
@@ -604,6 +800,7 @@ private:
 
   // ── State ─────────────────────────────────────────────────────────
   double min_abs_wheel_{};
+  double min_omega_for_anchor_{};
   double max_pos_accuracy_{};
   double min_dt_{}, max_dt_{};
   double max_yaw_var_{}, min_yaw_var_{};
@@ -615,6 +812,10 @@ private:
   bool datum_seeded_{false};
   double cos_datum_lat_{1.0};
 
+  double lever_arm_x_{0.30};
+  double lever_arm_y_{0.0};
+  double omega_noise_rps_{0.10};
+
   bool enable_mag_cal_{true};
   std::string mag_cal_path_;
   int mag_min_samples_{};
@@ -624,13 +825,44 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr fix_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr wheel_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<sensor_msgs::msg::MagneticField>::SharedPtr mag_sub_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_;
   rclcpp::TimerBase::SharedPtr stats_timer_, stationary_timer_, mag_refit_timer_;
 
-  bool have_prev_{false};
-  double prev_t_{}, prev_x_{}, prev_y_{}, prev_pa_{};
-  double wheel_vx_{0.0};
+  // Baseline accumulator. The COG yaw is computed from the displacement
+  // between an anchor sample and the current sample once the accumulated
+  // displacement crosses min_baseline_displacement_m. The anchor advances
+  // to the current sample after each successful publish; it is reset
+  // whenever the wheel direction changes, the robot is stationary, or
+  // the gap to the previous fix exceeds max_dt_.
+  bool have_anchor_{false};
+  double anchor_t_{}, anchor_x_{}, anchor_y_{}, anchor_pa_{};
+  // Wheel sign at the anchor sample: +1 forward, -1 reverse, 0 unknown.
+  // A change in sign during the baseline invalidates the anchor.
+  int anchor_wheel_sign_{0};
+  double last_sample_t_{};
+  bool have_last_sample_{false};
+  // wheel_vx_ / wheel_omega_ are mutated from the /wheel_odom callback
+  // (50 Hz), gyro_z_ from the /imu/data callback (100 Hz). Both are
+  // read by on_fix() (GPS callback, ~5 Hz) and by
+  // republish_latched_when_stationary() (WallTimer, separate callback
+  // group). The bringup uses MultiThreadedExecutor; without atomics
+  // the read in on_fix could see a torn double from a partially
+  // written update. std::atomic<double> with sequentially-consistent
+  // ordering is a one-cycle penalty per read on x86 — negligible vs
+  // GPS sample rate.
+  std::atomic<double> wheel_vx_{0.0};
+  std::atomic<double> wheel_omega_{0.0};
+  std::atomic<double> gyro_z_{0.0};
+  // Debounce counter for the post-rotation transition: how many
+  // consecutive non-rotating samples we've seen since the last
+  // detected pivot. Reset to 0 on every rotating sample; once it
+  // reaches rotation_quiet_min_samples_, on_fix may seed an anchor
+  // and accumulate baseline again.
+  int rotation_quiet_count_{0};
+  int rotation_quiet_min_samples_{2};
+  double min_baseline_displacement_m_{};
 
   struct LatchedYaw
   {
@@ -649,6 +881,7 @@ private:
   int published_fwd_{0}, published_rev_{0};
   int rejected_stationary_{0}, rejected_accuracy_{0}, rejected_fix_{0};
   int rejected_displacement_{0};
+  int rejected_rotating_{0};
   int stationary_seeds_published_{0};
 };
 

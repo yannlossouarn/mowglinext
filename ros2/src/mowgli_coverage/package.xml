@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mowgli_coverage</name>
+  <version>0.1.0</version>
+  <description>
+    Mowgli-owned coverage planning server backed directly by Fields2Cover v2.0.
+    Implements the opennav_coverage_msgs/action/ComputeCoveragePath action so
+    the BT-side PlanCoverageArea client is unchanged. Replaces the upstream
+    opennav_coverage server (which is pinned to F2C 1.2.1).
+  </description>
+  <maintainer email="cedric@mowgli.dev">Cedric</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>rclcpp_components</depend>
+  <depend>nav2_util</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>opennav_coverage_msgs</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

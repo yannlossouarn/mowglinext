@@ -78,47 +78,50 @@ controller_server:
 
     coverage_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.5
+      # See nav2_params.yaml for the full story — anything > tool_width
+      # (0.18 m) makes FTC declare 'goal reached' on the first tick of
+      # short cell-based strips, BT loops GetNextSegment forever, robot
+      # never moves. Field-broken 2026-05-08.
+      xy_goal_tolerance: 0.10
       yaw_goal_tolerance: 6.28
       stateful: true
 
-    # RPP for transit/dock navigation, wrapped in RotationShimController
+    # FollowPath (transit) — FTCController. Mirrors nav2_params.yaml so a
+    # single controller (FTC) handles transit and coverage in both
+    # configurations. The earlier RPP+RotationShim chain was the legacy
+    # transit path, replaced by FTC-everywhere (issue #196 — RPP gone
+    # from the active stack). check_obstacles=false here because no
+    # obstacle_layer exists in the local_costmap without LiDAR (same
+    # rationale as FollowCoveragePath below); obstacle deviation is
+    # therefore disabled.
     FollowPath:
-      plugin: "nav2_rotation_shim_controller::RotationShimController"
-      primary_controller: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      # Match nav2_params.yaml — see there for full rationale on every
-      # value. The only knob that should differ between LiDAR and no-LiDAR
-      # is use_collision_detection (RPP can't check obstacles without an
-      # obstacle_layer in the local_costmap).
-      angular_dist_threshold: 1.0
-      forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.85
-      max_angular_accel: 1.0
-      desired_linear_vel: 0.2
-      lookahead_dist: 0.4
-      min_lookahead_dist: 0.35
-      max_lookahead_dist: 0.6
-      lookahead_time: 1.5
-      # 0.3 s — fresh-pose envelope. 2.0 s let RPP pursue lookahead
-      # points on 2-second-old TFs (60 cm of stale-pose error at
-      # 0.3 m/s) and showed up as left/right hunting on curves.
-      transform_tolerance: 0.3
-      use_velocity_scaled_lookahead_dist: true
-      # Above the ~0.12 m/s motor deadband.
-      min_approach_linear_velocity: 0.15
-      approach_velocity_scaling_dist: 0.6
-      # No obstacle_layer in the local_costmap → nothing to check against.
-      use_collision_detection: false
-      use_regulated_linear_velocity_scaling: true
-      use_fixed_curvature_lookahead: false
-      curvature_lookahead_dist: 0.6
-      use_cost_regulated_linear_velocity_scaling: false
-      regulated_linear_scaling_min_radius: 0.6
-      regulated_linear_scaling_min_speed: 0.15
-      use_rotate_to_heading: false
-      allow_reversing: false
-      max_angular_vel: 0.8
-      max_robot_pose_search_dist: 2.0
+      plugin: "mowgli_nav2_plugins/FTCController"
+      speed_fast: 0.20
+      speed_fast_threshold: 0.5
+      speed_fast_threshold_angle: 10.0
+      speed_slow: 0.12
+      speed_angular: 45.0
+      acceleration: 0.2
+      kp_lon: 1.0
+      ki_lon: 0.0
+      kd_lon: 0.0
+      kp_lat: 2.0
+      ki_lat: 0.0
+      # kd_lat=1.0 damps lateral oscillation from GPS-noise jitter feeding
+      # the lateral PID — same value as FollowCoveragePath / the LiDAR
+      # nav2_params.yaml.
+      kd_lat: 1.0
+      kp_ang: 1.5
+      ki_ang: 0.0
+      kd_ang: 0.0
+      max_cmd_vel_speed: 0.30
+      max_cmd_vel_ang: 0.8
+      max_goal_distance_error: 0.10
+      max_goal_angle_error: 15.0
+      goal_timeout: 10.0
+      max_follow_distance: 2.0
+      forward_only: false
+      check_obstacles: false
 
     # Follow-the-Carrot controller for coverage mowing.
     FollowCoveragePath:
@@ -454,26 +457,27 @@ collision_monitor:
       enabled: false
 
 # ---------------------------------------------------------------------------
-# Coverage server (legacy opennav_coverage config — kept for reference).
-# Cell-based strip coverage now handles mowing; no external planner needed.
+# Coverage server (mowgli_coverage / Fields2Cover v2 backend) — same as
+# nav2_params.yaml. Kept in this no-lidar variant so a no-lidar boot still
+# brings up coverage_server cleanly. operation_width is INJECTED at launch
+# from mowgli_robot.yaml.tool_width via navigation.launch.py; the value
+# below is just the node default for isolated runs / tests.
 # ---------------------------------------------------------------------------
 coverage_server:
   ros__parameters:
     use_sim_time: false
-    robot_width: 0.40
+    default_headland_width: 0.20
+    robot_width: 0.20
     operation_width: 0.18
-    min_turning_radius: 0.01
+    min_turning_radius: 0.05
     linear_curv_change: 200.0
-    default_headland_width: 0.50
-    default_headland_type: "CONSTANT"
-    default_swath_type: "LENGTH"
-    default_swath_angle_type: "SET_ANGLE"
-    default_swath_angle: 0.0
+    coordinates_in_cartesian_frame: true
     default_allow_overlap: false
+    default_swath_angle_type: "BRUTE_FORCE"
+    default_swath_type: "LENGTH"
     default_route_type: "BOUSTROPHEDON"
     default_path_type: "DUBIN"
-    default_path_continuity_type: "CONTINUOUS"
-    coordinates_in_cartesian_frame: true
+    default_path_continuity_type: "DISCONTINUOUS"
 
 lifecycle_manager_navigation:
   ros__parameters:
