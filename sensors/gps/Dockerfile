@@ -22,13 +22,19 @@
 FROM ros:kilted-ros-base AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG UBLOX_DGNSS_REF=feat/serial-transport
+ARG UBLOX_DGNSS_REF=fix/serial-reconnect-on-eio
 # Bump UBLOX_DGNSS_SHA to the current branch tip to bust the docker
 # layer cache when upstream moves. `git clone --branch` accepts only
 # branch/tag names so we clone shallow then checkout the pinned SHA;
 # the SHA also ensures cache-from doesn't reuse a stale layer when
 # the branch moves under us (which is what we hit on 2026-04-26).
-ARG UBLOX_DGNSS_SHA=d768ee4fbeaa0ddcb952298c1b8bfc07fe325995
+# Currently riding the fix/serial-reconnect-on-eio branch (PR
+# cedbossneo/ublox_dgnss#1) so the driver reopens the CDC ACM FD
+# when the F9P briefly disconnects from USB and re-enumerates on a
+# different ttyACM minor — without this we ended up stuck spamming
+# "RTCM write failed: serial write errno=5" until docker restart.
+# Switch back to feat/serial-transport once #1 lands.
+ARG UBLOX_DGNSS_SHA=80dd8db96e1e72d083a983305ef39b27fd74dd6f
 # cedbossneo fork (itself a fork of privatedocs000/ublox_dgnss). Layered
 # customisations over upstream:
 #   * privatedocs000 base — RTK-Fixed detection via UBX-NAV-STATUS.carr_soln:
