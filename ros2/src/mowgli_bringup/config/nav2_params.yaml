@@ -131,66 +131,113 @@ controller_server:
       yaw_goal_tolerance: 0.30
       plan_topic: "/controller_server/FollowCoveragePath/global_plan"
 
-    # FollowPath (transit) — FTCController. Same plugin as FollowCoveragePath
-    # since FTC handles both pivots and obstacle deviation natively.
+    # FollowPath (transit / dock approach / home / undock recovery) —
+    # MPPI. FTC was the wrong tool for transit: it has a rigid state
+    # machine (PRE_ROTATE / FOLLOWING / WAITING_FOR_GOAL_APPROACH /
+    # POST_ROTATE), rejects plans with fewer than 3 poses, and aborts
+    # the action when the lateral residual exceeds
+    # `max_goal_distance_error` even by millimeters. Combined with the
+    # firmware PWM deadband on the wheels, the result was the robot
+    # getting stuck during opennav_docking's nav-to-staging-pose phase
+    # whenever it was already near staging (the planner emits a 2-pose
+    # direct line → FTC cancels → action server retries forever).
+    #
+    # MPPI is a sampling-based predictive controller. It rolls out
+    # thousands of forward simulations per cycle through the dynamic
+    # model, scores each by a set of critics, and picks the best
+    # weighted control. Practical wins for transit on this robot:
+    #   * Accepts any plan length (including 2-pose direct lines).
+    #   * Anticipates deceleration approaching the goal — no abrupt
+    #     POST_ROTATE phase, no abort-on-residual.
+    #   * Handles obstacle avoidance via sampling around them (vs FTC's
+    #     fixed lateral-deviation cap).
+    #   * Continuous mixed (vx + wz) commands instead of FTC's discrete
+    #     state regimes — the controller naturally side-steps small
+    #     lateral residuals by combining forward + rotational motion.
+    #
+    # Caveat: MPPI emits mixed vx + wz, so the host-side pulse
+    # modulators added in PRs #221 / #223 don't fire (they gate on
+    # near-pure-rotation and near-pure-linear respectively). Mowing
+    # remains on FTCController where those patches matter; transit is
+    # MPPI's home turf.
+    #
+    # Tuning is conservative for the ARM SoC and 0.30 m/s mower
+    # envelope. batch_size=1500 keeps the per-cycle cost ≤ 8 ms;
+    # raise once we have a session on the bench to profile.
     FollowPath:
-      plugin: "mowgli_nav2_plugins/FTCController"
-      speed_fast: 0.20
-      speed_fast_threshold: 0.5
-      speed_fast_threshold_angle: 10.0
-      speed_slow: 0.12
-      speed_angular: 45.0              # deg/s — matches OpenMower ftc_local_planner
-      acceleration: 0.2
-      kp_lon: 1.0
-      ki_lon: 0.0
-      kd_lon: 0.0
-      kp_lat: 2.0
-      ki_lat: 0.0
-      kd_lat: 1.0
-      kp_ang: 1.5
-      ki_ang: 0.0
-      kd_ang: 0.0
-      max_cmd_vel_speed: 0.30
-      max_cmd_vel_ang: 0.8
-      max_goal_distance_error: 0.10
-      max_goal_angle_error: 15.0       # deg
-      goal_timeout: 10.0
-      max_follow_distance: 2.0
-      # forward_only=false: FTC may follow path segments in reverse when
-      # the carrot is behind the robot (typical at strip-end U-turns).
-      # Tried forward_only=true to fix reverse-into-obstacle (session
-      # 2026-05-11-with-obstacle) but it deadlocked in a ±180° PRE_ROTATE
-      # pirouette whenever the carrot landed near directly behind the
-      # robot — sign of the rotation error flipped every tick, cmd_wz
-      # alternated -0.8 / +0.8, robot stuck spinning (session
-      # 2026-05-11-obstacle-realtime-fwd-only at t≈815s, yaw oscillated
-      # +81°→-77°→+99° in 6s). The earlier obstacle penetration was a
-      # Webots kinematic_drive artifact (teleports through solids
-      # without collision force), not a real navigation gap that
-      # forward_only would prevent.
-      forward_only: false
-      check_obstacles: true
-      # 30 points ≈ 1.5 m of path lookahead at the F2C 0.05 m sampling.
-      # Was 5 (=25 cm) which left FTC almost no warning before it had to
-      # deviate; the robot would graze obstacles with 5–10 cm offsets
-      # instead of properly skirting them. 1.5 m gives ~7 s of reaction
-      # time at the 0.20 m/s mowing speed.
-      obstacle_lookahead: 30
-      obstacle_footprint: true
-      # Obstacle deviation: when the lookahead path crosses a lethal cell,
-      # FTC laterally offsets the carrot to skirt the obstacle instead of
-      # aborting. Tuning:
-      #   * max_lateral_deviation: hard ceiling. If the algorithm needs more
-      #     than this to find a clear path, throw ControllerException so the
-      #     BT can request a replan (next strip).
-      #   * deviation_step: increment per attempt while searching for a clear
-      #     offset. 0.05 m gives ~30 attempts to reach 1.5 m.
-      #   * deviation_blend_rate: m/s decay rate when blending back to the
-      #     original path after the obstacle clears.
-      enable_obstacle_deviation: true
-      max_lateral_deviation: 1.5
-      deviation_step: 0.05
-      deviation_blend_rate: 0.5
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 40                      # ≈ 2 s horizon at model_dt=0.05
+      model_dt: 0.05
+      batch_size: 1500                    # ARM SoC budget; nav2 default 2000
+      vx_std: 0.15
+      vy_std: 0.0                         # diff-drive, no lateral
+      wz_std: 0.35
+      vx_max: 0.30                        # transit speed cap (m/s)
+      vx_min: -0.25                       # allow brief reverse for tight maneuvers
+      wz_max: 1.0
+      ax_max: 0.6                         # gentle accel for the mower drivetrain
+      ax_min: -0.6
+      az_max: 2.0
+      iteration_count: 1
+      prune_distance: 1.5
+      transform_tolerance: 0.2            # ARM TF jitter envelope
+      temperature: 0.3
+      gamma: 0.015
+      motion_model: "DiffDrive"
+      visualize: false
+      critics: [
+        "ConstraintCritic",
+        "ObstaclesCritic",
+        "GoalCritic",
+        "GoalAngleCritic",
+        "PathFollowCritic",
+        "PathAngleCritic",
+        "PreferForwardCritic",
+      ]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.2        # m, start "go-to-goal" inside this radius
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.4        # m, align final yaw inside this radius
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+      ObstaclesCritic:
+        enabled: true
+        cost_power: 1
+        repulsion_weight: 1.5
+        critical_weight: 20.0
+        consider_footprint: false        # full footprint check is expensive; circular OK at 0.3 m/s
+        collision_cost: 10000.0
+        collision_margin_distance: 0.10
+        near_goal_distance: 0.5
+        inflation_radius: 0.55
+        cost_scaling_factor: 10.0
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.2
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.2
+        mode: 0
 
     # FollowCoveragePath — strip following. Same FTC plugin, same params as
     # FollowPath (single source of truth). The two slots exist for future
