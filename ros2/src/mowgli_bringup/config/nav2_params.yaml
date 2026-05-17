@@ -62,6 +62,17 @@ controller_server:
     # perception-to-action loop by half, useful for the FTC PID lateral
     # corrections at strip endpoints.
     controller_frequency: 20.0
+    # Top-level transform_tolerance is used by controller_server when
+    # transforming the global plan into the costmap frame (separate from
+    # each plugin's own transform_tolerance, which only covers the
+    # plugin-internal pose lookups). Nav2 default is 0.1 s, which is
+    # tighter than our 25 Hz map→odom publish gap (~40 ms) once you add
+    # ARM scheduler jitter; controller_server then throws "Lookup would
+    # require extrapolation into the future" mid-FollowPath and Nav2
+    # aborts the action with error_code 102. 0.5 s gives ~12 fusion_graph
+    # periods of headroom — well past the worst-case stamp drift we have
+    # seen in the field (35-80 ms).
+    transform_tolerance: 0.5
     # 5s vs 0.3s default — ARM scheduler jitter can stall local_costmap
     # updates 2-3s under load; the controller would error out otherwise.
     costmap_update_timeout: 5.0
