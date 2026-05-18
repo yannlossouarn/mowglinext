@@ -115,42 +115,54 @@ controller_server:
       yaw_goal_tolerance: 0.30
       plan_topic: "/controller_server/FollowCoveragePath/global_plan"
 
-    # FollowPath (transit) — FTCController. Mirrors nav2_params.yaml so a
-    # single controller (FTC) handles transit and coverage in both
-    # configurations. The earlier RPP+RotationShim chain was the legacy
-    # transit path, replaced by FTC-everywhere (issue #196 — RPP gone
-    # from the active stack). check_obstacles=false here because no
-    # obstacle_layer exists in the local_costmap without LiDAR (same
-    # rationale as FollowCoveragePath below); obstacle deviation is
-    # therefore disabled.
+    # FollowPath (transit) — RotationShimController wrapping
+    # RegulatedPurePursuitController, matching nav2_params.yaml. RPP's
+    # carrot-based pure pursuit produces smooth, regulated transit
+    # commands that hold heading well on return-to-dock, where FTC's
+    # PRE_ROTATE state was issuing sub-deadband wz corrections the
+    # firmware couldn't execute and the robot would arrive at the
+    # staging pose with a stale yaw.
+    #
+    # use_collision_detection: false here — the local_costmap has no
+    # obstacle_layer without LiDAR so RPP's collision sim would
+    # always pass anyway, but switching it off avoids the every-tick
+    # ray-cast cost. collision_monitor (pass-through in no-LiDAR
+    # mode) keeps the safety contract on cmd_vel.
     FollowPath:
-      plugin: "mowgli_nav2_plugins/FTCController"
-      speed_fast: 0.20
-      speed_fast_threshold: 0.5
-      speed_fast_threshold_angle: 10.0
-      speed_slow: 0.16    # ≥ kMinLinVel=0.15 host clamp (hardware_bridge on_cmd_vel)
-      speed_angular: 45.0
-      acceleration: 0.2
-      kp_lon: 1.0
-      ki_lon: 0.0
-      kd_lon: 0.0
-      kp_lat: 2.0
-      ki_lat: 0.0
-      # kd_lat=1.0 damps lateral oscillation from GPS-noise jitter feeding
-      # the lateral PID — same value as FollowCoveragePath / the LiDAR
-      # nav2_params.yaml.
-      kd_lat: 1.0
-      kp_ang: 1.5
-      ki_ang: 0.0
-      kd_ang: 0.0
-      max_cmd_vel_speed: 0.30
-      max_cmd_vel_ang: 0.8
-      max_goal_distance_error: 0.30    # match nav2_params.yaml — F2C Dubins connectors can land 25-50 cm from FTC's converged distance
-      max_goal_angle_error: 15.0
-      goal_timeout: 10.0
-      max_follow_distance: 2.0
-      forward_only: false
-      check_obstacles: false
+      plugin: "nav2_rotation_shim_controller::RotationShimController"
+      primary_controller: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+
+      # --- RotationShim params ---
+      angular_dist_threshold: 0.785
+      forward_sampling_distance: 0.5
+      rotate_to_heading_angular_vel: 0.6   # ≥ kMinRotVel so the wheels engage
+      max_angular_accel: 1.0
+      simulate_ahead_time: 1.0
+      rotate_to_goal_heading: false        # let RPP handle final heading
+      closed_loop: true                    # use wheel odom feedback for pivot completion
+
+      # --- RegulatedPurePursuitController (primary) params ---
+      transform_tolerance: 0.3
+      desired_linear_vel: 0.30
+      min_approach_linear_velocity: 0.16   # ≥ kMinLinVel=0.15 host clamp (hardware_bridge on_cmd_vel)
+      approach_velocity_scaling_dist: 0.6
+      use_velocity_scaled_lookahead_dist: true
+      lookahead_time: 1.5
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 0.90
+      use_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.20
+      use_cost_regulated_linear_velocity_scaling: false
+      use_collision_detection: false       # no obstacle_layer without LiDAR
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.785
+      rotate_to_heading_angular_vel: 0.6
+      max_angular_accel: 1.0
+      allow_reversing: false
+      max_robot_pose_search_dist: 10.0
+      use_interpolation: true
 
     # Follow-the-Carrot controller for coverage mowing.
     FollowCoveragePath:
