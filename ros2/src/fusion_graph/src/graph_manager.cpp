@@ -457,13 +457,12 @@ TickOutput GraphManager::CreateNodeLocked(double now_s)
         std::max(std::sqrt(accum_.gyro_preint_variance), 1e-4);
     auto preint_noise = gtsam::noiseModel::Diagonal::Sigmas(
         gtsam::Vector1(sigma_preint));
-    new_factors_.add(
-        boost::make_shared<GyroPreintFactor>(k_prev,
-                                              k_curr,
-                                              k_bias_curr,
-                                              accum_.gyro_preint_dtheta,
-                                              accum_.gyro_preint_dt,
-                                              preint_noise));
+    new_factors_.add(GyroPreintFactor(k_prev,
+                                       k_curr,
+                                       k_bias_curr,
+                                       accum_.gyro_preint_dtheta,
+                                       accum_.gyro_preint_dt,
+                                       preint_noise));
 
     // Bias random-walk between: bias_{k} = bias_{k-1} + N(0, σ_rw·√dt)
     const double sigma_bias_rw =
