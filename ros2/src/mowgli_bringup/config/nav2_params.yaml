@@ -256,18 +256,25 @@ controller_server:
       max_cmd_vel_speed: 0.30
       max_cmd_vel_ang: 0.8
       # FTC's internal acceptance tolerance for WAITING_FOR_GOAL_APPROACH.
-      # With the F2C v2 server (mowgli_coverage) producing per-sub-cell
-      # paths chained via Dubins connectors, the LAST pose of the
-      # combined path can sit 25-50 cm from where FTC's PID can
-      # converge — the connector geometry biases the final approach
-      # angle and PID can't drive that distance to zero in 10 s.
-      # Bumping to 0.30 m lets WAITING_FOR_GOAL_APPROACH succeed at
-      # the actual converged distance instead of looping FollowStrip
-      # forever. PathProgressGoalChecker still has the progress
-      # gate (>=95% of path indices visited), so a robot that's 30 cm
-      # from the goal but only at 50% progress doesn't false-fire.
-      max_goal_distance_error: 0.30
-      max_goal_angle_error: 15.0
+      # Two compounding effects motivate the loose 0.50 m / 30° envelope:
+      #   1. F2C v2 (mowgli_coverage) chains per-sub-cell paths via Dubins
+      #      connectors; the LAST pose of the combined path can sit
+      #      25-50 cm from where FTC's PID can converge — the connector
+      #      geometry biases the final approach angle and PID can't drive
+      #      that distance to zero in 10 s.
+      #   2. With the firmware wheel-level PI motor model (commit b303db22
+      #      + sim mirror in commit 2e181873), FTC's fine-heading commands
+      #      near the goal can fall sub-deadband and oscillate as the PI
+      #      ramps up/down across the static-friction breakaway. A 15°
+      #      angle tolerance forced FTC to keep issuing sub-deadband wz
+      #      commands until controller_server's progress checker tripped
+      #      its 30 s movement_time_allowance and aborted the action
+      #      ("Failed to make progress" loop, 10 % coverage observed in
+      #      2026-05-19 sim run before BT gave up and called DockRobot).
+      # PathProgressGoalChecker still gates the path-progress >= 95% so
+      # a loose tolerance can't fire mid-traversal.
+      max_goal_distance_error: 0.50
+      max_goal_angle_error: 30.0
       goal_timeout: 10.0
       max_follow_distance: 2.0
       # forward_only=false: FTC may follow path segments in reverse when

@@ -190,8 +190,8 @@ controller_server:
       kd_ang: 0.0
       max_cmd_vel_speed: 0.30
       max_cmd_vel_ang: 0.8
-      max_goal_distance_error: 0.30    # match nav2_params.yaml — F2C Dubins connectors can land 25-50 cm from FTC's converged distance
-      max_goal_angle_error: 15.0
+      max_goal_distance_error: 0.50    # match nav2_params.yaml — Dubins + motor PI oscillation budget
+      max_goal_angle_error: 30.0
       goal_timeout: 10.0
       max_follow_distance: 2.0
       forward_only: false
