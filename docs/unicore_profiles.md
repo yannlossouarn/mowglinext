@@ -39,7 +39,7 @@ Notes :
 
 ## Mapping `.env` vers ROS
 
-`start_gps.sh` mappe directement ces variables vers les paramètres du nœud `um982_node` :
+`start_gps.sh` mappe directement ces variables vers les paramètres du nœud `unicore_node` :
 
 - `UNICORE_ENABLE_UNICORE_BINARY` -> `enable_unicore_binary`
 - `UNICORE_USE_BINARY_NAV` -> `use_binary_nav`

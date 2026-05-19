@@ -1,18 +1,21 @@
 import {Col, Row, Statistic} from "antd";
 import {useGPS} from "../hooks/useGPS.ts";
 import { booleanFormatter, booleanFormatterInverted } from "./utils.tsx";
-import { AbsolutePoseConstants as Flags } from "../types/ros.ts";
+import { GnssStatusConstants } from "../types/ros.ts";
+import {useGnssStatus} from "../hooks/useGnssStatus.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 import {deriveGpsStatus} from "../utils/gpsStatus.ts";
 
 export function GpsComponent() {
     const {colors} = useThemeMode();
     const gps = useGPS();
+    const gnssStatus = useGnssStatus();
 
-    const flags = gps.flags ?? 0;
-    // RTK is active when FIXED or FLOAT bit is set (not just the base RTK/GPS-fix bit)
-    const hasRtk = !!((flags & Flags.FLAG_GPS_RTK_FIXED) || (flags & Flags.FLAG_GPS_RTK_FLOAT));
-    const gpsStatus = deriveGpsStatus(flags);
+    const fixTypeCode = gnssStatus.fix_type ?? GnssStatusConstants.FIX_TYPE_NO_FIX;
+    const hasRtk =
+        fixTypeCode === GnssStatusConstants.FIX_TYPE_RTK_FIXED ||
+        fixTypeCode === GnssStatusConstants.FIX_TYPE_RTK_FLOAT;
+    const gpsStatus = deriveGpsStatus(gnssStatus, gps.flags);
     const fixType = gpsStatus.label;
     const fixColor =
         gpsStatus.fixType === "RTK_FIX" ? colors.primary
@@ -36,7 +39,7 @@ export function GpsComponent() {
                                         formatter={booleanFormatter}/></Col>
             <Col lg={8} xs={24}><Statistic title="Fix type" value={fixType}
                                         valueStyle={{color: fixColor}}/></Col>
-            <Col lg={8} xs={24}><Statistic title="Dead reckoning" value={(flags & Flags.FLAG_GPS_DEAD_RECKONING) != 0 ? "Yes" : "No"}
+            <Col lg={8} xs={24}><Statistic title="Dead reckoning" value={fixTypeCode === GnssStatusConstants.FIX_TYPE_DEAD_RECKONING ? "Yes" : "No"}
                                         formatter={booleanFormatterInverted}/></Col>
         </Row>
     </>;

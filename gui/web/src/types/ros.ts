@@ -3,16 +3,6 @@
 //
 // Field names are snake_case to match the JSON from rosbridge.
 
-export type Stamp = {
-  sec?: number;
-  nanosec?: number;
-};
-
-export type Header = {
-  stamp?: Stamp;
-  frame_id?: string;
-};
-
 export type Point = {
   x?: number;
   y?: number;
@@ -53,11 +43,6 @@ export type Quaternion = {
 export type Twist = {
   linear?: Vector3;
   angular?: Vector3;
-};
-
-export type TwistStamped = {
-  header?: Header;
-  twist?: Twist;
 };
 
 export type TwistWithCovariance = {
@@ -190,7 +175,41 @@ export type Emergency = {
   stamp?: { sec: number; nanosec: number };
   active_emergency?: boolean;
   latched_emergency?: boolean;
+  lift_warning?: boolean;
+  lift_duration_sec?: number;
   reason?: string;
+};
+
+export const enum GnssStatusConstants {
+  FIX_TYPE_NO_FIX = 0,
+  FIX_TYPE_GPS_FIX = 1,
+  FIX_TYPE_RTK_FLOAT = 2,
+  FIX_TYPE_RTK_FIXED = 3,
+  FIX_TYPE_DEAD_RECKONING = 4,
+  CAP_POSITION_ACCURACY = 1,
+  CAP_HEADING = 2,
+  CAP_HEADING_ACCURACY = 4,
+  CAP_SATELLITES_USED = 8,
+  CAP_SATELLITES_VISIBLE = 16,
+  CAP_DIFFERENTIAL_STATUS = 32,
+  CAP_CORRECTION_AGE = 64,
+};
+
+export type GnssStatus = {
+  header?: { stamp: { sec: number; nanosec: number }; frame_id: string };
+  fix_type?: number;
+  has_fix?: boolean;
+  differential_corrections?: boolean;
+  corrections_active?: boolean;
+  dead_reckoning?: boolean;
+  quality_percent?: number;
+  capability_flags?: number;
+  position_accuracy_m?: number;
+  heading_deg?: number;
+  heading_accuracy_deg?: number;
+  satellites_used?: number;
+  satellites_visible?: number;
+  correction_age_s?: number;
 };
 
 export const enum HighLevelStatusConstants {

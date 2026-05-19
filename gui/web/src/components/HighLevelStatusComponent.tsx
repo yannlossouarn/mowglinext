@@ -4,10 +4,9 @@ import {useHighLevelStatus} from "../hooks/useHighLevelStatus.ts";
 import {usePower} from "../hooks/usePower.ts";
 import {useStatus} from "../hooks/useStatus.ts";
 import {useEmergency} from "../hooks/useEmergency.ts";
-import {useGPS} from "../hooks/useGPS.ts";
+import {useGnssStatus} from "../hooks/useGnssStatus.ts";
 import {useSettings} from "../hooks/useSettings.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
-import {AbsolutePoseConstants} from "../types/ros.ts";
 import {computeBatteryPercent, BATTERY_DEFAULTS} from "../utils/battery.ts";
 
 export function HighLevelStatusComponent() {
@@ -16,7 +15,7 @@ export function HighLevelStatusComponent() {
     const power = usePower()
     const status = useStatus()
     const emergency = useEmergency()
-    const gps = useGPS()
+    const gnssStatus = useGnssStatus()
     const {settings} = useSettings()
 
     // Derive charging state: prefer highLevelStatus, fall back to status topic
@@ -30,18 +29,9 @@ export function HighLevelStatusComponent() {
         highLevelStatus.battery_percent, power.v_battery, settings,
     );
 
-    // Derive GPS quality: prefer highLevelStatus, fall back to GPS topic flags
+    // Derive GPS quality from the typed GNSS runtime state.
     const gpsQuality = (() => {
-        if (highLevelStatus.gps_quality_percent != null && highLevelStatus.gps_quality_percent > 0) {
-            return highLevelStatus.gps_quality_percent * 100;
-        }
-        // Estimate from GPS flags (RTK=1 means "has GPS", FIXED=2 means RTK fix, FLOAT=4 means RTK float)
-        if (gps.flags != null) {
-            if (gps.flags & AbsolutePoseConstants.FLAG_GPS_RTK_FIXED) return 100;   // RTK fixed
-            if (gps.flags & AbsolutePoseConstants.FLAG_GPS_RTK_FLOAT) return 50;    // RTK float
-            if (gps.flags & AbsolutePoseConstants.FLAG_GPS_RTK) return 25;      // GPS fix, no RTK
-        }
-        return 0;
+        return gnssStatus.quality_percent ?? 0;
     })();
 
     // Derive state name: prefer highLevelStatus, fall back to basic inference

@@ -39,6 +39,7 @@
 #include "geometry_msgs/msg/pose_with_covariance.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "mowgli_interfaces/msg/absolute_pose.hpp"
+#include "mowgli_interfaces/msg/gnss_status.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
 #include "std_srvs/srv/trigger.hpp"
@@ -63,6 +64,8 @@ private:
   void on_navsat_fix(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg);
   void on_set_datum(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                     std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  mowgli_interfaces::msg::GnssStatus build_gnss_status(
+      const sensor_msgs::msg::NavSatFix& fix) const;
 
   /**
    * @brief Project WGS84 lat/lon to local ENU (x=east, y=north) relative to datum.
@@ -83,6 +86,7 @@ private:
 
   // ROS handles
   rclcpp::Publisher<mowgli_interfaces::msg::AbsolutePose>::SharedPtr pose_pub_;
+  rclcpp::Publisher<mowgli_interfaces::msg::GnssStatus>::SharedPtr gnss_status_pub_;
   /// Standard-msg twin of the AbsolutePose topic. robot_localization's EKF
   /// pose0 input expects PoseWithCovarianceStamped; AbsolutePose is a
   /// Mowgli-specific type and not subscribable by the EKF.

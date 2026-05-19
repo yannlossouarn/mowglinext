@@ -32,6 +32,7 @@ import {useEmergency} from "../hooks/useEmergency.ts";
 import {usePower} from "../hooks/usePower.ts";
 import {useStatus} from "../hooks/useStatus.ts";
 import {useGPS} from "../hooks/useGPS.ts";
+import {useGnssStatus} from "../hooks/useGnssStatus.ts";
 import {useFusionOdom} from "../hooks/useFusionOdom.ts";
 import {useBTLog} from "../hooks/useBTLog.ts";
 import {useImu} from "../hooks/useImu.ts";
@@ -50,6 +51,7 @@ import {computeBatteryPercent} from "../utils/battery.ts";
 import {useApi} from "../hooks/useApi.ts";
 import {useFusionGraphDiagnostics} from "../hooks/useFusionGraphDiagnostics.ts";
 import {useMowerAction} from "../components/MowerActions.tsx";
+import {GnssStatusConstants} from "../types/ros.ts";
 import {AlertOutlined} from "@ant-design/icons";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -101,6 +103,7 @@ export const DiagnosticsPage = () => {
     const power = usePower();
     const status = useStatus();
     const gps = useGPS();
+    const gnssStatus = useGnssStatus();
     const pose = useFusionOdom();
     const btNodeStates = useBTLog();
     const imu = useImu();
@@ -128,7 +131,8 @@ export const DiagnosticsPage = () => {
     );
 
     const gpsFlags = gps.flags ?? 0;
-    const gpsFixType = useMemo(() => deriveGpsStatus(gpsFlags).label, [gpsFlags]);
+    const gpsFix = useMemo(() => deriveGpsStatus(gnssStatus, gpsFlags), [gnssStatus, gpsFlags]);
+    const gpsFixType = gpsFix.label;
 
     const orientation = pose.pose?.pose?.orientation;
     const qx = orientation?.x ?? 0;
@@ -141,8 +145,11 @@ export const DiagnosticsPage = () => {
     const poseZ = pose.pose?.pose?.position?.z ?? 0;
 
     const allContainersOk = !snapshot?.containers?.length || snapshot.containers.every(c => c.state === "running");
-    const gpsOk = gpsFlags > 0 && (gps.position_accuracy ?? 999) <= 0.1;
-    const gpsWarn = gpsFlags > 0 && (gps.position_accuracy ?? 999) > 0.1;
+    const hasPositionAccuracy =
+        ((gnssStatus.capability_flags ?? 0) & GnssStatusConstants.CAP_POSITION_ACCURACY) !== 0;
+    const gpsAccuracy = hasPositionAccuracy ? gnssStatus.position_accuracy_m : gps.position_accuracy;
+    const gpsOk = (gnssStatus.has_fix ?? gpsFlags > 0) && (gpsAccuracy ?? 999) <= 0.1;
+    const gpsWarn = (gnssStatus.has_fix ?? gpsFlags > 0) && (gpsAccuracy ?? 999) > 0.1;
     const cpuTemp = snapshot?.system?.cpu_temperature ?? 0;
 
     const alerts = useMemo(

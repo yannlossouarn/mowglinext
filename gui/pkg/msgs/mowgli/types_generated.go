@@ -29,6 +29,16 @@ type CoveragePath struct {
 	Path                      nav.Path                       `json:"path"`
 }
 
+// ESCStatus matches mowgli_interfaces/msg/ESCStatus.
+type ESCStatus struct {
+	Status                    uint8                          `json:"status"`
+	Current                   float32                        `json:"current"`
+	Tacho                     uint32                         `json:"tacho"`
+	Rpm                       int16                          `json:"rpm"`
+	TemperatureMotor          float32                        `json:"temperature_motor"`
+	TemperaturePcb            float32                        `json:"temperature_pcb"`
+}
+
 // Emergency matches mowgli_interfaces/msg/Emergency.
 type Emergency struct {
 	Stamp                     geometry.Stamp                 `json:"stamp"`
@@ -39,14 +49,22 @@ type Emergency struct {
 	Reason                    string                         `json:"reason"`
 }
 
-// ESCStatus matches mowgli_interfaces/msg/ESCStatus.
-type ESCStatus struct {
-	Status                    uint8                          `json:"status"`
-	Current                   float32                        `json:"current"`
-	Tacho                     uint32                         `json:"tacho"`
-	Rpm                       int16                          `json:"rpm"`
-	TemperatureMotor          float32                        `json:"temperature_motor"`
-	TemperaturePcb            float32                        `json:"temperature_pcb"`
+// GnssStatus matches mowgli_interfaces/msg/GnssStatus.
+type GnssStatus struct {
+	Header                    geometry.Header                `json:"header"`
+	FixType                   uint8                          `json:"fix_type"`
+	HasFix                    bool                           `json:"has_fix"`
+	DifferentialCorrections   bool                           `json:"differential_corrections"`
+	CorrectionsActive         bool                           `json:"corrections_active"`
+	DeadReckoning             bool                           `json:"dead_reckoning"`
+	QualityPercent            float32                        `json:"quality_percent"`
+	CapabilityFlags           uint32                         `json:"capability_flags"`
+	PositionAccuracyM         float32                        `json:"position_accuracy_m"`
+	HeadingDeg                float32                        `json:"heading_deg"`
+	HeadingAccuracyDeg        float32                        `json:"heading_accuracy_deg"`
+	SatellitesUsed            uint16                         `json:"satellites_used"`
+	SatellitesVisible         uint16                         `json:"satellites_visible"`
+	CorrectionAgeS            float32                        `json:"correction_age_s"`
 }
 
 // HighLevelStatus matches mowgli_interfaces/msg/HighLevelStatus.

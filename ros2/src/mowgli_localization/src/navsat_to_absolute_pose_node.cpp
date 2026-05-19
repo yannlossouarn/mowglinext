@@ -97,6 +97,8 @@ void NavSatToAbsolutePoseNode::create_publishers()
 {
   pose_pub_ =
       create_publisher<mowgli_interfaces::msg::AbsolutePose>("/gps/absolute_pose", rclcpp::QoS(10));
+  gnss_status_pub_ =
+      create_publisher<mowgli_interfaces::msg::GnssStatus>("/gps/status", rclcpp::QoS(10));
   // robot_localization-compatible twin: standard PoseWithCovarianceStamped
   // so ekf_map can subscribe as pose0 input. Published on every fix update
   // in on_navsat_fix alongside the AbsolutePose message.
@@ -174,6 +176,7 @@ void NavSatToAbsolutePoseNode::on_navsat_fix(sensor_msgs::msg::NavSatFix::ConstS
   // Store latest fix for set_datum service.
   last_fix_ = *msg;
   has_fix_ = true;
+  gnss_status_pub_->publish(build_gnss_status(*msg));
 
   using AbsPose = mowgli_interfaces::msg::AbsolutePose;
   using NavSat = sensor_msgs::msg::NavSatFix;
@@ -392,6 +395,66 @@ void NavSatToAbsolutePoseNode::on_navsat_fix(sensor_msgs::msg::NavSatFix::ConstS
   twin.pose.covariance[28] = 1.0e3;  // pitch — "unknown"
   twin.pose.covariance[35] = 1.0e3;  // yaw  — "unknown"
   pose_cov_pub_->publish(twin);
+}
+
+mowgli_interfaces::msg::GnssStatus NavSatToAbsolutePoseNode::build_gnss_status(
+    const sensor_msgs::msg::NavSatFix& fix) const
+{
+  using GnssStatus = mowgli_interfaces::msg::GnssStatus;
+  using NavSat = sensor_msgs::msg::NavSatFix;
+  using NavStatus = sensor_msgs::msg::NavSatStatus;
+
+  GnssStatus out;
+  out.header.stamp = now();
+  out.header.frame_id = "map";
+
+  switch (fix.status.status)
+  {
+    case NavStatus::STATUS_GBAS_FIX:
+      out.fix_type = GnssStatus::FIX_TYPE_RTK_FIXED;
+      out.has_fix = true;
+      out.differential_corrections = true;
+      out.corrections_active = true;
+      out.capability_flags |= GnssStatus::CAP_DIFFERENTIAL_STATUS;
+      out.quality_percent = 100.0f;
+      break;
+    case NavStatus::STATUS_SBAS_FIX:
+      out.fix_type = GnssStatus::FIX_TYPE_RTK_FLOAT;
+      out.has_fix = true;
+      out.differential_corrections = true;
+      out.corrections_active = true;
+      out.capability_flags |= GnssStatus::CAP_DIFFERENTIAL_STATUS;
+      out.quality_percent = 50.0f;
+      break;
+    case NavStatus::STATUS_FIX:
+      out.fix_type = GnssStatus::FIX_TYPE_GPS_FIX;
+      out.has_fix = true;
+      out.capability_flags |= GnssStatus::CAP_DIFFERENTIAL_STATUS;
+      out.quality_percent = 25.0f;
+      break;
+    case NavStatus::STATUS_NO_FIX:
+      out.fix_type = GnssStatus::FIX_TYPE_NO_FIX;
+      break;
+    default:
+      out.fix_type = GnssStatus::FIX_TYPE_NO_FIX;
+      break;
+  }
+
+  if (fix.position_covariance_type != NavSat::COVARIANCE_TYPE_UNKNOWN)
+  {
+    const double lat_var = fix.position_covariance[0];
+    const double lon_var = fix.position_covariance[4];
+    out.position_accuracy_m = static_cast<float>(std::sqrt((lat_var + lon_var) / 2.0));
+    out.capability_flags |= GnssStatus::CAP_POSITION_ACCURACY;
+  }
+  else if (out.has_fix)
+  {
+    out.fix_type = GnssStatus::FIX_TYPE_DEAD_RECKONING;
+    out.dead_reckoning = true;
+    out.quality_percent = 10.0f;
+  }
+
+  return out;
 }
 
 // ---------------------------------------------------------------------------
