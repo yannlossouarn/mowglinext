@@ -4,7 +4,7 @@
 #
 # Launches:
 #   1. unicore_node       — Unicore GNSS driver and RTCM injector on /dev/gps,
-#                           publishes /gps/fix, /gps/azimuth, /gps/diagnostics
+#                           publishes /gps/fix, /gps/azimuth, /diagnostics
 #                           and subscribes to /ntrip_client/rtcm
 #   2. ntrip_client_node  — NTRIP caster client publishing /ntrip_client/rtcm
 #
