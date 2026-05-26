@@ -750,8 +750,26 @@ docking_server:
     # to brake against docking_threshold=0.05 m.
     controller.v_linear_min: 0.16
     controller.v_linear_max: 0.22
-    controller.v_angular_max: 0.5
+    # v_angular_max 0.5 → 0.8: gives the graceful controller more headroom
+    # above the chassis pivot deadband (~0.6 rad/s on PWM 40). With 0.5
+    # the controller routinely capped at sub-deadband output during the
+    # rotate-to-dock phase, leaving the robot stalled in place even when
+    # heading error called for full rotation. 0.8 keeps approach commands
+    # safely commandable while staying under controller.rotate_to_heading_
+    # angular_vel (1.0 rad/s) so the dedicated pivot phase stays the
+    # fastest mode.
+    controller.v_angular_max: 0.8
     controller.slowdown_radius: 0.5
+    # Graceful controller gains. Defaults (k_phi 3, k_delta 2) produced
+    # tiny per-tick commands (cmd_vel.angular.z ≈ 0.05 rad/s) for any
+    # heading error under ~30° — well below the chassis pivot deadband,
+    # so the robot literally never rotated when issued these commands.
+    # Bumping the gains 3× makes the controller drive harder against
+    # heading + cross-track error, putting the typical approach command
+    # comfortably above deadband. Slight overshoot risk is offset by the
+    # 20 Hz loop rate and slowdown_radius=0.5 m absorbing it.
+    controller.k_phi: 10.0
+    controller.k_delta: 5.0
     # Named dock instances — BT uses dock_id="home_dock"
     dock_plugins: ["simple_charging_dock"]
     docks: ["home_dock"]
