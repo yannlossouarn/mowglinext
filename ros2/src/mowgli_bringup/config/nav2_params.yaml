@@ -782,15 +782,18 @@ docking_server:
       # Forward dock approach (matches the YardForce charger contact
       # geometry — robot drives nose-first into the dock).
       dock_direction: "forward"
-      # Pre-rotate to face the dock heading before driving in. Without
-      # this the graceful controller has to satisfy heading + position
-      # from any entry angle, and field-observed 2026-05-27 it stalled
-      # at sub-deadband ω (0.05 rad/s) for any approach angle > ~30°.
-      # The rotate phase uses controller.rotate_to_heading_angular_vel
-      # (1.0 rad/s) which is comfortably above the chassis pivot
-      # deadband, so the alignment completes in a couple seconds before
-      # the graceful translation phase begins.
-      rotate_to_dock: true
+      # rotate_to_dock=true requires dock_direction=backward in the
+      # upstream opennav_docking plugin — combining it with the YardForce
+      # nose-first approach throws "Parameter rotate_to_dock is enabled
+      # but dock direction is not backward" at CONFIGURE, which aborts
+      # the whole Nav2 bringup (lifecycle_manager bails on docking_server
+      # → controller/behavior/etc never activate). The pre-rotate would
+      # have addressed sub-deadband stalls at large entry angles, but the
+      # k_phi=10 / v_angular_max=0.8 graceful-controller tuning already
+      # gives enough authority on its own — leave rotate_to_dock=false
+      # until upstream supports it for forward docks (or we migrate the
+      # YardForce charger to a backward approach).
+      rotate_to_dock: false
       # 0.3 A (was 0.1, default 0.5). 0.1 A flipped is_charging_ at the
       # first whisker of contact and DockRobot exited before the cradle
       # was fully seated — the robot ended up barely touching the

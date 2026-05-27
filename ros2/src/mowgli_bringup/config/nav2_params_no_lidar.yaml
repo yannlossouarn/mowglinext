@@ -463,14 +463,11 @@ docking_server:
       plugin: "opennav_docking::SimpleChargingDock"
       # Forward-direction docking — match nav2_params.yaml.
       dock_direction: "forward"
-      # Pre-rotate to face dock_pose.yaw before driving in. Without this
-      # the graceful controller has to satisfy heading + position from
-      # arbitrary entry angles; in practice it stalled at sub-deadband ω
-      # for any approach angle > ~30°. The rotate phase uses
-      # controller.rotate_to_heading_angular_vel (1.0 rad/s) — above
-      # the chassis pivot deadband — so the alignment completes in
-      # seconds before the translation phase begins.
-      rotate_to_dock: true
+      # rotate_to_dock=true requires dock_direction=backward in the
+      # upstream opennav_docking plugin; combining it with the YardForce
+      # nose-first forward approach throws at CONFIGURE and aborts the
+      # entire Nav2 bringup. Leave disabled — see nav2_params.yaml.
+      rotate_to_dock: false
       # 0.3 A to match the lidar config — see nav2_params.yaml for the
       # "barely seated" rationale.
       charging_threshold: 0.3
