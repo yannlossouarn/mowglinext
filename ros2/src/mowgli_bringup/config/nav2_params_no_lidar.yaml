@@ -451,8 +451,10 @@ docking_server:
     # See nav2_params.yaml for the chassis-pivot-deadband rationale.
     controller.v_angular_max: 0.8
     controller.slowdown_radius: 0.5
-    controller.k_phi: 10.0
-    controller.k_delta: 5.0
+    # Halved from 10/5 once the host-side wz floor took over the deadband
+    # punch-through — see nav2_params.yaml for rationale.
+    controller.k_phi: 5.0
+    controller.k_delta: 3.0
     dock_plugins: ["simple_charging_dock"]
     docks: ["home_dock"]
     home_dock:

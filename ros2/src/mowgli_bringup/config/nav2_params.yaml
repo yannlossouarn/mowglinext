@@ -760,16 +760,25 @@ docking_server:
     # fastest mode.
     controller.v_angular_max: 0.8
     controller.slowdown_radius: 0.5
-    # Graceful controller gains. Defaults (k_phi 3, k_delta 2) produced
-    # tiny per-tick commands (cmd_vel.angular.z ≈ 0.05 rad/s) for any
-    # heading error under ~30° — well below the chassis pivot deadband,
-    # so the robot literally never rotated when issued these commands.
-    # Bumping the gains 3× makes the controller drive harder against
-    # heading + cross-track error, putting the typical approach command
-    # comfortably above deadband. Slight overshoot risk is offset by the
-    # 20 Hz loop rate and slowdown_radius=0.5 m absorbing it.
-    controller.k_phi: 10.0
-    controller.k_delta: 5.0
+    # Graceful controller gains. Default upstream is k_phi=3, k_delta=2.
+    # Earlier this repo bumped them 3× (10/5) to punch sub-deadband
+    # commands through the firmware's PWM 40 pivot floor — without the
+    # bump the graceful output sat at cmd_vel.angular.z ≈ 0.05 rad/s and
+    # the firmware silently dropped every tick. The 3× boost worked for
+    # the approach phase but caused alternating rotation/translation
+    # oscillation on the final 1 m: at each tick the controller would
+    # over-rotate, snap back to "translate only" mode, drift, then
+    # over-rotate again — measured 2026-05-27 as cmd_vel ping-ponging
+    # between `x=-0.015 z=0` and `x=0 z=-0.8` at 20 Hz, with displacement=0
+    # and dock_approach_timeout firing after 30 s.
+    #
+    # The host-side wz floor (hardware_bridge min_ang_vel_rad_per_s=0.5)
+    # now boosts sub-deadband angular commands to the chassis pivot
+    # deadband, so we no longer need the upstream gain hack. 5/3 keeps a
+    # moderate margin over defaults — defaults were also reported to make
+    # the controller lazy near goal — without the overshoot of 10/5.
+    controller.k_phi: 5.0
+    controller.k_delta: 3.0
     # Named dock instances — BT uses dock_id="home_dock"
     dock_plugins: ["simple_charging_dock"]
     docks: ["home_dock"]
