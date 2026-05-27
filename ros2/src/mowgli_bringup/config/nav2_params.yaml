@@ -73,7 +73,7 @@ controller_server:
     # aborts the action with error_code 102. 0.5 s gives ~12 fusion_graph
     # periods of headroom — well past the worst-case stamp drift we have
     # seen in the field (35-80 ms).
-    transform_tolerance: 0.5
+    controller.transform_tolerance: 0.5
     # 5s vs 0.3s default — ARM scheduler jitter can stall local_costmap
     # updates 2-3s under load; the controller would error out otherwise.
     costmap_update_timeout: 5.0
@@ -394,7 +394,7 @@ behavior_server:
       plugin: "nav2_behaviors::AssistedTeleop"
     global_frame: odom
     robot_base_frame: base_footprint
-    transform_tolerance: 0.5
+    controller.transform_tolerance: 0.5
     # 0.5s sim-ahead (at 0.15 m/s BackUp ≈ 7.5 cm) catches immediate
     # collisions without aborting on phantom LETHAL cells 30-50 cm behind
     # (often map→odom jump artefacts or dock residue). 2.0s refused every
@@ -703,8 +703,10 @@ docking_server:
     # (50 Hz /tf), tripping "Lookup would require extrapolation into the
     # future" on every approach tick → DockRobot exhausted retries in
     # seconds with error 905 "Failed to get control". 0.5 s lets the
-    # lookup wait one or two TF publish cycles before giving up.
-    transform_tolerance: 0.5
+    # lookup wait one or two TF publish cycles before giving up. Note
+    # the param name is nested under `controller` — bare
+    # `transform_tolerance` at this level is silently dropped.
+    controller.transform_tolerance: 0.5
     # 10 Hz (was 2 Hz): tighter approach control + faster polling of
     # isDocked()/isCharging() so the robot stops within ~100 ms of the
     # charging signal arriving rather than up to ~500 ms. Not high
@@ -853,7 +855,7 @@ collision_monitor:
     # straight to twist_mux on cmd_vel_monitored.
     cmd_vel_out_topic: cmd_vel_monitored
     state_topic: collision_monitor_state
-    transform_tolerance: 0.5
+    controller.transform_tolerance: 0.5
     # Source timeout: how long before stale sensor data triggers a stop.
     # ARM boards can have TF/scan timing jitter — 5s avoids false stops
     # while still catching genuinely dead sensors.

@@ -61,7 +61,7 @@ controller_server:
     # tracking.
     controller_frequency: 10.0
     # Match the LiDAR config's ARM TF jitter envelope.
-    transform_tolerance: 0.5
+    controller.transform_tolerance: 0.5
     # Without LiDAR, costmaps tick slower (no obstacle observations
     # driving updates) so default 1.0s timeout races with the 1-2 Hz
     # costmap update cycle and surfaces as "Costmap timed out waiting
@@ -264,7 +264,7 @@ behavior_server:
       plugin: "nav2_behaviors::AssistedTeleop"
     global_frame: odom
     robot_base_frame: base_footprint
-    transform_tolerance: 0.5
+    controller.transform_tolerance: 0.5
     # 0.5s sim-ahead — 2.0s refused every undock by projecting BackUp
     # through phantom LETHAL cells 30-50 cm behind. See nav2_params.yaml.
     simulate_ahead_time: 0.5
@@ -419,7 +419,8 @@ docking_server:
     use_sim_time: false
     # See nav2_params.yaml — 0.1 s default tripped extrapolation errors
     # against the 50 Hz /tf publish rate, killed DockRobot in seconds.
-    transform_tolerance: 0.5
+    # Nested under `controller`; bare key is silently dropped.
+    controller.transform_tolerance: 0.5
     # hardware_bridge_node subscribes to TwistStamped — without this
     # the docking controller publishes plain Twist and the dock
     # approach never reaches the firmware. Symptom: dock action
@@ -502,7 +503,7 @@ collision_monitor:
     cmd_vel_in_topic: cmd_vel_nav
     cmd_vel_out_topic: cmd_vel_monitored
     state_topic: collision_monitor_state
-    transform_tolerance: 0.5
+    controller.transform_tolerance: 0.5
     # 5s — ARM TF/scan jitter can briefly stall sources; 1s caused
     # spurious stops on the lidar config and the same applies here.
     source_timeout: 5.0
