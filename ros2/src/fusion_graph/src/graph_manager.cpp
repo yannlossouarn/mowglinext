@@ -354,7 +354,56 @@ TickOutput GraphManager::CreateNodeLocked(double now_s)
     sigma_theta = params_.wheel_sigma_theta;
   }
 
-  const gtsam::Pose2 between(accum_.dx, accum_.dy, dtheta);
+  // Slip veto on (dx, dy).
+  //
+  // The yaw selection above already chooses gyro over wheel encoders
+  // when they disagree, so the BetweenFactor's *rotation* component is
+  // honest. The translation is harder: wheel integration assumes
+  // encoders measure ground-contact distance, which holds on dry
+  // surfaces but breaks down on wet grass and during low-speed pivot
+  // attempts where both drive wheels slip in the same direction. The
+  // chassis IMU sees the whole truth — angular velocity directly, no
+  // wheel-traction assumption — so a wheel-vs-gyro disagreement is
+  // ground truth that the wheel readings are not trustworthy this
+  // tick. Field-observed 2026-05-27: during a stuck dock-rotate
+  // attempt the wheels reported a steady ~0.1 m/s forward velocity
+  // and ~0.3 rad/s rotation, while the gyro saw <0.02 rad/s — the
+  // wheel translation slid the map-frame estimate by 0.6 m in 6 s
+  // even though the chassis hadn't moved, and the controller chased
+  // the drift with more commanded motion, fueling the slip.
+  //
+  // Rule: when |dtheta_wheel - dtheta_gyro| is large enough that the
+  // wheel-reported rotation can't be explained by gyro noise, zero
+  // out the BetweenFactor's translation. The pose still advances in
+  // yaw (from the gyro), and any GPS / scan-matching unary will pull
+  // (x,y) in the right direction; without the veto the wheel
+  // integration carries the pose along the phantom slip path
+  // unopposed. The slip_sigma_xy floor keeps sigma_x/sigma_y tight
+  // enough that GPS still anchors the estimate when available, but
+  // not so loose that one tick of slip can shove the pose by tens of
+  // centimetres.
+  //
+  // Threshold is gated by both the disagreement magnitude AND a
+  // minimum gyro stillness — otherwise the slip detector would fire
+  // every time the gyro updates faster than the wheel encoders, which
+  // happens on every normal turn. The combination "wheels rotating
+  // hard, gyro near zero" is the genuine slip signature.
+  const double wheel_gyro_residual =
+      std::abs(accum_.dtheta_wheel - accum_.dtheta_gyro);
+  const bool slip_detected =
+      wheel_gyro_residual > params_.slip_residual_thresh_rad &&
+      std::abs(accum_.dtheta_gyro) < params_.slip_gyro_max_rad &&
+      std::abs(accum_.dtheta_wheel) > params_.slip_wheel_min_rad;
+  double dx_eff = accum_.dx;
+  double dy_eff = accum_.dy;
+  if (slip_detected)
+  {
+    dx_eff = 0.0;
+    dy_eff = 0.0;
+    ++stats_slip_veto_;
+  }
+
+  const gtsam::Pose2 between(dx_eff, dy_eff, dtheta);
 
   const auto k_prev = PoseKey(next_index_ - 1);
   const auto k_curr = PoseKey(next_index_);
@@ -591,6 +640,19 @@ std::optional<TickOutput> GraphManager::LatestSnapshot() const
   return latest_;
 }
 
+uint64_t GraphManager::LiveNodeCount() const
+{
+  std::lock_guard<std::mutex> lock(mu_);
+  const_cast<GraphManager*>(this)->RefreshEstimateLocked();
+  uint64_t n = 0;
+  for (const auto& kv : current_estimate_)
+  {
+    if (gtsam::Symbol(kv.key).chr() == 'x')
+      ++n;
+  }
+  return n;
+}
+
 GraphStats GraphManager::Stats() const
 {
   std::lock_guard<std::mutex> lock(mu_);
@@ -604,6 +666,7 @@ GraphStats GraphManager::Stats() const
   s.icp_rejects_sanity = stats_icp_rejects_sanity_;
   s.icp_rejects_divergence = stats_icp_rejects_divergence_;
   s.stationary_hand_push = stats_hand_push_;
+  s.slip_veto = stats_slip_veto_;
   s.residual_ema_rad = residual_ema_;
   s.wheel_sigma_x_eff = last_wheel_sigma_x_eff_;
   s.gyro_bias_z = gyro_bias_z_;
@@ -807,6 +870,7 @@ void GraphManager::RebaseISAM2()
   // iSAM2 catches up at phase 3.
   gtsam::Values estimate_snapshot;
   int relinearize_skip = 1;
+  uint64_t cutoff_index = 0;
   {
     std::lock_guard<std::mutex> lock(mu_);
     if (rebase_in_progress_)
@@ -819,6 +883,11 @@ void GraphManager::RebaseISAM2()
       return;
     estimate_snapshot = current_estimate_;
     relinearize_skip = params_.isam2_relinearize_skip;
+    // Sliding-window cutoff: drop pose nodes older than this index.
+    // Captured under the lock against the live next_index_ so the
+    // window is measured from the newest node at snapshot time.
+    if (params_.max_graph_nodes > 0 && next_index_ > params_.max_graph_nodes)
+      cutoff_index = next_index_ - params_.max_graph_nodes;
     rebase_in_progress_ = true;
     rebase_pending_factors_.resize(0);
     rebase_pending_values_.clear();
@@ -839,11 +908,20 @@ void GraphManager::RebaseISAM2()
   // RTK + COG noise floors and keeps the rebase non-destructive.
   gtsam::NonlinearFactorGraph fg;
   auto noise = MakeDiagonal({0.05, 0.05, 0.05});
+  gtsam::Values kept_values;
   for (const auto& kv : estimate_snapshot)
   {
+    // Sliding-window drop: skip pose nodes older than the cutoff.
+    // gtsam::Symbol::index() recovers the monotonic node index from
+    // the key. Non-pose keys (if any) fall through the window check
+    // unchanged. cutoff_index == 0 means "keep everything".
+    const gtsam::Symbol s(kv.key);
+    if (cutoff_index > 0 && s.chr() == 'x' && s.index() < cutoff_index)
+      continue;
     fg.add(gtsam::PriorFactor<gtsam::Pose2>(kv.key, kv.value.cast<gtsam::Pose2>(), noise));
+    kept_values.insert(kv.key, kv.value);
   }
-  fresh.update(fg, estimate_snapshot);
+  fresh.update(fg, kept_values);
 
   // Phase 3: replay anything Tick / ForceAnchor / AddLoopClosure
   // added while we were rebuilding, then atomically swap isam_.
@@ -884,6 +962,77 @@ void GraphManager::ApplyIsamUpdateLocked(const gtsam::NonlinearFactorGraph& fg,
     // rebase can replay it on the fresh iSAM2 before the swap.
     rebase_pending_factors_.push_back(fg);
     rebase_pending_values_.insert(values);
+  }
+}
+
+void GraphManager::RigidTransformAll(const gtsam::Pose2& correction,
+                                     double latest_node_sigma_xy,
+                                     double latest_node_sigma_theta)
+{
+  std::lock_guard<std::mutex> lock(mu_);
+
+  // Refresh the cached estimate so we have every variable.
+  RefreshEstimateLocked();
+  if (current_estimate_.empty())
+    return;
+
+  // Apply correction to every Pose2 node. Non-pose variables (e.g.
+  // gyro bias) are gauge-invariant — copy them through unchanged.
+  gtsam::Values transformed;
+  uint64_t latest_idx_local = (next_index_ > 0) ? next_index_ - 1 : 0;
+  auto latest_key = PoseKey(latest_idx_local);
+  for (const auto& kv : current_estimate_)
+  {
+    gtsam::Symbol s(kv.key);
+    if (s.chr() == 'x')
+    {
+      const gtsam::Pose2 X_old = kv.value.cast<gtsam::Pose2>();
+      const gtsam::Pose2 X_new = correction * X_old;
+      transformed.insert(kv.key, X_new);
+    }
+    else
+    {
+      transformed.insert(kv.key, kv.value);
+    }
+  }
+
+  // Build a fresh iSAM2 with priors at the shifted poses. Loose σ
+  // (5 cm / 3°) on the older nodes so future loop closures can still
+  // refine them; tight σ on the latest node so the dock anchor isn't
+  // washed out by the next stream of GPS factors when the robot
+  // undocks.
+  gtsam::ISAM2Params p;
+  p.optimizationParams = gtsam::ISAM2GaussNewtonParams(0.001);
+  p.relinearizeThreshold = 0.05;
+  p.relinearizeSkip = std::max(1, params_.isam2_relinearize_skip);
+  gtsam::ISAM2 fresh(p);
+
+  gtsam::NonlinearFactorGraph fg;
+  auto loose_noise = MakeDiagonal({0.05, 0.05, 0.05});
+  auto tight_noise = MakeDiagonal(
+      {std::max(latest_node_sigma_xy, 1.0e-4),
+       std::max(latest_node_sigma_xy, 1.0e-4),
+       std::max(latest_node_sigma_theta, 1.0e-4)});
+  for (const auto& kv : transformed)
+  {
+    gtsam::Symbol s(kv.key);
+    if (s.chr() != 'x')
+      continue;
+    const auto noise = (kv.key == latest_key) ? tight_noise : loose_noise;
+    fg.add(
+        gtsam::PriorFactor<gtsam::Pose2>(kv.key, kv.value.cast<gtsam::Pose2>(), noise));
+  }
+  fresh.update(fg, transformed);
+  isam_ = std::move(fresh);
+  estimate_dirty_ = true;
+  // Loop-closure edges collapsed into priors during the rebuild.
+  loop_closure_edges_.clear();
+
+  // Update the latched latest_ snapshot so the next PublishOutputs
+  // sees the transformed pose instead of the pre-transform one.
+  if (latest_)
+  {
+    latest_->pose = correction * latest_->pose;
   }
 }
 

@@ -58,6 +58,11 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
   decay_rate_per_hour_ = declare_parameter<double>("decay_rate_per_hour", 0.1);
   tool_width_ = declare_parameter<double>("tool_width", 0.18);
   reachability_period_s_ = declare_parameter<double>("reachability_period_s", 2.0);
+  yaw_convergence_threshold_rad_ =
+      declare_parameter<double>("yaw_convergence_threshold_rad", 0.00873);  // 0.5°
+  yaw_convergence_window_s_ = declare_parameter<double>("yaw_convergence_window_s", 5.0);
+  yaw_convergence_min_samples_ = static_cast<size_t>(
+      declare_parameter<int>("yaw_convergence_min_samples", 20));
   map_file_path_ = declare_parameter<std::string>("map_file_path", "");
   areas_file_path_ = declare_parameter<std::string>("areas_file_path", "");
   publish_rate_ = declare_parameter<double>("publish_rate", 1.0);
@@ -217,6 +222,37 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
       costmap_topic,
       rclcpp::QoS(1).reliable(),
       [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg) { on_costmap(std::move(msg)); });
+
+  // GPS pose-with-covariance feed (from navsat_to_absolute_pose_node), used
+  // only by on_set_docking_point to gate the service on RTK quality. The
+  // service must not pin a dock pose while in RTK-Float (σ ~10-50 cm) or
+  // when the GPS feed is stale.
+  dock_set_gps_accuracy_max_m_ =
+      declare_parameter<double>("dock_set_gps_accuracy_max_m", dock_set_gps_accuracy_max_m_);
+  dock_set_gps_max_age_s_ =
+      declare_parameter<double>("dock_set_gps_max_age_s", dock_set_gps_max_age_s_);
+  dock_set_status_max_age_s_ =
+      declare_parameter<double>("dock_set_status_max_age_s", dock_set_status_max_age_s_);
+  gps_pose_cov_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+      "/gps/pose_cov",
+      rclcpp::SensorDataQoS(),
+      [this](geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
+      {
+        const double x = msg->pose.pose.position.x;
+        const double y = msg->pose.pose.position.y;
+        const rclcpp::Time t = now();
+        std::lock_guard<std::mutex> lk(last_gps_pose_cov_mutex_);
+        last_gps_pose_cov_ = std::move(msg);
+        last_gps_pose_cov_time_ = t;
+        // Maintain a rolling window for on_set_docking_point's averaged
+        // dock-pose capture (see recent_gps_xy_ in the header).
+        recent_gps_xy_.emplace_back(t, x, y);
+        while (!recent_gps_xy_.empty() &&
+               (t - std::get<0>(recent_gps_xy_.front())).seconds() > dock_set_gps_avg_window_s_)
+        {
+          recent_gps_xy_.pop_front();
+        }
+      });
 
   // ── Services ─────────────────────────────────────────────────────────────
   save_map_srv_ = create_service<std_srvs::srv::Trigger>(
@@ -561,6 +597,8 @@ void MapServerNode::on_occupancy_grid(nav_msgs::msg::OccupancyGrid::ConstSharedP
 void MapServerNode::on_mower_status(mowgli_interfaces::msg::Status::ConstSharedPtr msg)
 {
   mow_blade_enabled_ = msg->mow_enabled;
+  last_is_charging_ = msg->is_charging;
+  last_status_time_ = now();
 }
 
 void MapServerNode::on_odom(nav_msgs::msg::Odometry::ConstSharedPtr /*msg*/)
@@ -568,6 +606,7 @@ void MapServerNode::on_odom(nav_msgs::msg::Odometry::ConstSharedPtr /*msg*/)
   // Use TF for the definitive map-frame robot position.
   // The odom message position may be in odom frame, not map frame.
   double x = 0.0, y = 0.0;
+  double yaw = 0.0;
   if (tf_buffer_)
   {
     try
@@ -575,6 +614,9 @@ void MapServerNode::on_odom(nav_msgs::msg::Odometry::ConstSharedPtr /*msg*/)
       auto tf = tf_buffer_->lookupTransform(map_frame_, "base_footprint", tf2::TimePointZero);
       x = tf.transform.translation.x;
       y = tf.transform.translation.y;
+      // Yaw extraction valid because the EKF runs in two_d_mode (roll/pitch ≈ 0).
+      const auto& q = tf.transform.rotation;
+      yaw = 2.0 * std::atan2(q.z, q.w);
     }
     catch (const tf2::TransformException&)
     {
@@ -584,6 +626,20 @@ void MapServerNode::on_odom(nav_msgs::msg::Odometry::ConstSharedPtr /*msg*/)
   else
   {
     return;
+  }
+
+  // Maintain a rolling window of recent yaws for the docking-set gate.
+  // Read the window length live each tick so `ros2 param set` works.
+  {
+    std::lock_guard<std::mutex> lk(recent_yaws_mutex_);
+    const rclcpp::Time now_t = now();
+    recent_yaws_.emplace_back(now_t, yaw);
+    const rclcpp::Duration window = rclcpp::Duration::from_seconds(
+        get_parameter("yaw_convergence_window_s").as_double());
+    while (!recent_yaws_.empty() && (now_t - recent_yaws_.front().first) > window)
+    {
+      recent_yaws_.pop_front();
+    }
   }
 
   // Latch most recent map-frame position so reachability BFS can use
