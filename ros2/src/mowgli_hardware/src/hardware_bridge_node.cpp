@@ -63,6 +63,7 @@
 #include "mowgli_hardware/ll_datatypes.hpp"
 #include "mowgli_hardware/packet_handler.hpp"
 #include "mowgli_hardware/serial_port.hpp"
+#include "mowgli_hardware/wz_pulse_modulator.hpp"
 
 // High-level mode constants — must match HighLevelStatus.msg and the
 // HL_MODE_* defines in firmware/mowgli_protocol.h. Declared locally to
@@ -137,8 +138,11 @@ private:
     // ticks_per_meter matches the firmware-side scaling).
     wheel_track_ = declare_parameter<double>("wheel_track", 0.325);
     ticks_per_meter_ = declare_parameter<double>("ticks_per_meter", 300.0);
-    // Pivot deadband floor — see comment above the clamp in on_cmd_vel.
+    // Pivot deadband / pulse amplitude — see comment above the modulator in
+    // on_cmd_vel. wz_pulse_modulation_enabled switches between the duty-cycle
+    // pulse path (default) and a plain passthrough.
     min_ang_vel_rad_per_s_ = declare_parameter<double>("min_ang_vel_rad_per_s", 0.5);
+    wz_pulse_modulation_enabled_ = declare_parameter<bool>("wz_pulse_modulation_enabled", true);
 
     // Dock pose comes solely from mowgli_robot.yaml (declared as ROS
     // parameters above). Calibration and manual GUI adjustments persist
@@ -1350,41 +1354,46 @@ private:
     // 0.16` and RPP's `min_approach_linear_velocity: 0.16` for the
     // canonical examples).
     //
-    // wz floor — boost sub-deadband angular commands up to the chassis
-    // pivot deadband (~0.5-0.6 rad/s on PWM 40, measured 2026-05-27).
+    // wz sub-deadband handling — pulse-width (duty-cycle) modulation.
     //
-    // Earlier policy was passthrough: the comment justified it as
-    // "the graph absorbs the wheel/IMU mismatch in pure-rotation mode."
-    // Field observation 2026-05-27 contradicted that — during DockRobot's
-    // graceful-controller approach the cmd_vel.angular.z hovered at 0.1
-    // rad/s while the firmware (PWM 40 deadband) silently dropped every
-    // tick to zero motion. The PoseProgressChecker then aborted FollowPath
-    // every 60 s, the spin behavior timed out trying to do 1.57 rad in
-    // 10 s, and the robot spent 8 minutes never reaching dock_pose.yaw.
+    // WHY: the chassis can't pivot below the PWM static-friction deadband
+    // (~0.5 rad/s on PWM 40, measured 2026-05-27), so fine |wz| commands
+    // (e.g. the dock graceful-controller's 0.05-0.3 rad/s heading
+    // corrections) just buzz the motors and never rotate — DockRobot never
+    // settled and the spin behavior timed out.
     //
-    // PR #221 and #223 tried pulse modulation here; both were reverted
-    // (commits 09abe1ac/447a68e4) because the gyro saw the pulses while
-    // the wheel encoders didn't, and pre-fusion_graph the wheel-IMU
-    // mismatch corrupted the localizer. Today fusion_graph has explicit
-    // gates for that case (stationary_thresh_xy_m + gyro_bias_estimation),
-    // so a steady-state floor is safer than the on/off pulse pattern that
-    // previously aliased into the graph at random phase.
+    // The earlier mitigation FLOORED every sub-deadband |wz| up to the
+    // deadband amplitude. That OVER-ROTATES: measured on-robot 2026-05-27,
+    // a commanded 0.3 rad/s produced 0.38-0.49 rad/s of actual yaw
+    // (127-164%) because the firmware ran at full deadband amplitude for the
+    // whole command. Worse, the dock controller's fine corrections all
+    // jumped to 0.5 rad/s → overshoot → reverse → ping-pong oscillation.
     //
-    // Implementation: hard clamp |wz| in (kMinCmdToConsider, min_ang_vel)
-    // up to min_ang_vel, sign preserved. Below kMinCmdToConsider treat as
-    // zero (rotate-to-heading reached, no command). The floor is exposed
-    // as the `min_ang_vel_rad_per_s` parameter (default 0.5) so it can be
-    // tuned without a rebuild if a chassis variant or motor change moves
-    // the deadband.
-    constexpr double kMinLinVel = 0.15;          // m/s — PWM 40 forward deadband + margin
+    // Fix: hold the AMPLITUDE at the deadband (enough to break stiction) but
+    // cut the DUTY CYCLE so the time-average rate equals wz_cmd. A
+    // sigma-delta accumulator (wz_pulse_accum_) integrates
+    // duty = |wz_cmd|/min_ang_vel and fires a full-deadband pulse whenever it
+    // crosses 1.0 — long-run average == wz_cmd, no over-rotation. Commands
+    // at/above the deadband pass through unchanged; |wz| below
+    // kWzMinCmdToConsider is exactly 0 (rotate-to-heading reached).
+    //
+    // PR #221 (commit 00952173) first merged pulsing, then it was reverted
+    // (09abe1ac) because the gyro saw the pulses while the wheel encoders
+    // didn't, and pre-fusion_graph the wheel/IMU mismatch corrupted the
+    // localizer. fusion_graph now slip-vetoes that mismatch (graph
+    // between-factors + dead-reckoning), so pulsing is safe again. Set
+    // wz_pulse_modulation_enabled:=false to fall back to plain passthrough.
+    //
+    // The sub-deadband |vx| → 0 guard below is unchanged.
+    constexpr double kMinLinVel = 0.15;  // m/s — PWM 40 forward deadband + margin
     constexpr double kMinCmdToConsider = 1.0e-3;  // ignore floating-point dust
     if (std::abs(vx) > kMinCmdToConsider && std::abs(vx) < kMinLinVel)
     {
       vx = 0.0;
     }
-    if (std::abs(wz) > kMinCmdToConsider && std::abs(wz) < min_ang_vel_rad_per_s_)
+    if (wz_pulse_modulation_enabled_)
     {
-      wz = std::copysign(min_ang_vel_rad_per_s_, wz);
+      wz = mowgli_hardware::pulse_modulate_wz(wz, min_ang_vel_rad_per_s_, wz_pulse_accum_);
     }
 
     LlCmdVel pkt{};
@@ -1494,6 +1503,14 @@ private:
   double wheel_track_{0.325};
   double ticks_per_meter_{300.0};
   double min_ang_vel_rad_per_s_{0.5};
+  // Sub-deadband angular pulse-width modulation (on_cmd_vel). When enabled,
+  // fine |wz| commands below min_ang_vel_rad_per_s_ are emitted at the
+  // deadband amplitude for a duty-cycle fraction of ticks so the long-run
+  // average equals the commanded rate (no over-rotation). The signed
+  // sigma-delta accumulator carries phase between ticks; pulse_modulate_wz()
+  // resets it on sign flip / return to zero.
+  bool wz_pulse_modulation_enabled_{true};
+  double wz_pulse_accum_{0.0};
   bool mow_enabled_{false};
   bool is_charging_{false};
   uint8_t current_mode_{0};

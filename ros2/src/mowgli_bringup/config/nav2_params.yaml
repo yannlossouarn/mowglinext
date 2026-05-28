@@ -742,9 +742,11 @@ docking_server:
     # it just stops the docking server from refusing to dock at the dock.
     controller.use_collision_detection: false
     # Graceful-controller envelope — kept close to Nav2 upstream defaults
-    # now that the host-side wz floor (hardware_bridge
-    # min_ang_vel_rad_per_s=0.5) and the sub-deadband vx clamp handle
-    # the chassis-side deadband cleanly. Earlier iterations of this file
+    # now that the host-side wz pulse-width modulation (hardware_bridge
+    # min_ang_vel_rad_per_s=0.5, duty-cycled so the time-average matches
+    # the commanded rate instead of flooring it up) and the sub-deadband
+    # vx clamp handle the chassis-side deadband cleanly without
+    # over-rotating fine heading corrections. Earlier iterations of this file
     # bumped k_phi/k_delta 3×, dropped v_linear_max, doubled
     # slowdown_radius and raised v_angular_max — each fix worked around
     # the symptom of a different deadband problem, but the combination

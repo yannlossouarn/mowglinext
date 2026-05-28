@@ -140,6 +140,16 @@ if(BUILD_TESTING)
   target_link_libraries(test_clock_fit
     mowgli_hardware_core
   )
+
+  # ---- test_wz_pulse_modulator ----
+  # wz_pulse_modulator.hpp is header-only; link mowgli_hardware_core only for
+  # its public include directories (no ROS deps needed for this pure function).
+  ament_add_gtest(test_wz_pulse_modulator
+    test/test_wz_pulse_modulator.cpp
+  )
+  target_link_libraries(test_wz_pulse_modulator
+    mowgli_hardware_core
+  )
 endif()
 
 # ---------------------------------------------------------------------------
