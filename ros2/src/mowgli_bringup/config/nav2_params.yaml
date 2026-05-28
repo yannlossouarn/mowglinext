@@ -528,15 +528,21 @@ global_costmap:
           # is overhead (tree canopy, umbrellas) the mower won't hit.
           # Previously 200 m which was a workaround for old Z-drift bug;
           # now fixed by the ground constraint so we can filter properly.
-          # 2D LaserScan rays are at lidar_link.z (≈0.22 m). After TF
-          # to map their per-point Z is constant ≈ lidar height. With
-          # min_obstacle_height: 0.08 used to exclude valid LiDAR
-          # returns in some sim configurations (LaserScan rays project
-          # at constant lidar_link.z ≈ 0.22 m), leaving the costmap
-          # empty so obstacle_tracker had nothing to surface. 0 keeps
-          # every projected return; the upper bound (max_obstacle_height
-          # below) handles ceiling/canopy filtering.
-          min_obstacle_height: 0.0
+          # 2D LaserScan rays sit at lidar_link.z (≈0.22 m); after TF to
+          # the costmap frame each point's Z ≈ lidar height on level
+          # ground. min_obstacle_height: 0.12 rejects returns whose Z has
+          # dropped toward ground level — which happens when the mower
+          # pitches/rolls on uneven garden terrain and the forward rays
+          # tilt down into the lawn. At 0.0 those ground hits were marked
+          # as phantom lethal obstacles, blocking the planner mid-swath
+          # and walling off the dock approach (controller_server "Failed
+          # to make progress"). The real 0.22 m scan plane stays well
+          # inside [0.12, 1.5] so genuine obstacles are still marked.
+          # NOTE: this does NOT reduce collision safety — collision_monitor
+          # polls raw /scan in 2D (height-agnostic) and still stops the
+          # robot on any real return; min_obstacle_height only governs what
+          # the PLANNER routes around.
+          min_obstacle_height: 0.12
           max_obstacle_height: 1.5
           clearing: true
           marking: true
@@ -647,15 +653,21 @@ local_costmap:
           topic: /scan_costmap
           # Same height band as the global obstacle_layer — filter ground
           # hits when the mower pitches on uneven terrain.
-          # 2D LaserScan rays are at lidar_link.z (≈0.22 m). After TF
-          # to map their per-point Z is constant ≈ lidar height. With
-          # min_obstacle_height: 0.08 used to exclude valid LiDAR
-          # returns in some sim configurations (LaserScan rays project
-          # at constant lidar_link.z ≈ 0.22 m), leaving the costmap
-          # empty so obstacle_tracker had nothing to surface. 0 keeps
-          # every projected return; the upper bound (max_obstacle_height
-          # below) handles ceiling/canopy filtering.
-          min_obstacle_height: 0.0
+          # 2D LaserScan rays sit at lidar_link.z (≈0.22 m); after TF to
+          # the costmap frame each point's Z ≈ lidar height on level
+          # ground. min_obstacle_height: 0.12 rejects returns whose Z has
+          # dropped toward ground level — which happens when the mower
+          # pitches/rolls on uneven garden terrain and the forward rays
+          # tilt down into the lawn. At 0.0 those ground hits were marked
+          # as phantom lethal obstacles, blocking the planner mid-swath
+          # and walling off the dock approach (controller_server "Failed
+          # to make progress"). The real 0.22 m scan plane stays well
+          # inside [0.12, 1.5] so genuine obstacles are still marked.
+          # NOTE: this does NOT reduce collision safety — collision_monitor
+          # polls raw /scan in 2D (height-agnostic) and still stops the
+          # robot on any real return; min_obstacle_height only governs what
+          # the PLANNER routes around.
+          min_obstacle_height: 0.12
           max_obstacle_height: 1.5
           clearing: true
           marking: true
