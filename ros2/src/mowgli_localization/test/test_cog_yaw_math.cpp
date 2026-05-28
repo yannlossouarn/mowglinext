@@ -164,6 +164,42 @@ TEST(CogYawMath, SweepRecoversHeadingWithinDegrees)
         }
 }
 
+// ---------------------------------------------------------------------------
+// Lever-arm-sweep dominance gate. The failure that drove the wrong-direction
+// docking (2026-05-27): slow in-place alignment pivots (0.1-0.3 rad/s) sweep
+// the antenna faster than the chassis translates, so the COG must be rejected.
+// ---------------------------------------------------------------------------
+
+TEST(CogSweepGate, RejectsSlowInPlacePivot)
+{
+  // Dock alignment: 0.3 m lever, 0.3 rad/s pivot, ~no real translation.
+  // sweep = 0.3*0.3 = 0.09 m/s >> ~0 → must reject.
+  EXPECT_TRUE(mowgli_localization::cog_sweep_dominates(0.3, 0.30, 0.02, 1.0));
+  // Even the phantom-vx case (0.025 m/s) is dominated by the 0.09 sweep.
+  EXPECT_TRUE(mowgli_localization::cog_sweep_dominates(0.3, 0.30, 0.025, 1.0));
+}
+
+TEST(CogSweepGate, AcceptsGentleCurve)
+{
+  // Driving forward 0.3 m/s while turning 0.2 rad/s: sweep = 0.06 < 0.3 →
+  // COG is a valid heading, accept.
+  EXPECT_FALSE(mowgli_localization::cog_sweep_dominates(0.2, 0.30, 0.30, 1.0));
+}
+
+TEST(CogSweepGate, AcceptsStraightDriving)
+{
+  // No rotation → sweep 0, always accept regardless of speed.
+  EXPECT_FALSE(mowgli_localization::cog_sweep_dominates(0.0, 0.30, 0.20, 1.0));
+}
+
+TEST(CogSweepGate, BoundaryAtRatio)
+{
+  // sweep == ratio*vx is NOT dominant (strict >). 0.1*0.3=0.03 vs 1.0*0.03.
+  EXPECT_FALSE(mowgli_localization::cog_sweep_dominates(0.1, 0.30, 0.03, 1.0));
+  // Nudge omega up → now dominant.
+  EXPECT_TRUE(mowgli_localization::cog_sweep_dominates(0.11, 0.30, 0.03, 1.0));
+}
+
 int main(int argc, char** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

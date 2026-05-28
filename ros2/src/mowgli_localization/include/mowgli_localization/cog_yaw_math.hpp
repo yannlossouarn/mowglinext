@@ -110,6 +110,36 @@ inline double compute_lever_sigma(double omega_avg,
   return std::abs(dlever_domega) * omega_noise_rps;
 }
 
+// Lever-arm-sweep dominance gate.
+//
+// When the robot rotates, the GPS antenna (offset from base_link by the
+// lever arm) sweeps an arc: its tangential speed is |omega| * lever_radius.
+// If that sweep speed is large relative to the real chassis translation
+// |vx|, the GPS displacement between fixes is dominated by the sweep, not by
+// travel — so the course-over-ground heading atan2(dy,dx) points along the
+// sweep tangent (~90° off the body heading), not where the robot is going.
+// Publishing a COG yaw from such a sample injects a wrong absolute-heading
+// unary into fusion_graph that fights the gyro.
+//
+// The fixed `min_omega_for_anchor` gate (reject if |omega| >= 0.5 rad/s)
+// misses the docking case: the graceful controller's alignment pivots run at
+// 0.1-0.3 rad/s — below 0.5 — yet with a 0.3 m lever arm that is already
+// 0.03-0.09 m/s of sweep against ~0 real translation, so the COG is pure
+// sweep garbage. Field 2026-05-27: those sub-threshold pivots corrupted the
+// fused yaw and the dock approached from the wrong heading.
+//
+// Returns true when the sweep dominates (COG should be rejected):
+//   |omega| * lever_radius > ratio * |vx|
+// ratio ~1.0 means "reject once the antenna's rotational speed exceeds the
+// chassis forward speed". Gentle curved driving (high vx, low omega) passes;
+// in-place / rotation-dominant pivots (low vx, any omega) are rejected.
+inline bool cog_sweep_dominates(double omega, double lever_radius, double vx,
+                                double ratio)
+{
+  const double sweep_speed = std::abs(omega) * lever_radius;
+  return sweep_speed > ratio * std::abs(vx);
+}
+
 }  // namespace mowgli_localization
 
 #endif  // MOWGLI_LOCALIZATION__COG_YAW_MATH_HPP_

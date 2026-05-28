@@ -100,6 +100,14 @@ public:
     // 0.50 rad/s ≈ 29°/s lets gentle corrections through and rejects
     // full PRE_ROTATE pivots (typ. 0.6 rad/s).
     min_omega_for_anchor_ = declare_parameter<double>("min_omega_for_anchor_rps", 0.50);
+    // Lever-arm-sweep dominance ratio (see cog_yaw_math.hpp). Reject a COG
+    // sample when |omega|*lever_radius > ratio*|vx| — i.e. the antenna's
+    // rotational sweep outpaces real translation, so atan2(dy,dx) is the
+    // sweep tangent, not the heading. Catches the slow dock-alignment pivots
+    // (0.1-0.3 rad/s) that slip under min_omega_for_anchor_rps. 1.0 = reject
+    // once antenna rotational speed exceeds chassis forward speed.
+    cog_sweep_dominance_ratio_ =
+        declare_parameter<double>("cog_sweep_dominance_ratio", 1.0);
     // Number of consecutive non-rotating GPS samples required before we
     // start accumulating a new baseline after a pivot ends. 2 samples
     // at 5 Hz GPS ≈ 400 ms of confirmed straight motion before COG
@@ -360,6 +368,25 @@ private:
       return;
     }
 
+    // Lever-arm-sweep dominance gate (see cog_yaw_math.hpp). The fixed
+    // min_omega_for_anchor_ gate above only catches fast pivots (>=0.5
+    // rad/s); slow dock-alignment rotations (0.1-0.3 rad/s) pass it but,
+    // with a 0.3 m lever arm and near-zero real translation, still produce
+    // a sweep-dominated GPS displacement whose COG heading is ~90° off the
+    // body. Publishing it corrupts the fused yaw and drives the dock
+    // approach the wrong way (field 2026-05-27). Use the larger of the
+    // wheel/IMU rotation rate so a wheel-encoder lag at the rotation onset
+    // doesn't let a sample through.
+    const double rot_rate =
+        std::max(std::abs(wheel_omega_.load()), std::abs(gyro_z_.load()));
+    const double lever_radius = std::hypot(lever_arm_x_, lever_arm_y_);
+    if (cog_sweep_dominates(rot_rate, lever_radius, wheel_vx_, cog_sweep_dominance_ratio_))
+    {
+      ++rejected_sweep_;
+      have_anchor_ = false;
+      return;
+    }
+
     const int wheel_sign = (wheel_vx_ >= 0.0) ? 1 : -1;
 
     // Anchor seeding / direction-change reset.
@@ -536,8 +563,8 @@ private:
   {
     RCLCPP_INFO(get_logger(),
                 "cog_to_imu stats: published fwd=%d rev=%d seed=%d, "
-                "rejected fix=%d accuracy=%d stationary=%d rotating=%d displacement=%d, "
-                "mag_cal samples=%zu (writes=%d)",
+                "rejected fix=%d accuracy=%d stationary=%d rotating=%d sweep=%d "
+                "displacement=%d, mag_cal samples=%zu (writes=%d)",
                 published_fwd_,
                 published_rev_,
                 stationary_seeds_published_,
@@ -545,6 +572,7 @@ private:
                 rejected_accuracy_,
                 rejected_stationary_,
                 rejected_rotating_,
+                rejected_sweep_,
                 rejected_displacement_,
                 mag_samples_.size(),
                 mag_fit_count_);
@@ -555,6 +583,7 @@ private:
     rejected_accuracy_ = 0;
     rejected_stationary_ = 0;
     rejected_rotating_ = 0;
+    rejected_sweep_ = 0;
     rejected_displacement_ = 0;
   }
 
@@ -793,6 +822,7 @@ private:
   // ── State ─────────────────────────────────────────────────────────
   double min_abs_wheel_{};
   double min_omega_for_anchor_{};
+  double cog_sweep_dominance_ratio_{1.0};
   double max_pos_accuracy_{};
   double min_dt_{}, max_dt_{};
   double max_yaw_var_{}, min_yaw_var_{};
@@ -874,6 +904,7 @@ private:
   int rejected_stationary_{0}, rejected_accuracy_{0}, rejected_fix_{0};
   int rejected_displacement_{0};
   int rejected_rotating_{0};
+  int rejected_sweep_{0};
   int stationary_seeds_published_{0};
 };
 
