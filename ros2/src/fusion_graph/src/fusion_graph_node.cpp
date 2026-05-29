@@ -172,6 +172,14 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
     icp_max_delta_theta_rad_ = declare_parameter<double>("icp_max_delta_theta_rad", 0.50);
     icp_max_divergence_xy_m_ = declare_parameter<double>("icp_max_divergence_xy_m", 0.15);
     icp_max_divergence_theta_rad_ = declare_parameter<double>("icp_max_divergence_theta_rad", 0.35);
+
+    // Yield-to-RTK gating (see fusion_graph_node.hpp). When RTK-Fixed is
+    // fresh, inflate the scan-between σ so GPS dominates and map→odom stays
+    // pinned; scan-matching only carries the estimate once the fix is lost.
+    scan_yield_to_rtk_ = declare_parameter<bool>("scan_yield_to_rtk", true);
+    scan_yield_timeout_s_ = declare_parameter<double>("scan_yield_timeout_s", 2.0);
+    scan_yield_sigma_xy_ = declare_parameter<double>("scan_yield_sigma_xy", 0.5);
+    scan_yield_sigma_theta_ = declare_parameter<double>("scan_yield_sigma_theta", 0.3);
   }
 
   // ── Magnetometer (off by default) ───────────────────────────────
@@ -862,6 +870,13 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
   // session, or a slow drift that builds up to >5 cm without a
   // detectable wheel discrepancy).
   const bool rtk_fixed = msg->status.status == sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX;
+  // Track the freshness of RTK-Fixed for the scan-match yield gate. Updated
+  // even while docked (GPS factors are suppressed below, but the freshness is
+  // still the honest signal of whether absolute position is available).
+  if (rtk_fixed)
+  {
+    last_rtk_fixed_stamp_ = this->now();
+  }
   // Suppress GPS factors while the robot is on the dock.
   //
   // When `is_charging=true`, the operator-calibrated dock_pose (anchored
@@ -1447,7 +1462,20 @@ void FusionGraphNode::OnTimer()
 
     if (!drop)
     {
-      graph_->QueueScanBetween(res.delta, res.sigma_xy, res.sigma_theta);
+      // Yield to RTK: if a fix was seen within scan_yield_timeout_s, inflate
+      // the scan-between σ so the (subtly-biased on open lawn) ICP factor
+      // can't pull map→odom away from the GPS-pinned solution. Once the fix
+      // has been gone longer than the timeout, keep the tight ICP σ so
+      // scan-matching carries dead-reckoning through the no-fix window.
+      double sm_sigma_xy = res.sigma_xy;
+      double sm_sigma_theta = res.sigma_theta;
+      if (scan_yield_to_rtk_ && last_rtk_fixed_stamp_ &&
+          (this->now() - *last_rtk_fixed_stamp_).seconds() < scan_yield_timeout_s_)
+      {
+        sm_sigma_xy = std::max(sm_sigma_xy, scan_yield_sigma_xy_);
+        sm_sigma_theta = std::max(sm_sigma_theta, scan_yield_sigma_theta_);
+      }
+      graph_->QueueScanBetween(res.delta, sm_sigma_xy, sm_sigma_theta);
       ++scan_matches_ok_;
     }
     else

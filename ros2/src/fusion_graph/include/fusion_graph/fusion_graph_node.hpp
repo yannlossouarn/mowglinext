@@ -360,6 +360,25 @@ private:
   double icp_max_divergence_xy_m_ = 0.15;
   double icp_max_divergence_theta_rad_ = 0.35;
 
+  // --- Scan-match yield-to-RTK gating ---------------------------------------
+  // On a feature-poor open lawn, ICP scan-between factors (σ_xy ≈ 2 cm) are
+  // subtly biased and, chained across many nodes, pull map→odom by 15-60 cm
+  // even while RTK-Fixed GPS (σ ≈ 7 mm) is available — which jitters every
+  // map-frame consumer (dock target, coverage strips) and broke docking
+  // (field 2026-05-29: dock "drove to the side" as the target shifted under
+  // it). Fix: when RTK-Fixed has been seen within scan_yield_timeout_s,
+  // inflate the scan-between σ to scan_yield_sigma_* so GPS dominates and the
+  // map frame stays pinned; once the fix is lost for longer than the timeout,
+  // fall back to the tight ICP σ so scan-matching carries the estimate
+  // through the no-fix window (its whole reason for existing). Set
+  // scan_yield_to_rtk_=false to keep scan-matching always tight (feature-rich
+  // sites). This does NOT affect the use_scan_matching_=false baseline.
+  bool scan_yield_to_rtk_ = true;
+  double scan_yield_timeout_s_ = 2.0;
+  double scan_yield_sigma_xy_ = 0.5;
+  double scan_yield_sigma_theta_ = 0.3;
+  std::optional<rclcpp::Time> last_rtk_fixed_stamp_;
+
   // In-flight guards for the async maintenance jobs. Save and rebase
   // each run in a detached worker so the executor callback returns
   // immediately; the atomic flag prevents a second worker from
