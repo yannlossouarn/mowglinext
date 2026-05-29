@@ -723,7 +723,10 @@ private:
   // async rebase is in progress are also captured in the pending
   // buffer (replayed onto the fresh iSAM2 before the swap). Caller
   // must hold mu_.
-  void ApplyIsamUpdateLocked(const gtsam::NonlinearFactorGraph& fg, const gtsam::Values& values);
+  // Returns false if the update hit an ill-posed system and triggered a
+  // ResetLocked() — callers MUST bail (the graph is now empty/uninitialised;
+  // continuing would publish a garbage origin pose).
+  bool ApplyIsamUpdateLocked(const gtsam::NonlinearFactorGraph& fg, const gtsam::Values& values);
 };
 
 }  // namespace fusion_graph
