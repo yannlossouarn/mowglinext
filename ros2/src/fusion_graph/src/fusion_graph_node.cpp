@@ -1025,6 +1025,16 @@ void FusionGraphNode::OnCogHeading(sensor_msgs::msg::Imu::ConstSharedPtr msg)
           // estimate with the physics-grounded COG heading. Keep xy at its
           // current σ-equivalent (5 mm) since only yaw is wrong.
           graph_->ForceAnchor(snap->node_index, anchor, 0.005, 1.0 * M_PI / 180.0);
+          // Re-datum dead reckoning to the re-anchored node. dr_* carries the
+          // OLD (flipped) heading lineage; without this reset the map→odom
+          // recompute cancels against the stale dr_yaw_ and odom→base keeps
+          // publishing the flipped heading — the two TF legs disagree by 180°
+          // the moment the robot moves. SeedFromDockPose does the same after
+          // a large yaw change (the RTK-override path doesn't, because it only
+          // shifts xy and dr_yaw_ stays valid there).
+          dr_x_ = 0.0;
+          dr_y_ = 0.0;
+          dr_yaw_ = 0.0;
           t_map_odom_anchor_valid_ = false;
           ++cog_flip_recoveries_;
           cog_flip_count_ = 0;
