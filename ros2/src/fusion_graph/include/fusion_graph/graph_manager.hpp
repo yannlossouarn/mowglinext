@@ -717,7 +717,10 @@ private:
 
   // Internal — actually creates the node and runs iSAM2. Caller must
   // hold mu_.
-  TickOutput CreateNodeLocked(double now_s);
+  // Returns std::nullopt when an ill-posed iSAM2 update forced a graph
+  // ResetLocked() mid-node — the caller (Tick) must NOT publish a node
+  // (the graph is empty; a node would carry the datum-origin pose).
+  std::optional<TickOutput> CreateNodeLocked(double now_s);
 
   // Internal — wrap isam_.update so any factors/values added while an
   // async rebase is in progress are also captured in the pending

@@ -276,7 +276,7 @@ std::optional<TickOutput> GraphManager::Tick(double now_s)
   return CreateNodeLocked(now_s);
 }
 
-TickOutput GraphManager::CreateNodeLocked(double now_s)
+std::optional<TickOutput> GraphManager::CreateNodeLocked(double now_s)
 {
   // Guard against next_index_ == 0: would underflow PoseKey(next_index_ - 1)
   // and crash GTSAM with "Symbol index is too large" when j wraps to 2^64-1.
