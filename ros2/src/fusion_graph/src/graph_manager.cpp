@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <ios>
@@ -14,6 +15,7 @@
 #include <gtsam/base/GenericValue.h>
 #include <gtsam/base/serialization.h>
 #include <gtsam/linear/NoiseModel.h>
+#include <gtsam/linear/linearExceptions.h>
 #include <gtsam/nonlinear/ISAM2Params.h>
 #include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
@@ -273,7 +275,7 @@ std::optional<TickOutput> GraphManager::Tick(double now_s)
   return CreateNodeLocked(now_s);
 }
 
-TickOutput GraphManager::CreateNodeLocked(double now_s)
+std::optional<TickOutput> GraphManager::CreateNodeLocked(double now_s)
 {
   // Guard against next_index_ == 0: would underflow PoseKey(next_index_ - 1)
   // and crash GTSAM with "Symbol index is too large" when j wraps to 2^64-1.
@@ -567,7 +569,13 @@ TickOutput GraphManager::CreateNodeLocked(double now_s)
   //    that need ALL poses (viz / Save / LC search fallback) will
   //    refresh on demand. Per-Tick / per-LC lookups go through
   //    PoseAt() / HasPoseAt() which are O(depth) on the Bayes tree.
-  ApplyIsamUpdateLocked(new_factors_, new_values_);
+  if (!ApplyIsamUpdateLocked(new_factors_, new_values_))
+  {
+    // Graph was reset (ill-posed system). Don't publish a node this tick —
+    // the manager is uninitialised; PoseAt(0) would return the datum origin
+    // and teleport the robot. The next GPS/dock seed re-bootstraps.
+    return std::nullopt;
+  }
   estimate_dirty_ = true;
   new_factors_.resize(0);
   new_values_.clear();
@@ -783,7 +791,10 @@ void GraphManager::ForceAnchor(uint64_t node_index,
   auto noise = MakeDiagonal({sigma_xy, sigma_xy, sigma_theta});
   gtsam::NonlinearFactorGraph fg;
   fg.add(gtsam::PriorFactor<gtsam::Pose2>(PoseKey(node_index), pose, noise));
-  ApplyIsamUpdateLocked(fg, gtsam::Values());
+  if (!ApplyIsamUpdateLocked(fg, gtsam::Values()))
+  {
+    return;  // ill-posed reset; latest_ is now null, nothing to anchor
+  }
   estimate_dirty_ = true;
   // Update latest_ snapshot so PublishOutputs sees the new pose.
   if (latest_ && latest_->node_index == node_index)
@@ -952,10 +963,33 @@ void GraphManager::RebaseISAM2()
   }
 }
 
-void GraphManager::ApplyIsamUpdateLocked(const gtsam::NonlinearFactorGraph& fg,
+bool GraphManager::ApplyIsamUpdateLocked(const gtsam::NonlinearFactorGraph& fg,
                                          const gtsam::Values& values)
 {
-  isam_.update(fg, values);
+  try
+  {
+    isam_.update(fg, values);
+  }
+  catch (const std::exception& e)
+  {
+    // The iSAM2 update failed fatally — most commonly an
+    // IndeterminantLinearSystemException (underconstrained, e.g. a
+    // stationary graph that lost its only absolute anchor), but we catch the
+    // whole std::exception family because ANY unmatched throw out of update()
+    // SIGABRTs the node and kills localization entirely (field 2026-05-29,
+    // dock-bootstrap crash at x62). iSAM2 is left inconsistent, so the only
+    // safe recovery is a full rebuild. After ResetLocked() IsInitialized()==
+    // false and the next GPS/dock seed re-bootstraps cleanly. We are already
+    // under mu_ here. Return false so the caller bails THIS tick — continuing
+    // would publish a garbage origin pose from the now-empty graph.
+    std::fprintf(stderr,
+                 "[fusion_graph] iSAM2 update failed (%s) — resetting graph "
+                 "for a clean re-seed instead of aborting the node.\n",
+                 e.what());
+    ++stats_isam_resets_;
+    ResetLocked();
+    return false;
+  }
   if (rebase_in_progress_)
   {
     // Mirror everything onto the pending buffer so phase 3 of the
@@ -963,6 +997,7 @@ void GraphManager::ApplyIsamUpdateLocked(const gtsam::NonlinearFactorGraph& fg,
     rebase_pending_factors_.push_back(fg);
     rebase_pending_values_.insert(values);
   }
+  return true;
 }
 
 void GraphManager::RigidTransformAll(const gtsam::Pose2& correction,
@@ -1078,7 +1113,12 @@ void GraphManager::AddLoopClosure(uint64_t prev_index,
   gtsam::NonlinearFactorGraph fg;
   fg.add(gtsam::BetweenFactor<gtsam::Pose2>(k_prev, k_curr, delta, robust_noise));
 
-  ApplyIsamUpdateLocked(fg, gtsam::Values());
+  if (!ApplyIsamUpdateLocked(fg, gtsam::Values()))
+  {
+    // Loop-closure factor triggered an ill-posed reset; the graph is now
+    // empty — don't record the (now-meaningless) edge/count.
+    return;
+  }
   estimate_dirty_ = true;
   ++loop_closures_added_;
   loop_closure_edges_.emplace_back(prev_index, curr_index);
@@ -1173,6 +1213,11 @@ bool DeserializeScansBinary(std::istream& is,
 void GraphManager::Reset()
 {
   std::lock_guard<std::mutex> lock(mu_);
+  ResetLocked();
+}
+
+void GraphManager::ResetLocked()
+{
   // Rebuild iSAM2 with the same parameters used in the constructor —
   // GTSAM has no public clear() API.
   gtsam::ISAM2Params p;

@@ -553,6 +553,10 @@ public:
   void Reset();
 
 private:
+  // Reset() body without taking mu_ — for callers that already hold the lock
+  // (e.g. the iSAM2 indeterminate-system catch inside ApplyIsamUpdateLocked).
+  void ResetLocked();
+
   // Per-node accumulator for between-factors.
   struct Accumulator
   {
@@ -654,6 +658,10 @@ private:
   uint64_t stats_icp_rejects_divergence_ = 0;
   uint64_t stats_hand_push_ = 0;
   uint64_t stats_slip_veto_ = 0;
+  // Count of iSAM2 indeterminate-system catches that triggered a graph
+  // reset (instead of aborting the node). Nonzero = the graph hit an
+  // ill-posed state and self-healed; investigate if it climbs.
+  uint64_t stats_isam_resets_ = 0;
 
   // Adaptive process-noise state.
   // residual_ema_ tracks the EMA-smoothed |dtheta_wheel - dtheta_gyro|
@@ -709,13 +717,19 @@ private:
 
   // Internal — actually creates the node and runs iSAM2. Caller must
   // hold mu_.
-  TickOutput CreateNodeLocked(double now_s);
+  // Returns std::nullopt when an ill-posed iSAM2 update forced a graph
+  // ResetLocked() mid-node — the caller (Tick) must NOT publish a node
+  // (the graph is empty; a node would carry the datum-origin pose).
+  std::optional<TickOutput> CreateNodeLocked(double now_s);
 
   // Internal — wrap isam_.update so any factors/values added while an
   // async rebase is in progress are also captured in the pending
   // buffer (replayed onto the fresh iSAM2 before the swap). Caller
   // must hold mu_.
-  void ApplyIsamUpdateLocked(const gtsam::NonlinearFactorGraph& fg, const gtsam::Values& values);
+  // Returns false if the update hit an ill-posed system and triggered a
+  // ResetLocked() — callers MUST bail (the graph is now empty/uninitialised;
+  // continuing would publish a garbage origin pose).
+  bool ApplyIsamUpdateLocked(const gtsam::NonlinearFactorGraph& fg, const gtsam::Values& values);
 };
 
 }  // namespace fusion_graph

@@ -170,6 +170,16 @@ public:
     return apply_promoted_obstacle(area_index, polygon);
   }
 
+  /// Test-only: mark an area's one-shot headland pass as already
+  /// emitted so find_next_segment skips straight to the boustrophedon
+  /// row planner. Production emits the perimeter headland on the FIRST
+  /// call per area; unit tests that assert in-row / obstacle /
+  /// coverage-complete behaviour must drain that one-shot first.
+  void mark_headland_emitted_for_test(size_t area_index)
+  {
+    headland_emitted_areas_.insert(area_index);
+  }
+
   /// Test-only: directly invoke the add_area service handler.
   void add_area_for_test(const mowgli_interfaces::srv::AddMowingArea::Request::SharedPtr req,
                          mowgli_interfaces::srv::AddMowingArea::Response::SharedPtr res);
@@ -441,6 +451,14 @@ private:
                               uint32_t& total,
                               uint32_t& mowed,
                               uint32_t& obstacle_cells) const;
+
+  /// Count LAWN cells in an area: `total_lawn` = all reachable mowable cells
+  /// (classification == LAWN, i.e. excludes LAWN_DEAD/NO_GO/obstacle/UNKNOWN),
+  /// `unmowed_lawn` = those with mow_progress < 0.3. Used as the real-coverage
+  /// half of the area-completion test (paired with the strip layout). The
+  /// blade never reaches every edge cell, so completion is a high FRACTION of
+  /// reachable LAWN, not zero unmowed cells. Caller must hold map_mutex_.
+  void count_lawn_cells(size_t area_index, uint32_t& total_lawn, uint32_t& unmowed_lawn) const;
 
   // ── Path C cell-based coverage ────────────────────────────────────────────
 

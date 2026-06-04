@@ -108,6 +108,11 @@ public:
     // once antenna rotational speed exceeds chassis forward speed.
     cog_sweep_dominance_ratio_ =
         declare_parameter<double>("cog_sweep_dominance_ratio", 1.0);
+    // Max integrated |heading change| (rad) allowed over a COG baseline. A
+    // straight segment is ~0; above this the displacement no longer tracks
+    // the body axis (slow oscillation) and the COG is dropped. 0.20 ≈ 11°.
+    cog_max_baseline_rotation_rad_ =
+        declare_parameter<double>("cog_max_baseline_rotation_rad", 0.20);
     // Rotation gate for the stationary latched-yaw republish. Much lower
     // than min_omega_for_anchor_rps: this path only runs when the robot is
     // meant to be stationary, so any meaningful rotation (the dock's slow
@@ -198,6 +203,21 @@ public:
         [this](sensor_msgs::msg::Imu::ConstSharedPtr msg)
         {
           gyro_z_ = msg->angular_velocity.z;
+          // Integrate |gyro_z| since the anchor for the straight-baseline gate
+          // in on_fix(). Reset happens on anchor (re)seed there.
+          const double t = this->now().seconds();
+          const double prev = last_imu_t_.exchange(t);
+          const double dt = t - prev;
+          if (prev > 0.0 && dt > 0.0 && dt < 0.5)
+          {
+            // CAS add (not a plain load+store) so a concurrent on_fix() reset
+            // to 0 under a MultiThreadedExecutor can't be lost to a stale add.
+            const double inc = std::abs(msg->angular_velocity.z) * dt;
+            double cur = abs_dtheta_since_anchor_.load(std::memory_order_relaxed);
+            while (!abs_dtheta_since_anchor_.compare_exchange_weak(cur, cur + inc))
+            {
+            }
+          }
         });
     pub_ = create_publisher<sensor_msgs::msg::Imu>("/imu/cog_heading", qos);
 
@@ -405,6 +425,7 @@ private:
       anchor_pa_ = pos_acc;
       anchor_wheel_sign_ = wheel_sign;
       have_anchor_ = true;
+      abs_dtheta_since_anchor_ = 0.0;  // fresh straight baseline starts here
       return;
     }
 
@@ -415,6 +436,18 @@ private:
     if (displacement < min_baseline_displacement_m_)
     {
       ++rejected_displacement_;
+      return;
+    }
+
+    // Straight-baseline gate: if the heading swung more than
+    // cog_max_baseline_rotation_rad_ over this baseline (a slow oscillation
+    // that slipped under the instantaneous rotation/sweep gates), the GPS
+    // displacement no longer points along the body axis — the COG heading
+    // would be garbage. Drop the anchor and restart on a fresh straight run.
+    if (abs_dtheta_since_anchor_.load() > cog_max_baseline_rotation_rad_)
+    {
+      ++rejected_baseline_rotation_;
+      have_anchor_ = false;
       return;
     }
 
@@ -482,8 +515,14 @@ private:
     anchor_y_ = y;
     anchor_pa_ = pos_acc;
     anchor_wheel_sign_ = wheel_sign;
+    abs_dtheta_since_anchor_ = 0.0;  // next baseline starts fresh
 
-    publish_imu(now(), yaw, yaw_var);
+    // Stamp the heading with the GPS fix time, not wall-clock now(). The COG
+    // yaw is derived from this fix's position; stamping it with arrival time
+    // bakes in the GPS pipeline latency (~100-200 ms), which misassociates the
+    // measurement with a later graph node during turns. msg.header.stamp is the
+    // fix epoch.
+    publish_imu(rclcpp::Time(msg.header.stamp), yaw, yaw_var);
 
     const double mono_now = static_cast<double>(get_clock()->now().nanoseconds()) * 1e-9;
     latched_yaw_ = LatchedYaw{mono_now, yaw, yaw_var};
@@ -578,7 +617,7 @@ private:
     RCLCPP_INFO(get_logger(),
                 "cog_to_imu stats: published fwd=%d rev=%d seed=%d, "
                 "rejected fix=%d accuracy=%d stationary=%d rotating=%d sweep=%d "
-                "displacement=%d, mag_cal samples=%zu (writes=%d)",
+                "displacement=%d baseline_rot=%lu, mag_cal samples=%zu (writes=%d)",
                 published_fwd_,
                 published_rev_,
                 stationary_seeds_published_,
@@ -588,6 +627,7 @@ private:
                 rejected_rotating_,
                 rejected_sweep_,
                 rejected_displacement_,
+                static_cast<unsigned long>(rejected_baseline_rotation_),
                 mag_samples_.size(),
                 mag_fit_count_);
     published_fwd_ = 0;
@@ -892,6 +932,20 @@ private:
   std::atomic<double> wheel_vx_{0.0};
   std::atomic<double> wheel_omega_{0.0};
   std::atomic<double> gyro_z_{0.0};
+  // Absolute heading change integrated since the current anchor (∫|gyro_z|dt,
+  // accumulated in the /imu/data callback, reset on every anchor (re)seed).
+  // The instantaneous min_omega_for_anchor_ / sweep gates only catch fast
+  // pivots; a SLOW heading oscillation (e.g. an FTC limit-cycle on a tight
+  // path segment) keeps each sample under threshold yet swings the heading
+  // across the baseline, so the GPS displacement no longer points along the
+  // body axis and the published COG yaw is garbage — which the non-robust COG
+  // unary and the yaw-flip recovery then amplify into a 180° flip. Reject the
+  // COG when this exceeds cog_max_baseline_rotation_rad_ (a straight baseline
+  // is near zero). last_imu_t_ is the previous /imu/data stamp for dt.
+  std::atomic<double> abs_dtheta_since_anchor_{0.0};
+  std::atomic<double> last_imu_t_{0.0};
+  double cog_max_baseline_rotation_rad_{0.20};
+  uint64_t rejected_baseline_rotation_{0};
   // Debounce counter for the post-rotation transition: how many
   // consecutive non-rotating samples we've seen since the last
   // detected pivot. Reset to 0 on every rotating sample; once it

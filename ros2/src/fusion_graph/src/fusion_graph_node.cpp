@@ -122,6 +122,7 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   // RTK wrong-fix detection (handled in OnGnss, not in graph_manager).
   rtk_wrongfix_max_jump_m_ =
       declare_parameter<double>("rtk_wrongfix_max_jump_m", 0.05);
+  dock_gps_sigma_m_ = declare_parameter<double>("dock_gps_sigma_m", 0.50);
   rtk_wrongfix_max_wheel_m_ =
       declare_parameter<double>("rtk_wrongfix_max_wheel_m", 0.02);
 
@@ -172,7 +173,24 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
     icp_max_delta_theta_rad_ = declare_parameter<double>("icp_max_delta_theta_rad", 0.50);
     icp_max_divergence_xy_m_ = declare_parameter<double>("icp_max_divergence_xy_m", 0.15);
     icp_max_divergence_theta_rad_ = declare_parameter<double>("icp_max_divergence_theta_rad", 0.35);
+
+    // Yield-to-RTK gating (see fusion_graph_node.hpp). When RTK-Fixed is
+    // fresh, inflate the scan-between σ so GPS dominates and map→odom stays
+    // pinned; scan-matching only carries the estimate once the fix is lost.
+    scan_yield_to_rtk_ = declare_parameter<bool>("scan_yield_to_rtk", true);
+    scan_yield_timeout_s_ = declare_parameter<double>("scan_yield_timeout_s", 2.0);
+    scan_yield_sigma_xy_ = declare_parameter<double>("scan_yield_sigma_xy", 0.5);
+    scan_yield_sigma_theta_ = declare_parameter<double>("scan_yield_sigma_theta", 0.3);
   }
+
+  // 180° yaw-flip recovery (see fusion_graph_node.hpp). Declared outside the
+  // scan_matching gate — it keys off COG, not LiDAR.
+  cog_flip_recovery_enabled_ = declare_parameter<bool>("cog_flip_recovery_enabled", true);
+  cog_flip_threshold_rad_ = declare_parameter<double>("cog_flip_threshold_rad", 2.618);
+  cog_flip_consecutive_n_ = declare_parameter<int>("cog_flip_consecutive_n", 3);
+  cog_flip_require_rtk_ = declare_parameter<bool>("cog_flip_require_rtk", true);
+  cog_flip_min_interval_s_ = declare_parameter<double>("cog_flip_min_interval_s", 10.0);
+  cog_flip_consistency_rad_ = declare_parameter<double>("cog_flip_consistency_rad", 0.52);
 
   // ── Magnetometer (off by default) ───────────────────────────────
   // Motors near the chassis induce a heading-dependent bias on the
@@ -862,6 +880,13 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
   // session, or a slow drift that builds up to >5 cm without a
   // detectable wheel discrepancy).
   const bool rtk_fixed = msg->status.status == sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX;
+  // Track the freshness of RTK-Fixed for the scan-match yield gate. Updated
+  // even while docked (GPS factors are suppressed below, but the freshness is
+  // still the honest signal of whether absolute position is available).
+  if (rtk_fixed)
+  {
+    last_rtk_fixed_stamp_ = this->now();
+  }
   // Suppress GPS factors while the robot is on the dock.
   //
   // When `is_charging=true`, the operator-calibrated dock_pose (anchored
@@ -883,11 +908,19 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
   // to bootstrap if the graph somehow becomes uninitialised.
   if (last_is_charging_valid_ && last_is_charging_)
   {
-    // Still run TrySeedInitialPose so a not-yet-init graph can pick up
-    // a previously-seen seed (e.g. boot race where status arrived
-    // before any /gps/fix). And run the RTK-Fixed override block below
-    // — which is itself gated on !last_is_charging_ now, so it'll
-    // no-op safely. Just don't add a GPS factor or update seed_xy_.
+    // On the dock the dock_pose prior is authoritative, but FULLY suppressing
+    // GPS leaves a stationary graph whose only absolute constraint is the
+    // single bootstrap prior — after ~60 zero-motion nodes iSAM2 hits an
+    // indeterminate (underconstrained) linear system and ABORTS the node
+    // (field 2026-05-29, crash at x62). Instead inject a deliberately WEAK
+    // GPS factor (σ = dock_gps_sigma_m_, far looser than the dock prior) so
+    // the system stays well-posed without walking the trajectory off the dock
+    // anchor. seed_xy_ is still NOT updated (TrySeedInitialPose must bootstrap
+    // from dock_pose, not GPS).
+    if (graph_->IsInitialized())
+    {
+      graph_->QueueGnss(mx, my, std::max(sigma, dock_gps_sigma_m_), /*robust=*/true);
+    }
     TrySeedInitialPose();
     return;
   }
@@ -980,6 +1013,88 @@ void FusionGraphNode::OnCogHeading(sensor_msgs::msg::Imu::ConstSharedPtr msg)
   const double sigma = std::sqrt(var);
   graph_->QueueYaw(yaw, sigma);
   seed_yaw_ = yaw;
+
+  // 180° yaw-flip recovery. The COG yaw is the physical travel direction
+  // (wheels + GPS displacement, only emitted on a solid straight baseline),
+  // so a sustained ~180° disagreement with the fused estimate means the
+  // estimate is flipped — and the non-robust COG unary above can fail to pull
+  // it back across the half-turn. After N consecutive flipped samples, snap
+  // the yaw onto the COG (keep the estimated xy) so the robot stops believing
+  // it faces backwards.
+  if (cog_flip_recovery_enabled_ && graph_->IsInitialized())
+  {
+    // Only trust the COG for a flip recovery when it is GPS-grounded
+    // (RTK-Fixed fresh). With cog_to_imu's straight-baseline gate the COGs
+    // that arrive are already clean; requiring RTK-Fixed avoids snapping the
+    // yaw onto a Float-era COG.
+    const bool rtk_fresh =
+        !cog_flip_require_rtk_ ||
+        (last_rtk_fixed_stamp_ &&
+         (this->now() - *last_rtk_fixed_stamp_).seconds() < scan_yield_timeout_s_);
+    auto snap = graph_->LatestSnapshot();
+    if (!rtk_fresh || !snap)
+    {
+      cog_flip_count_ = 0;
+      cog_flip_prev_yaw_.reset();
+    }
+    else
+    {
+      const double d = yaw - snap->pose.theta();
+      const double err = std::fabs(std::atan2(std::sin(d), std::cos(d)));
+      if (err > cog_flip_threshold_rad_)
+      {
+        // Consecutive flipped COGs must agree WITH EACH OTHER, else the COG
+        // is jittering and snapping to it would amplify rather than fix.
+        bool consistent = true;
+        if (cog_flip_prev_yaw_)
+        {
+          const double dd = yaw - *cog_flip_prev_yaw_;
+          consistent =
+              std::fabs(std::atan2(std::sin(dd), std::cos(dd))) < cog_flip_consistency_rad_;
+        }
+        cog_flip_count_ = consistent ? (cog_flip_count_ + 1) : 1;
+        cog_flip_prev_yaw_ = yaw;
+        const bool rate_ok =
+            !last_flip_recovery_stamp_ ||
+            (this->now() - *last_flip_recovery_stamp_).seconds() > cog_flip_min_interval_s_;
+        if (cog_flip_count_ >= cog_flip_consecutive_n_ && rate_ok)
+        {
+          last_flip_recovery_stamp_ = this->now();
+          const gtsam::Pose2 anchor(snap->pose.x(), snap->pose.y(), yaw);
+          // Tight yaw (1°) — we are deliberately overriding the flipped
+          // estimate with the physics-grounded COG heading. Keep xy at its
+          // current σ-equivalent (5 mm) since only yaw is wrong.
+          graph_->ForceAnchor(snap->node_index, anchor, 0.005, 1.0 * M_PI / 180.0);
+          // Re-datum dead reckoning to the re-anchored node. dr_* carries the
+          // OLD (flipped) heading lineage; without this reset the map→odom
+          // recompute cancels against the stale dr_yaw_ and odom→base keeps
+          // publishing the flipped heading — the two TF legs disagree by 180°
+          // the moment the robot moves. SeedFromDockPose does the same after
+          // a large yaw change (the RTK-override path doesn't, because it only
+          // shifts xy and dr_yaw_ stays valid there).
+          dr_x_ = 0.0;
+          dr_y_ = 0.0;
+          dr_yaw_ = 0.0;
+          t_map_odom_anchor_valid_ = false;
+          ++cog_flip_recoveries_;
+          cog_flip_count_ = 0;
+          RCLCPP_WARN(get_logger(),
+                      "fusion_graph: 180° yaw-flip recovery — estimate %.1f° vs "
+                      "COG %.1f° (Δ=%.0f°); re-anchored yaw to COG on node %lu.",
+                      snap->pose.theta() * 180.0 / M_PI,
+                      yaw * 180.0 / M_PI,
+                      err * 180.0 / M_PI,
+                      static_cast<unsigned long>(snap->node_index));
+        }
+      }
+      else
+      {
+        cog_flip_count_ = 0;
+        cog_flip_prev_yaw_.reset();
+      }
+    }
+  }
+
   TrySeedInitialPose();
 }
 
@@ -1447,7 +1562,20 @@ void FusionGraphNode::OnTimer()
 
     if (!drop)
     {
-      graph_->QueueScanBetween(res.delta, res.sigma_xy, res.sigma_theta);
+      // Yield to RTK: if a fix was seen within scan_yield_timeout_s, inflate
+      // the scan-between σ so the (subtly-biased on open lawn) ICP factor
+      // can't pull map→odom away from the GPS-pinned solution. Once the fix
+      // has been gone longer than the timeout, keep the tight ICP σ so
+      // scan-matching carries dead-reckoning through the no-fix window.
+      double sm_sigma_xy = res.sigma_xy;
+      double sm_sigma_theta = res.sigma_theta;
+      if (scan_yield_to_rtk_ && last_rtk_fixed_stamp_ &&
+          (this->now() - *last_rtk_fixed_stamp_).seconds() < scan_yield_timeout_s_)
+      {
+        sm_sigma_xy = std::max(sm_sigma_xy, scan_yield_sigma_xy_);
+        sm_sigma_theta = std::max(sm_sigma_theta, scan_yield_sigma_theta_);
+      }
+      graph_->QueueScanBetween(res.delta, sm_sigma_xy, sm_sigma_theta);
       ++scan_matches_ok_;
     }
     else
@@ -1614,7 +1742,14 @@ void FusionGraphNode::PublishLocalOdom()
   t_odom_base.transform.translation.y = dr_y_;
   t_odom_base.transform.translation.z = 0.0;
   t_odom_base.transform.rotation = q_msg;
-  tf_broadcaster_->sendTransform(t_odom_base);
+  // Only the PRIMARY localizer may own odom→base_footprint — same single-
+  // publisher rule as map→odom below. In observer mode (A/B against another
+  // odom source) we still publish /odometry/filtered for comparison but must
+  // NOT broadcast the TF, or two nodes would fight over the same transform.
+  if (primary_mode_)
+  {
+    tf_broadcaster_->sendTransform(t_odom_base);
+  }
 
   nav_msgs::msg::Odometry odom;
   odom.header.stamp = now;

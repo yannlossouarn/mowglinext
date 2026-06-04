@@ -263,6 +263,15 @@ BT::NodeStatus TransitToStrip::onStart()
 {
   auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
 
+  // Nothing to transit to if there is no coverage path (e.g. the area is
+  // already fully mowed → PlanCoverageArea returned an empty path with a
+  // stale transit goal). Skip cleanly; FollowStrip will handle the empty
+  // path via its own AreaUnreachable fallthrough.
+  if (ctx->current_strip_path.poses.empty())
+  {
+    return BT::NodeStatus::SUCCESS;
+  }
+
   RCLCPP_INFO(ctx->node->get_logger(),
               "TransitToStrip: goal frame='%s' pos=(%.2f, %.2f)",
               ctx->current_transit_goal.header.frame_id.c_str(),
@@ -598,7 +607,21 @@ BT::NodeStatus GetNextUnmowedArea::processResponse()
     // mid-mow: the cached strip_path is gone but mow_progress has
     // captured everything we mowed before the excursion, so the
     // re-plan covers only the remaining swaths.
+    // Count only CONSECUTIVE no-progress dispatches toward the give-up
+    // budget. If this area's coverage advanced beyond the best we've seen,
+    // the previous pass mowed something despite any FollowStrip stutter
+    // (e.g. a hard-to-skirt obstacle at a strip end) — reset the counter so
+    // a steadily-progressing area is never abandoned mid-climb.
     auto& n = ctx->area_attempt_count[current_area_idx_];
+    auto last_it = ctx->area_last_coverage.find(current_area_idx_);
+    const bool made_progress =
+        (last_it == ctx->area_last_coverage.end()) ||
+        (response->coverage_percent > last_it->second + BTContext::kAreaProgressEpsilonPct);
+    if (made_progress)
+    {
+      ctx->area_last_coverage[current_area_idx_] = response->coverage_percent;
+      n = 0;
+    }
     n++;
     if (n >= BTContext::kMaxAreaAttempts)
     {
@@ -1035,6 +1058,7 @@ BT::NodeStatus PlanCoverageArea::onStart()
   accumulated_path_ = nav_msgs::msg::Path{};
   accumulated_path_.header.frame_id = "map";
   accumulated_path_.header.stamp = ctx->node->get_clock()->now();
+  have_first_coverage_pose_ = false;
   goal_handle_.reset();
   phase_start_ = std::chrono::steady_clock::now();
 
@@ -1151,6 +1175,22 @@ BT::NodeStatus PlanCoverageArea::onRunning()
       {
         return BT::NodeStatus::FAILURE;
       }
+      // Transit goal = the real F2C mowing start. The mowed path no longer
+      // carries a robot→F2C-start straight prefix, so an obstacle-aware,
+      // boundary-aware TransitToStrip (Nav2 Smac + global obstacle_layer)
+      // routes the robot AROUND obstacles and inside the polygon to the
+      // coverage start; FollowStrip then begins mowing right at the F2C
+      // start. Fall back to the path front only if we never captured an
+      // F2C start (no piece produced poses).
+      if (have_first_coverage_pose_)
+      {
+        ctx->current_transit_goal = first_coverage_pose_;
+      }
+      else
+      {
+        ctx->current_transit_goal = accumulated_path_.poses.front();
+        ctx->current_transit_goal.header = accumulated_path_.header;
+      }
       return BT::NodeStatus::SUCCESS;
     }
 
@@ -1254,11 +1294,16 @@ BT::NodeStatus PlanCoverageArea::onRunning()
   {
     if (result_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
     {
-      // F2C planning can take seconds on large fields; allow 30 s.
-      if (std::chrono::steady_clock::now() - phase_start_ > std::chrono::seconds(30))
+      // Backstop only. With the mowed-hole simplification (remaining_polygon)
+      // and the sub-cell area floor (coverage_server), a piece now plans in a
+      // few seconds even on a heavily mowed-out resume field. The old 30 s,
+      // multiplied by ~17 resume pieces × 5 retries, froze the robot for
+      // minutes when F2C choked on a staircased hole (field 2026-06-01). 12 s
+      // still clears any legitimately large single piece.
+      if (std::chrono::steady_clock::now() - phase_start_ > std::chrono::seconds(12))
       {
         RCLCPP_WARN(ctx->node->get_logger(),
-                    "PlanCoverageArea: piece %zu result timeout (30s) — skipping",
+                    "PlanCoverageArea: piece %zu result timeout (12s) — skipping",
                     current_piece_);
         pieces_failed_++;
         current_piece_++;
@@ -1302,70 +1347,46 @@ BT::NodeStatus PlanCoverageArea::onRunning()
       // F2C v2 (mowgli_coverage server) returns a complete coverage
       // path including headland traversal — no need to prepend the
       // hand-rolled perimeter ring anymore.
-      //
-      // We DO still need a transit segment from the robot's current
-      // pose to the F2C path's first pose, though. F2C plans the
-      // field starting from a sub-cell vertex (typically a corner of
-      // the SW sub-cell) and has no notion of where the robot is.
-      // Without a transit prefix, FTC's setPlan picks the closest
-      // path pose to the robot's current location — which can be a
-      // pose in the LAST sub-cell when the robot starts near the
-      // dock at the opposite corner of the field. The robot then
-      // skips 95 % of the path and only mows the last sub-cell.
-      //
-      // Densify the transit at ~0.10 m so FTC's carrot has poses to
-      // chase along the way; the orientation matches the direction
-      // of travel toward the F2C path's first pose.
       const auto& piece_path = wrapped.result->nav_path;
-      // Densify a transit segment from the previous accumulated end-
-      // pose (or the robot's current TF pose for the very first piece)
-      // to this piece's first pose. Required because each F2C piece
-      // plans independently — the gap between consecutive pieces would
-      // otherwise be picked up by FTC's setPlan as the "closest path
-      // pose to robot", which can land deep in the next piece (skipping
-      // anywhere from 5-95 % of poses depending on geometry). The
-      // transit prefix gives FTC a continuous path from where the robot
-      // actually is to where F2C wants it to start.
       const bool is_first_piece = accumulated_path_.poses.empty();
       if (!piece_path.poses.empty())
       {
-        double rx = 0.0, ry = 0.0;
-        bool have_origin = false;
-        if (is_first_piece)
+        // Capture the FIRST piece's F2C start as the obstacle-aware
+        // TransitToStrip goal. This is the REAL mowing start: the
+        // robot→F2C-start leg is deliberately NOT prepended to the mowed
+        // path. An obstacle-aware, boundary-aware TransitToStrip (Nav2
+        // Smac + the global obstacle_layer) drives the robot there
+        // blade-off, and FollowStrip then begins mowing exactly at the
+        // F2C start. The old hand-rolled straight prefix ignored the area
+        // polygon entirely and got mowed blade-on straight out of the
+        // field ("un swath qui sort du terrain au point de départ").
+        if (is_first_piece && !have_first_coverage_pose_)
         {
-          try
-          {
-            auto tf = ctx->tf_buffer->lookupTransform(
-                "map", "base_footprint", tf2::TimePointZero);
-            rx = tf.transform.translation.x;
-            ry = tf.transform.translation.y;
-            have_origin = true;
-          }
-          catch (const tf2::TransformException& ex)
-          {
-            RCLCPP_WARN(ctx->node->get_logger(),
-                        "PlanCoverageArea: TF lookup map→base_footprint failed "
-                        "(%s); skipping robot→F2C transit prefix.",
-                        ex.what());
-          }
+          first_coverage_pose_ = piece_path.poses.front();
+          first_coverage_pose_.header = piece_path.header;
+          have_first_coverage_pose_ = true;
         }
-        else
+        // Between consecutive F2C pieces (within the already-planned
+        // field), densify a short transit segment from the previous
+        // accumulated end-pose to this piece's first pose. Required
+        // because each F2C piece plans independently — the gap between
+        // pieces would otherwise be picked up by FTC's setPlan as the
+        // "closest path pose to robot", landing deep in the next piece
+        // (skipping 5-95 % of poses). Only inter-piece gaps, which lie
+        // inside the field, are bridged here; the first piece gets no
+        // prefix (TransitToStrip owns the robot→F2C-start leg).
+        if (!is_first_piece)
         {
           const auto& prev_end = accumulated_path_.poses.back().pose.position;
-          rx = prev_end.x;
-          ry = prev_end.y;
-          have_origin = true;
-        }
-
-        if (have_origin)
-        {
+          const double rx = prev_end.x;
+          const double ry = prev_end.y;
           const auto& first_pose = piece_path.poses.front().pose.position;
           const double tdx = first_pose.x - rx;
           const double tdy = first_pose.y - ry;
           const double tlen = std::hypot(tdx, tdy);
-          // Skip the transit when the origin is already at/near the
-          // F2C start — densifying a 5 cm leg gives one redundant pose
-          // at the same location.
+          // Skip the transit when the previous end is already at/near the
+          // F2C start — densifying a sub-10 cm leg gives one redundant
+          // pose at the same location.
           if (tlen > 0.10)
           {
             const double yaw = std::atan2(tdy, tdx);
@@ -1386,10 +1407,15 @@ BT::NodeStatus PlanCoverageArea::onRunning()
               accumulated_path_.poses.push_back(ps);
             }
             RCLCPP_INFO(ctx->node->get_logger(),
-                        "PlanCoverageArea: piece %zu transit %d poses from "
-                        "(%.2f,%.2f) to F2C start (%.2f,%.2f), %.2fm",
-                        current_piece_, n_steps, rx, ry,
-                        first_pose.x, first_pose.y, tlen);
+                        "PlanCoverageArea: piece %zu inter-piece transit %d "
+                        "poses from (%.2f,%.2f) to F2C start (%.2f,%.2f), %.2fm",
+                        current_piece_,
+                        n_steps,
+                        rx,
+                        ry,
+                        first_pose.x,
+                        first_pose.y,
+                        tlen);
           }
         }
       }
