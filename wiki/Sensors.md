@@ -19,6 +19,20 @@ The GPS container runs:
 - `ntrip_client` — RTK corrections from NTRIP caster
 - `rtcm_serial_bridge.py` — forwards RTCM to GPS serial
 
+**RTK Fixed/Float flicker:** under motion an F9P's reported carrier solution
+(`carrSoln`) can toggle Fixed↔Float every epoch even while position σ stays
+~4 mm — a pure classification flicker, not a position problem. Two pieces of
+the ROS2 stack absorb this so it doesn't propagate downstream:
+- `localization_monitor_node` debounces the published localization mode
+  (`mode_debounce_sec`, default 1.0 s) — see
+  [Architecture › localization_monitor_node](Architecture#3c-localization_monitor_node).
+- The ublox GNSS diagnostics path treats `corrections_active` as following the
+  carrier solution (a Fixed/Float solution implies corrections are active, since
+  the receiver can't solve RTK without them), only falling back to the bursty
+  transport RTCM freshness metric when the solution is not RTK. (The Unicore
+  path is unchanged — it already uses the receiver's authoritative correction
+  age.)
+
 ### LiDAR: LDRobot LD19
 
 | Property | Value |
