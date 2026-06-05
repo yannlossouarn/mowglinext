@@ -157,14 +157,14 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
   // ── Initialise map ───────────────────────────────────────────────────────
   init_map();
   last_decay_time_ = now();
-  cached_mow_progress_   = mow_progress_to_occupancy_grid();
+  cached_mow_progress_ = mow_progress_to_occupancy_grid();
   cached_coverage_cells_ = coverage_cells_to_occupancy_grid();
 
   // ── Publishers ───────────────────────────────────────────────────────────
   // grid_map: transient_local so Nav2 costmap_filter still receives the last
   // value after a restart; gated behind masks_dirty_/content_dirty_.
-  grid_map_pub_ = create_publisher<grid_map_msgs::msg::GridMap>(
-      "~/grid_map", rclcpp::QoS(1).transient_local());
+  grid_map_pub_ =
+      create_publisher<grid_map_msgs::msg::GridMap>("~/grid_map", rclcpp::QoS(1).transient_local());
 
   // coverage_cells / mow_progress: volatile, published every timer tick from
   // a cached message (recomputed only when dirty). foxglove_bridge subscribes
@@ -845,7 +845,7 @@ void MapServerNode::on_publish_timer()
     {
       auto grid_map_msg = grid_map::GridMapRosConverter::toMessage(map_);
       grid_map_pub_->publish(std::move(grid_map_msg));
-      cached_mow_progress_   = mow_progress_to_occupancy_grid();
+      cached_mow_progress_ = mow_progress_to_occupancy_grid();
       cached_coverage_cells_ = coverage_cells_to_occupancy_grid();
       content_dirty_ = false;
     }
