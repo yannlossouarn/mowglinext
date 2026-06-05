@@ -1,0 +1,240 @@
+diff --git a/ublox_dgnss_node/src/ublox_dgnss_node.cpp b/ublox_dgnss_node/src/ublox_dgnss_node.cpp
+index f0235b4..a3d306a 100644
+--- a/ublox_dgnss_node/src/ublox_dgnss_node.cpp
++++ b/ublox_dgnss_node/src/ublox_dgnss_node.cpp
+@@ -649,7 +649,13 @@ private:
+ 
+   std::chrono::steady_clock::time_point param_fetch_start_time_;
+   bool param_fetch_in_progress_ = false;
+-  static constexpr auto PARAM_FETCH_TIMEOUT = std::chrono::seconds(5);
++  // Sequential per-key VALGET state machine
++  std::deque<std::string> pending_valget_queue_;
++  std::string inflight_valget_key_;
++  std::chrono::steady_clock::time_point inflight_valget_sent_at_;
++  static constexpr auto VALGET_KEY_TIMEOUT = std::chrono::milliseconds(500);
++  // Overall safety-net: 125 keys × 500 ms worst-case + headroom
++  static constexpr auto PARAM_FETCH_TIMEOUT = std::chrono::seconds(90);
+ 
+   std::string frame_id_;
+   const std::string FRAME_ID_PARAM_NAME = "FRAME_ID";
+@@ -944,6 +950,12 @@ public:
+       if (ubx_ci_ptr != nullptr) {
+         auto ubx_ci = *ubx_ci_ptr;
+         update_param_from_device(ubx_ci, kv.ubx_value);
++        // Advance the sequential VALGET state machine: this response satisfies
++        // the currently in-flight key — send the next one.
++        if (param_fetch_in_progress_ && inflight_valget_key_ == ubx_ci.ubx_config_item) {
++          inflight_valget_key_.clear();
++          send_next_valget_from_queue();
++        }
+       }
+     }
+   }
+@@ -2362,19 +2374,20 @@ private:
+           get_logger(), "ubx class: 0x%02x id: 0x%02x ack nak payload - %s",
+           f->ubx_frame->msg_class, f->ubx_frame->msg_id,
+           payload_ack_nak->to_string().c_str());
+-        // TODO(someday) investigate how to get a message about why it returned a nak
+-        // switch (payload_ack_nak->msg_id) {
+-        //   case ubx::UBX_CFG_VALSET:
+-        //       if (ubx_cfg_->cfg_val_set_frame().use_count()>0) {
+-        //         RCLCPP_WARN(get_logger(), "retrying last cfg val set ...");
+-        //         ubx_cfg_->cfg_val_set_poll_retry_async();
+-        //         // only retry once
+-        //         ubx_cfg_->cfg_val_set_frame_reset();
+-        //       }
+-        //     break;
+-        //   default:
+-        //     break;
+-        // }
++        // During sequential parameter init: a CFG-VALGET NAK means the
++        // in-flight key is not supported by this firmware version.
++        if (param_fetch_in_progress_ &&
++            payload_ack_nak->msg_class == ubx::UBX_CFG &&
++            payload_ack_nak->msg_id == ubx::UBX_CFG_VALGET &&
++            !inflight_valget_key_.empty()) {
++          RCLCPP_INFO(
++            get_logger(),
++            "CFG-VALGET NAK: '%s' not supported on this firmware — skipping",
++            inflight_valget_key_.c_str());
++          parameter_manager_->update_parameter_status(inflight_valget_key_, PARAM_LOADED);
++          inflight_valget_key_.clear();
++          send_next_valget_from_queue();
++        }
+         break;
+       default:
+         RCLCPP_WARN(
+@@ -3877,13 +3890,16 @@ private:
+     param_fetch_start_time_ = std::chrono::steady_clock::now();
+     param_fetch_in_progress_ = true;
+ 
+-    ubx_cfg_->cfg_val_get_keys_clear();
++    pending_valget_queue_.clear();
++    inflight_valget_key_.clear();
++
+     ubx_cfg_->cfg_set_val_get_layer_default();
+ 
+-    std::string item_list;
++    // Collect all PARAM_INITIAL keys into the queue and mark them as PARAM_VALGET
++    // (so check_param_fetch_completion counts them).  Keys are sent one at a
++    // time by send_next_valget_from_queue() — no batching — to prevent the
++    // F9P's serial TX buffer from saturating and to allow per-key NAK handling.
+     size_t initial_params = 0;
+-    size_t n = 10;     // every n keys send a request
+-
+     parameter_manager_->iterate_config_items(
+       [&](const ubx::cfg::ubx_cfg_item_t & ubx_ci) {
+         auto p_state_maybe = parameter_manager_->get_parameter_state(ubx_ci.ubx_config_item);
+@@ -3891,47 +3907,49 @@ private:
+           RCLCPP_ERROR(get_logger(), "No parameter state for: %s", ubx_ci.ubx_config_item);
+           return;
+         }
+-
+         auto p_state = p_state_maybe.value();
+         if (p_state.param_status == PARAM_INITIAL) {
+-          RCLCPP_DEBUG(
+-            get_logger(), "cfg_val_get param %zu: %s", initial_params,
+-            ubx_ci.ubx_config_item);
+-
+-          // Add key to CFG-VALGET request
+-          ubx_cfg_->cfg_val_get_key_append(ubx_ci.ubx_key_id);
+-
+-          // Mark as PARAM_VALGET (request sent)
+           parameter_manager_->update_parameter_status(ubx_ci.ubx_config_item, PARAM_VALGET);
+-
+-          item_list += ubx_ci.ubx_config_item;
+-          item_list += " ";
++          pending_valget_queue_.push_back(ubx_ci.ubx_config_item);
+           initial_params++;
+-
+-          // every n keys send a request
+-          if (initial_params % n == 0) {
+-            if (ubx_cfg_->cfg_val_get_keys_size() > 0) {
+-              RCLCPP_DEBUG(
+-                get_logger(), "cfg_val_get_poll_async_all_layers ... %s",
+-                item_list.c_str());
+-              item_list = "";
+-              ubx_cfg_->cfg_val_get_poll_async_all_layers();
+-              ubx_cfg_->cfg_val_get_keys_clear();
+-            }
+-          }
+         }
+       });
+ 
+-    // send the final requests
+-    if (ubx_cfg_->cfg_val_get_keys_size() > 0) {
+-      RCLCPP_DEBUG(get_logger(), "cfg_val_get_poll_async_all_layers ... %s", item_list.c_str());
+-      ubx_cfg_->cfg_val_get_poll_async_all_layers();
+-      ubx_cfg_->cfg_val_get_keys_clear();
++    RCLCPP_INFO(
++      get_logger(),
++      "Queued %zu parameters for sequential CFG-VALGET (one at a time)",
++      initial_params);
++
++    send_next_valget_from_queue();
++  }
++
++  UBLOX_DGNSS_NODE_LOCAL
++  void send_next_valget_from_queue()
++  {
++    if (pending_valget_queue_.empty()) {
++      return;
+     }
+ 
+-    RCLCPP_DEBUG(
+-      get_logger(), "Requested %zu device parameter values via CFG-VALGET",
+-      initial_params);
++    auto key_name = pending_valget_queue_.front();
++    pending_valget_queue_.pop_front();
++
++    const auto * ubx_ci_ptr = parameter_manager_->find_config_item(key_name);
++    if (!ubx_ci_ptr) {
++      RCLCPP_WARN(get_logger(), "Config item '%s' not in map, skipping", key_name.c_str());
++      parameter_manager_->update_parameter_status(key_name, PARAM_LOADED);
++      send_next_valget_from_queue();
++      return;
++    }
++
++    ubx_cfg_->cfg_val_get_keys_clear();
++    ubx_cfg_->cfg_val_get_key_append(ubx_ci_ptr->ubx_key_id);
++    ubx_cfg_->cfg_val_get_poll_async_all_layers();
++    ubx_cfg_->cfg_val_get_keys_clear();
++
++    inflight_valget_key_ = key_name;
++    inflight_valget_sent_at_ = std::chrono::steady_clock::now();
++
++    RCLCPP_DEBUG(get_logger(), "CFG-VALGET sent for %s", key_name.c_str());
+   }
+ 
+   UBLOX_DGNSS_NODE_LOCAL
+@@ -3940,18 +3958,35 @@ private:
+     auto now = std::chrono::steady_clock::now();
+     auto elapsed = now - param_fetch_start_time_;
+ 
++    // Per-key timeout: if the in-flight key has not responded within
++    // VALGET_KEY_TIMEOUT, skip it and move to the next one.  This handles
++    // firmware variants that silently drop unsolicited VALGET responses without
++    // NAK-ing them.
++    if (!inflight_valget_key_.empty() &&
++        (now - inflight_valget_sent_at_) > VALGET_KEY_TIMEOUT) {
++      RCLCPP_WARN(
++        get_logger(),
++        "CFG-VALGET timeout for '%s' — no response within %ld ms, skipping",
++        inflight_valget_key_.c_str(),
++        std::chrono::duration_cast<std::chrono::milliseconds>(VALGET_KEY_TIMEOUT).count());
++      parameter_manager_->update_parameter_status(inflight_valget_key_, PARAM_LOADED);
++      inflight_valget_key_.clear();
++      send_next_valget_from_queue();
++      return;
++    }
++
+     // Query ParameterManager state (no external counters!)
+     size_t valget_count = parameter_manager_->count_parameters_by_status(PARAM_VALGET);
+ 
+-    if (valget_count == 0) {
+-      // Success: All requested params received responses
++    if (valget_count == 0 && pending_valget_queue_.empty() && inflight_valget_key_.empty()) {
++      // Success: all keys responded (data or NAK) and the queue is drained
+       param_fetch_in_progress_ = false;
+       device_readiness_state_ = DeviceReadinessState::READY;
+ 
+       size_t loaded_count = parameter_manager_->count_parameters_by_status(PARAM_LOADED);
+       RCLCPP_INFO(
+         get_logger(),
+-        "Parameter fetch completed successfully - %zu parameters loaded from device",
++        "Parameter fetch completed — %zu parameters loaded from device",
+         loaded_count);
+ 
+       parameter_manager_->log_parameter_cache_state();
+@@ -3959,24 +3994,24 @@ private:
+     }
+ 
+     if (elapsed > PARAM_FETCH_TIMEOUT) {
+-      // Timeout: Some params stuck in PARAM_VALGET
++      // Overall safety-net timeout: should not normally be reached with the
++      // per-key timeout above, but log at WARN (not ERROR) — the driver still
++      // works correctly for all keys that did respond.
+       auto stuck_params = parameter_manager_->get_parameters_by_status(PARAM_VALGET);
+ 
+-      RCLCPP_ERROR(
++      RCLCPP_WARN(
+         get_logger(),
+-        "Parameter fetch TIMEOUT after %ld seconds! %zu parameters stuck in PARAM_VALGET:",
++        "Parameter fetch overall timeout after %ld s — %zu keys still pending "
++        "(likely unsupported by this firmware):",
+         std::chrono::duration_cast<std::chrono::seconds>(elapsed).count(),
+         stuck_params.size());
+ 
+       for (const auto & param : stuck_params) {
+-        RCLCPP_ERROR(get_logger(), "  Missing response: %s", param.c_str());
++        RCLCPP_WARN(get_logger(), "  No response: %s", param.c_str());
+       }
+ 
+       param_fetch_in_progress_ = false;
+       device_readiness_state_ = DeviceReadinessState::READY;
+-      RCLCPP_WARN(
+-        get_logger(),
+-        "Proceeding with partial parameter initialization (degraded mode)");
+     }
+   }
+ 

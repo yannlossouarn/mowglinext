@@ -75,6 +75,13 @@ WORKDIR /ws/src
 RUN git clone --branch ${UBLOX_DGNSS_REF} ${UBLOX_DGNSS_URL} ublox_dgnss \
  && cd ublox_dgnss && git checkout ${UBLOX_DGNSS_SHA} && cd ..
 
+# Apply local patch: replace bulk-batch VALGET with a sequential per-key
+# state machine so the F9P's serial TX buffer cannot be saturated, and NAK'd
+# keys (unsupported on some firmware versions, e.g. CFG_SEC_* on HPG 1.32)
+# are handled gracefully at INFO level instead of timing out with ERROR.
+COPY 0001-sequential-valget-fix.patch /tmp/
+RUN cd ublox_dgnss && git apply /tmp/0001-sequential-valget-fix.patch
+
 WORKDIR /ws
 RUN . /opt/ros/kilted/setup.sh \
  && colcon build --merge-install \
