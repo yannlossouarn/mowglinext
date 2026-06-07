@@ -33,14 +33,18 @@ func NewAPI(dbProvider types.IDBProvider, dockerProvider types.IDockerProvider, 
 		log.Fatal(err)
 	}
 	webDir := string(webDirectory)
-	serveIndex := func(c *gin.Context) {
+	r.Use(func(c *gin.Context) {
+		p := c.Request.URL.Path
+		if p == "/" || p == "/index.html" {
+			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
+		c.Next()
+	})
+	r.Use(static.Serve("/", static.LocalFile(webDir, false)))
+	r.NoRoute(func(c *gin.Context) {
 		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 		c.File(webDir + "/index.html")
-	}
-	r.GET("/", serveIndex)
-	r.GET("/index.html", serveIndex)
-	r.Use(static.Serve("/", static.LocalFile(webDir, false)))
-	r.NoRoute(serveIndex)
+	})
 	apiGroup := r.Group("/api")
 	ConfigRoute(apiGroup, dbProvider)
 	SettingsRoutes(apiGroup, dbProvider)
