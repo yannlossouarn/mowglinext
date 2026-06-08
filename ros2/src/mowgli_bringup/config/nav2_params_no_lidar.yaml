@@ -148,7 +148,7 @@ controller_server:
       approach_velocity_scaling_dist: 0.6
       use_velocity_scaled_lookahead_dist: true
       lookahead_time: 1.5
-      min_lookahead_dist: 0.30
+      min_lookahead_dist: 0.50            # steadier carrot — less heading jitter on the coarse-rotation robot
       max_lookahead_dist: 0.90
       use_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.9
@@ -156,7 +156,14 @@ controller_server:
       use_cost_regulated_linear_velocity_scaling: false
       use_collision_detection: false       # no obstacle_layer without LiDAR
       max_allowed_time_to_collision_up_to_carrot: 1.0
-      use_rotate_to_heading: true
+      # FALSE: this robot cannot fine-pivot in place (motor static-friction
+      # deadband -> bang-bang rotation). With rotate-to-heading enabled, RPP
+      # pivot-locked at vx=0 and hunted instead of progressing. Disabled, RPP
+      # follows the (now kinematically-feasible, Hybrid-A*) path by ARCING —
+      # forward velocity + curvature — which the robot CAN do. Validated on
+      # the robot 2026-06-08: fluid forward motion, returns & docks.
+      # RotationShim still handles the one-time large initial pivot.
+      use_rotate_to_heading: false
       rotate_to_heading_min_angle: 0.785
       rotate_to_heading_angular_vel: 0.75
       max_angular_accel: 2.5
