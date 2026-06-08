@@ -138,6 +138,13 @@ private:
   double dr_x_ = 0.0;
   double dr_y_ = 0.0;
   double dr_yaw_ = 0.0;
+  // Latest DR velocities, cached under tf_state_mu_ alongside dr_*. The TF
+  // broadcast uses them to forward-propagate the pose by tf_publish_lead_s_ so
+  // the future-stamped TF is an honest constant-velocity prediction rather than
+  // the current pose mislabelled into the future (which injects ~wz·lead of yaw
+  // error during pivots). dr_last_vx_eff_ is the slip-vetoed forward velocity.
+  double dr_last_gz_ = 0.0;  // bias-corrected gyro yaw rate (rad/s)
+  double dr_last_vx_eff_ = 0.0;  // slip-adjusted forward velocity (m/s)
   double wheel_vx_ = 0.0;  // latest forward velocity cached from /wheel_odom
   double wheel_wz_ = 0.0;  // latest wheel-derived yaw rate (slip-veto cross-check)
 

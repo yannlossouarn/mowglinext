@@ -43,6 +43,22 @@ geometry_msgs::msg::Quaternion QuatFromYaw(double yaw)
   return m;
 }
 
+// Forward-propagate a dead-reckoned pose (x, y, yaw) by `lead` seconds under a
+// constant-velocity model (yaw rate gz, body-forward velocity vx_eff). Used so
+// a TF stamped at now()+lead is an HONEST prediction of the pose at that
+// instant instead of the current pose mislabelled into the future — the latter
+// injects ~wz·lead of yaw error during pivots (≈4° at 1.5 rad/s with a 50 ms
+// lead), which fed straight into the controller's heading tracking. Mirrors the
+// DR integration order (yaw first, then translate along the updated heading).
+void ForwardStampPose(double lead, double gz, double vx_eff, double& x, double& y, double& yaw)
+{
+  if (lead <= 0.0)
+    return;
+  yaw += gz * lead;
+  x += vx_eff * std::cos(yaw) * lead;
+  y += vx_eff * std::sin(yaw) * lead;
+}
+
 }  // namespace
 
 FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
@@ -809,6 +825,10 @@ void FusionGraphNode::OnImu(sensor_msgs::msg::Imu::ConstSharedPtr msg)
         dr_yaw_ += gz * dt;
         dr_x_ += vx_eff * std::cos(dr_yaw_) * dt;
         dr_y_ += vx_eff * std::sin(dr_yaw_) * dt;
+        // Cache the velocities that produced this step so the TF broadcast can
+        // honestly forward-propagate the pose by tf_publish_lead_s_.
+        dr_last_gz_ = gz;
+        dr_last_vx_eff_ = vx_eff;
       }
       // Accumulate |Δθ| since the last accepted GPS for the wrong-fix
       // gate. A stationary pivot sweeps the GPS antenna by lever_arm
@@ -1766,23 +1786,30 @@ void FusionGraphNode::PublishLocalOdom()
   // local costmap and FTCController both rely on this TF, and they
   // can come up before any GPS fix has landed).
   const rclcpp::Time now = this->now();
-  // Same forward-stamp trick as map→odom: under sim_time, Nav2
-  // lookups can race a few ms ahead of the latest publish. Adding
-  // tf_publish_lead_s_ keeps tf2 in interpolation territory instead
-  // of ExtrapolationException. On real hardware (lead=0) this is a
-  // no-op.
+  // Forward-stamp the TF by tf_publish_lead_s_ so Nav2 controller_server
+  // lookups at clock()->now() land in tf2 interpolation territory instead of
+  // throwing ExtrapolationException (commit 8c04a2db; hardware lead is 0.05,
+  // not 0). The pose is propagated forward by the same lead via
+  // ForwardStampPose so the future stamp is an honest prediction — without
+  // that, a future-stamped current pose injects wz·lead of yaw error during
+  // pivots. (On hardware the dedicated TF thread owns this broadcast; this
+  // inline path runs only in observer mode / when the thread is disabled.)
   const rclcpp::Time stamp = now + rclcpp::Duration::from_seconds(tf_publish_lead_s_);
 
+  double ex_x = dr_x_;
+  double ex_y = dr_y_;
+  double ex_yaw = dr_yaw_;
+  ForwardStampPose(tf_publish_lead_s_, dr_last_gz_, dr_last_vx_eff_, ex_x, ex_y, ex_yaw);
   const geometry_msgs::msg::Quaternion q_msg = QuatFromYaw(dr_yaw_);
 
   geometry_msgs::msg::TransformStamped t_odom_base;
   t_odom_base.header.stamp = stamp;
   t_odom_base.header.frame_id = odom_frame_;
   t_odom_base.child_frame_id = base_frame_;
-  t_odom_base.transform.translation.x = dr_x_;
-  t_odom_base.transform.translation.y = dr_y_;
+  t_odom_base.transform.translation.x = ex_x;
+  t_odom_base.transform.translation.y = ex_y;
   t_odom_base.transform.translation.z = 0.0;
-  t_odom_base.transform.rotation = q_msg;
+  t_odom_base.transform.rotation = QuatFromYaw(ex_yaw);
   // Only the PRIMARY localizer may own odom→base_footprint — same single-
   // publisher rule as map→odom below. In observer mode (A/B against another
   // odom source) we still publish /odometry/filtered for comparison but must
@@ -1956,6 +1983,8 @@ void FusionGraphNode::TfBroadcastLoop()
     double x;
     double y;
     double yaw;
+    double gz;
+    double vx_eff;
     bool anchor_valid;
     gtsam::Pose2 anchor;
     {
@@ -1963,9 +1992,17 @@ void FusionGraphNode::TfBroadcastLoop()
       x = dr_x_;
       y = dr_y_;
       yaw = dr_yaw_;
+      gz = dr_last_gz_;
+      vx_eff = dr_last_vx_eff_;
       anchor_valid = t_map_odom_anchor_valid_;
       anchor = t_map_odom_anchor_;
     }
+
+    // Honest forward-stamp: advance the DR pose by the lead so the now()+lead
+    // stamp predicts the pose at that instant. The rotation happens in the
+    // odom→base leg (dr_yaw_); the map→odom anchor is time-invariant, so only
+    // odom→base is propagated. Removes the wz·lead heading error during pivots.
+    ForwardStampPose(tf_publish_lead_s_, gz, vx_eff, x, y, yaw);
 
     const rclcpp::Time stamp = this->now() + rclcpp::Duration::from_seconds(tf_publish_lead_s_);
 
