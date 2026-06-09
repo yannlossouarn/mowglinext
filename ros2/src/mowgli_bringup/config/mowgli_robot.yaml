@@ -18,13 +18,16 @@ mowgli:
     mower_model: "YardForce500"
 
     # Chassis dimensions (metres) — physically measured on the actual
-    # YardForce 500. Earlier the runtime YAML had 0.54 m which silently
-    # diverged from this template; the 0.60 m here is the correct value
-    # and was restored on 2026-04-26.
-    chassis_length: 0.60
-    chassis_width: 0.40
-    chassis_height: 0.19
+    # YardForce 500: 573 × 424 × 248 mm. These feed the URDF and the
+    # navigation.launch.py costmap footprint builder; if absent the builder
+    # falls back to 0.54 × 0.40 and Nav2's footprint diverges from reality.
+    chassis_length: 0.573
+    chassis_width: 0.424
+    chassis_height: 0.248
     chassis_mass_kg: 8.76
+    # Drive-wheel axis sits ~0.10 m in front of the rear face, so the geometric
+    # centre is 0.573/2 − 0.10 ≈ 0.187 m forward of the wheel axis (base_link).
+    chassis_center_x: 0.187   # → rear face −0.10 m, front face +0.473 m
 
     # Drive wheels (rear)
     wheel_radius: 0.1          # 0.2 m diameter drive wheels (measured). Was
@@ -37,14 +40,6 @@ mowgli:
                                # Read by hardware_bridge_node and URDF.
                                # MUST match firmware physical assumption.
     wheel_x_offset: 0.0       # drive wheels at base_link (wheel axis centre)
-    # Real chassis: 573 × 424 × 248 mm (measured). These were absent here, so
-    # the URDF + navigation.launch.py footprint builder fell back to 0.54 × 0.40.
-    chassis_length: 0.573
-    chassis_width: 0.424
-    chassis_height: 0.248
-    # Drive-wheel axis sits ~0.10 m in front of the rear face, so the geometric
-    # centre is 0.573/2 − 0.10 ≈ 0.187 m forward of the wheel axis (base_link).
-    chassis_center_x: 0.187   # → rear face −0.10 m, front face +0.473 m
     # ticks_per_meter is consumed by hardware_bridge_node to convert raw
     # encoder tick deltas (from the STM32 firmware odom packet) into
     # metres. MUST match the firmware constant TICKS_PER_M in

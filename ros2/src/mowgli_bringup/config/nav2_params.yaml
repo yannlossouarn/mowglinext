@@ -627,20 +627,31 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 10.0
-        # 0.20 m (was 0.40). With keepout_nav_margin=0.3 m and robot
-        # footprint ±0.20 m lateral, 0.40 m inflation made the footprint
-        # corners land inside the inflated zone whenever the robot was
-        # within ~0.44 m of the polygon edge — Smac reported "Start
-        # 0.20 m (reverted from 0.30): with a 9×6 m polygon and
-        # auto-promoted obstacles in the middle, 0.30 m inflation
-        # blocked all transit paths between cells — robot got stuck
-        # in TRANSIT for 9+ min unable to reach any headland start.
-        # Smac's "Inflation layer ... not set sufficiently" warning
-        # is performance, not correctness — planner falls back to
-        # per-footprint checking. collision_monitor PolygonStop
-        # remains the runtime safety guard.
-        inflation_radius: 0.20
+        # 12.0 (was 10.0): steeper exponential decay so the now-wider soft
+        # inflation band stays cheap — cost collapses from 137 at 0.20 m to
+        # ~12 at 0.40 m and <1 at the 0.62 m edge (252·exp(-12·(d−0.149))).
+        cost_scaling_factor: 12.0
+        # 0.62 m (was 0.20): SmacPlannerHybrid can only use the costmap
+        # potential field for fast collision checking when inflation_radius
+        # >= the robot's circumscribed radius. The 2026-04 geometry fix grew
+        # the footprint (0.573 × 0.424, centre +0.187) so circumscribed is
+        # now ~0.585 m (repo) / ~0.598 m (deployed); the old 0.20 m left the
+        # planner doing full-footprint SE2 checks on every node ("Inflation
+        # layer ... not set sufficiently" / "circumscribed radius" warnings,
+        # significant ARM planning-time cost). 0.62 m clears both.
+        #
+        # Why this is safe where the historical 0.30/0.40 m values blocked
+        # transit (9×6 m polygon, auto-promoted obstacles, robot stuck in
+        # TRANSIT 9+ min): the LETHAL inscribed band is fixed at the
+        # footprint's inscribed radius (~0.149 m, the rear edge) and does NOT
+        # grow with inflation_radius — so transit corridors keep the same
+        # lethal width. inflation_radius only extends the *soft* decaying
+        # cost shoulder, kept near-zero past ~0.40 m by cost_scaling_factor
+        # 12. collision_monitor PolygonSlow remains the runtime safety guard.
+        # NOTE: still field-validate transit through a real multi-cell layout
+        # before trusting — Smac's cost_penalty can still bias (not block)
+        # paths through the soft shoulder. Rollback = inflation_radius 0.20.
+        inflation_radius: 0.62
 
       keepout_filter:
         plugin: "nav2_costmap_2d::KeepoutFilter"

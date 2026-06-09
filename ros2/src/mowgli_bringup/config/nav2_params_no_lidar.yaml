@@ -367,12 +367,14 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # cost_scaling_factor 10 + inflation_radius 0.20: 0.40 m inflation
-        # made footprint corners land inside the inflated zone whenever
-        # the robot was within ~0.44 m of the polygon edge → "Start
-        # occupied" planner failures. See nav2_params.yaml.
-        cost_scaling_factor: 10.0
-        inflation_radius: 0.20
+        # Matches nav2_params.yaml global costmap: inflation_radius >=
+        # circumscribed (~0.598 m) so SmacPlannerHybrid keeps its costmap
+        # fast-path collision check; cost_scaling_factor 12 keeps the wider
+        # soft band cheap (<1 at the edge). Lethal inscribed band (~0.149 m)
+        # is unchanged, so transit corridors keep their width. See the long
+        # rationale in nav2_params.yaml's inflation_layer.
+        cost_scaling_factor: 12.0
+        inflation_radius: 0.62
 
       keepout_filter:
         plugin: "nav2_costmap_2d::KeepoutFilter"
