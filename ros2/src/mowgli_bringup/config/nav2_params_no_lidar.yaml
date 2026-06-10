@@ -388,11 +388,35 @@ local_costmap:
   local_costmap:
     ros__parameters:
       use_sim_time: false
-      # 10 Hz to match the lidar config so update_frequency stays above
-      # controller_frequency (10 Hz) and the costmap is always fresh when
-      # the controller ticks.
-      update_frequency: 10.0
-      publish_frequency: 2.0
+      # Refresh rate is GATED ON OBSTACLE-SOURCE PRESENCE. This is the
+      # "no obstacle sensor" variant: the plugins below are static_layer +
+      # inflation_layer only (the obstacle_layer variant lives in
+      # nav2_params.yaml, selected by use_lidar). The static_layer here
+      # subscribes to a latched EMPTY grid (/no_lidar_static_map), and with
+      # no LiDAR / depth-camera / range-sensor there is no marking source —
+      # so the costmap content is a uniform all-free grid: nothing to mark,
+      # nothing to inflate. Its content is effectively computed once and
+      # never changes.
+      #
+      # The ONE thing that still needs periodic work is the rolling window:
+      # this is a rolling_window costmap in the odom frame, so it must
+      # re-center on base_footprint as the robot drives, or the controller's
+      # lookahead leaves the window. That — plus keeping isCurrent() true for
+      # controller_server (transform_tolerance 0.5 s) — is the only reason to
+      # update at all. It does NOT need a sensor-rate refresh. At 10 Hz we
+      # were re-cycling the 240×240 grid for zero information gain (~half a
+      # core in controller_server while parked). 2 Hz slides the window well
+      # within the controller's ~2 m lookahead at mowing speed (0.5 m/s →
+      # 0.25 m drift between updates) and keeps the costmap current.
+      #
+      # When an obstacle source IS present, the obstacle_layer variant
+      # (nav2_params.yaml) restores 10 Hz so real-time returns are ingested
+      # without lag. A true "compute once" is not possible here only because
+      # of the rolling window — the content itself already is one-shot.
+      # NOTE: behaviour-affecting — field-validate that controller_server
+      # does not regress to error 107 ("Costmap timed out") before trusting.
+      update_frequency: 2.0
+      publish_frequency: 1.0
       global_frame: odom
       robot_base_frame: base_footprint
       transform_tolerance: 0.5
