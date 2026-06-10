@@ -158,9 +158,12 @@ controller_server:
       max_cmd_vel_speed: 0.30
       max_cmd_vel_ang: 1.0
       max_follow_distance: 1.5         # DOMINANT anti-weave lever (1.0→1.5 halved cross-track)
-      # true now the Smac planner is DUBIN (forward-only) — no planned reverse
-      # arcs for FTC to honor, and matches v2's forward-only cascade.
-      forward_only: true
+      # false: Dubins transit paths have no reverse segments anyway (so this is a
+      # no-op for transit), but the dock approach uses the GridBasedRS (R-S)
+      # planner which MAY reverse to set up the staging approach — FTC must honor
+      # that, so this stays false. (Was briefly true with the blanket-Dubins
+      # experiment, which broke docking.)
+      forward_only: false
 
       # MUST stay ≤ the stopped_goal_checker (xy 0.20, yaw 0.30 rad)
       # — see nav2_params.yaml FollowPath. 15° (was 12°) relaxes waypoint-yaw a
@@ -220,7 +223,12 @@ planner_server:
     # (1.0s) races with the slow costmap update rate when no LiDAR is
     # driving obstacle layer ticks, causing repeated planning failures.
     costmap_update_timeout: 5.0
-    planner_plugins: ["GridBased"]
+    # Two Hybrid-A* planners: GridBased (DUBIN, forward-only) for transit and
+    # coverage-start — no reverse cusp at goals. GridBasedRS (REEDS_SHEPP) for
+    # the dock approach only (DockApproach requests it by id): forward-only
+    # Dubins cannot set up the dock-staging approach next to the obstacle by the
+    # dock (it needs a reverse), so docking keeps R-S while transit stays cusp-free.
+    planner_plugins: ["GridBased", "GridBasedRS"]
 
     GridBased:
       # Hybrid-A* (x, y, θ) kinematic planner — see nav2_params.yaml for the
@@ -236,13 +244,11 @@ planner_server:
       max_iterations: 1000000
       max_on_approach_iterations: 1000
       max_planning_time: 3.5                # ARM budget (matches old 2D planner)
-      # Parametric motion model — switch here:
-      #   "REEDS_SHEPP": may insert reverse segments to reorient in tight spots —
-      #                  produced a "short reverse leg toward the outside of the
-      #                  final turn" cusp at goals (field 2026-06-10), which left
-      #                  the robot off-pose and tripped FollowPath aborts.
-      #   "DUBIN" (current): forward-only arcs, no reverse cusp. v2 was forward-
-      #                  only too. Pairs with FollowPath forward_only:true below.
+      # DUBIN (forward-only arcs): no reverse cusp at goals. REEDS_SHEPP used to
+      # insert a "short reverse leg toward the outside of the final turn" to hit
+      # the goal yaw (field 2026-06-10), which left the robot off-pose and tripped
+      # FollowPath aborts. Dubins is forward-only like v2. Dock approach uses the
+      # separate GridBasedRS (R-S) planner below — see planner_plugins note.
       motion_model_for_search: "DUBIN"
       angle_quantization_bins: 72
       analytic_expansion_ratio: 3.5
@@ -250,7 +256,42 @@ planner_server:
       # ≥ half the REAL robot width (0.424 m → 0.212 m). 0.20 used the wrong
       # 0.40 m width; 0.22 complies with the measured geometry.
       minimum_turning_radius: 0.22
-      reverse_penalty: 2.0                  # discourage (but allow) reverse, R-S only
+      reverse_penalty: 2.0                  # unused for DUBIN; kept for parity
+      change_penalty: 0.0
+      non_straight_penalty: 1.2
+      cost_penalty: 2.0
+      retrospective_penalty: 0.015
+      lookup_table_size: 20.0
+      cache_obstacle_heuristic: false
+      smooth_path: true
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
+
+    GridBasedRS:
+      # Reeds-Shepp twin of GridBased, used ONLY by the dock approach
+      # (DockApproach requests planner_id "GridBasedRS"). R-S may reverse to set
+      # up the dock-staging approach in the tight, obstacle-adjacent dock area —
+      # which forward-only Dubins cannot plan ("no valid path", field 2026-06-10).
+      # Identical to GridBased except motion_model = REEDS_SHEPP. Keep in sync.
+      plugin: "nav2_smac_planner::SmacPlannerHybrid"
+      tolerance: 0.25
+      downsample_costmap: false
+      downsampling_factor: 1
+      allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 3.5
+      motion_model_for_search: "REEDS_SHEPP"
+      angle_quantization_bins: 72
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 3.0
+      minimum_turning_radius: 0.22
+      reverse_penalty: 2.0                  # allow reverse to set up the dock approach
       change_penalty: 0.0
       non_straight_penalty: 1.2
       cost_penalty: 2.0

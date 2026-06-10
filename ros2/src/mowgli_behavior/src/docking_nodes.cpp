@@ -94,7 +94,11 @@ BT::NodeStatus DockApproach::onStart()
 
   ComputePath::Goal goal;
   goal.use_start = false;  // plan from the robot's current pose
-  goal.planner_id = "GridBased";  // Smac Hybrid-A* (same as transit)
+  // Reeds-Shepp Hybrid-A*, NOT the transit "GridBased" (DUBIN). The dock staging
+  // pose sits in the tight, obstacle-adjacent dock area where forward-only Dubins
+  // cannot set up the approach ("no valid path", field 2026-06-10); R-S may
+  // reverse to reach it. GridBasedRS is the dedicated R-S planner (nav2_params).
+  goal.planner_id = "GridBasedRS";
   goal.goal.header.frame_id = "map";
   goal.goal.header.stamp = ctx->node->now();
   goal.goal.pose.position.x = dock_x_ - lstage_ * ux;
