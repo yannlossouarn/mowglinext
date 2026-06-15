@@ -756,7 +756,13 @@ def run_outline(node, direction, geo):
         sys.stdout.write(f"  leg {i+1}: {kind} -> ({gx:.2f},{gy:.2f}) ... ")
         sys.stdout.flush()
         if straight:
-            path = node.straight_path(pts[i][0], pts[i][1], gx, gy, gyaw)
+            # Start the segment from the robot's ACTUAL pose (it stops a bit short
+            # of each vertex), not the ideal vertex -- otherwise the path begins
+            # off-axis ahead of the robot and FTC loops to reach it. Drive straight
+            # from where we are to the next vertex (corners cut slightly, which is
+            # fine and realistic).
+            sx, sy = node.x, node.y
+            path = node.straight_path(sx, sy, gx, gy, math.atan2(gy - sy, gx - sx))
         else:
             path = node.plan(gx, gy, gyaw)
         if path is None:
