@@ -832,6 +832,67 @@ def run_coverage(node, geo):
     return m
 
 
+def area_centroid(verts):
+    """Polygon centroid (shoelace), falling back to the vertex mean."""
+    n = len(verts)
+    a = cx = cy = 0.0
+    for i in range(n):
+        x0, y0 = verts[i]
+        x1, y1 = verts[(i + 1) % n]
+        cross = x0 * y1 - x1 * y0
+        a += cross
+        cx += (x0 + x1) * cross
+        cy += (y0 + y1) * cross
+    a *= 0.5
+    if abs(a) < 1e-9:
+        return (sum(x for x, _ in verts) / n, sum(y for _, y in verts) / n)
+    return (cx / (6 * a), cy / (6 * a))
+
+
+def run_sweep_maneuver(node, geo):
+    """Repeatable, abort-resistant maneuver for the auto-test: transit (UN-scored)
+    to the area centroid, then a fixed straight out-and-back well INSIDE the area.
+    Excluding the transit removes the bias from transit/perimeter aborts that the
+    full outline suffered, and the fixed start makes combos directly comparable."""
+    if geo["mode"] == "area":
+        verts, names = node.fetch_area(geo["name"])
+        if not verts:
+            print(c(f"  sweep: area {geo['name']!r} not found ({names})", Col.RED))
+            return None
+        cx, cy = area_centroid(verts)
+        far = max(verts, key=lambda p: math.hypot(p[0] - cx, p[1] - cy))
+        frac = geo.get("sweep_frac", 0.5)  # half-way to the farthest vertex => fits inside
+        px, py = cx + (far[0] - cx) * frac, cy + (far[1] - cy) * frac
+    else:  # rect mode: robot-relative out-and-back
+        if node.x is None:
+            return None
+        cx, cy = node.x, node.y
+        L = geo.get("a", 2.0) * 0.5
+        px, py = cx + L * math.cos(node.yaw), cy + L * math.sin(node.yaw)
+    hdg = math.atan2(py - cy, px - cx)
+    # transit to the neutral start (centroid) -- NOT recorded, NOT scored
+    tp = node.plan(cx, cy, hdg)
+    if tp is None:
+        print(c("  sweep: transit to centroid PLAN_FAIL (clear costmaps with 'p')", Col.RED))
+        return None
+    node.follow(tp, record=False)
+    time.sleep(0.5)
+    legs = []
+    for tx, ty in ((px, py), (cx, cy)):  # out, then back (each from the robot's pose)
+        sx, sy = node.x, node.y
+        path = node.straight_path(sx, sy, tx, ty, math.atan2(ty - sy, tx - sx))
+        st = node.follow(path, record=True)
+        legs.append(analyze(node.samples,
+                            [(q.pose.position.x, q.pose.position.y) for q in path.poses]))
+        if node.emergency:
+            break
+        time.sleep(0.4)
+    result = agg(legs)
+    if result:
+        result["attempted"] = 2
+    return result
+
+
 def show_summary(node, cw, ccw):
     print(c("\n  === SUMMARY ===", Col.B))
     hdr = f"  {'metric':<22}{'CW':>12}{'CCW':>12}"
@@ -1129,6 +1190,42 @@ def apply_param(node, key, val):
     return node.set_param(nd, pn, val, pt)
 
 
+FLOORS = {"fc": 5.0, "fb": 5.0, "fv": 10.0, "kd_lat": 0.0}  # don't suggest below these
+
+
+def descent_next_steps(sweep, best):
+    """After a sweep, suggest where to look next: extend a parameter's range if
+    its best landed at an edge (the optimum may be beyond it), and flag knobs not
+    yet swept."""
+    out = [c("\n  === NEXT-STEP SUGGESTIONS ===", Col.B)]
+    for k in [x for x in SWEEP_ORDER if x in sweep["enabled"]]:
+        vals = sorted(sweep["params"][k])
+        bv = best.get(k)
+        if bv is None or len(vals) < 2:
+            continue
+        step = (vals[-1] - vals[0]) / (len(vals) - 1)
+        if bv <= vals[0] + 1e-9 and vals[0] > FLOORS.get(k, 0.0):
+            lo = max(FLOORS.get(k, 0.0), vals[0] - 2 * step)
+            out.append(c(f"  {k}: best {bv:g} at the LOW edge of [{vals[0]:g}..{vals[-1]:g}] "
+                         f"-> extend LOWER, e.g. {lo:g},{(lo+vals[0])/2:g},{vals[0]:g}", Col.YEL))
+        elif bv >= vals[-1] - 1e-9:
+            hi = vals[-1] + 2 * step
+            out.append(c(f"  {k}: best {bv:g} at the HIGH edge of [{vals[0]:g}..{vals[-1]:g}] "
+                         f"-> extend HIGHER, e.g. {vals[-1]:g},{(vals[-1]+hi)/2:g},{hi:g}", Col.YEL))
+        else:
+            out.append(c(f"  {k}: best {bv:g} is bracketed inside [{vals[0]:g}..{vals[-1]:g}] "
+                         "(good -- optimum found)", Col.GRN))
+    untested = [k for k in SWEEP_ORDER if k not in sweep["enabled"]]
+    if untested:
+        hints = {"kd_lat": "controller hunting", "gyro": "yaw/rotation",
+                 "fc": "low-speed effort", "fb": "breakaway", "fv": "speed"}
+        names = ", ".join(f"{k} ({hints.get(k,'')})" for k in untested)
+        out.append(c(f"  Not yet swept: {names}", Col.CYN))
+        out.append(c("  -> consider a follow-up sweep adding one of these (menu x to enable it).",
+                     Col.CYN))
+    return out
+
+
 def _num(v):
     if isinstance(v, bool):
         return v
@@ -1178,8 +1275,8 @@ def run_autotest(node, geo, sweep, weights):
         n = sum(len(sweep["params"][k]) for k in keys)
 
     header(node, read_cfg(node), geo)
-    print(c(f"  AUTO-TEST: {mode} over {keys}  dir={direction}", Col.B + Col.BLU))
-    print(c(f"  ~{n} outline runs (each = transit + perimeter, a few min). "
+    print(c(f"  AUTO-TEST: {mode} over {keys}", Col.B + Col.BLU))
+    print(c(f"  ~{n} runs; each = centroid out-and-back (transit NOT scored), repeatable. "
             "Battery + supervision!", Col.YEL))
     if node.hl_state not in HL_DRIVES:
         print(c("  not in a driving mode -- press 'p' first. Aborting.", Col.RED))
@@ -1201,7 +1298,7 @@ def run_autotest(node, geo, sweep, weights):
         for k, v in combo.items():
             apply_param(node, k, v)
         time.sleep(0.6)
-        m = run_outline(node, direction, geo)
+        m = run_sweep_maneuver(node, geo)
         sc = score(m, weights)
         results.append((sc, dict(combo), m))
         rec = {"combo": combo, "score": sc, "metrics": m}
@@ -1263,6 +1360,9 @@ def run_autotest(node, geo, sweep, weights):
         best_combo = results[0][1]
     print(c(f"\n  BEST: {_combo_str(best_combo)}" if best_combo else "  no best", Col.B + Col.GRN))
     print(c(f"  log: {logpath}", Col.DIM))
+    if best_combo:
+        for ln in descent_next_steps(sweep, best_combo):
+            print(ln)
     if best_combo and mode == "grid":
         if ask("  apply best combo now? [Y/n]: ").lower()[:1] != "n":
             for k, v in best_combo.items():
