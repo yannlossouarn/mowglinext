@@ -1200,8 +1200,12 @@ def descent_next_steps(sweep, best):
     yet swept."""
     out = [c("\n  === NEXT-STEP SUGGESTIONS ===", Col.B)]
     for k in [x for x in SWEEP_ORDER if x in sweep["enabled"]]:
-        vals = sorted(sweep["params"][k])
         bv = best.get(k)
+        if PARAM_REG[k][2] == "bool":  # binary (gyro) -- report the winner, no range
+            out.append(c(f"  {k}: best = {'ON' if bv else 'off'} (binary A/B, no range to extend)",
+                         Col.CYN))
+            continue
+        vals = sorted(sweep["params"][k])
         if bv is None or len(vals) < 2:
             continue
         step = (vals[-1] - vals[0]) / (len(vals) - 1)
@@ -1382,12 +1386,13 @@ def autotest_setup(node, geo, sweep, weights):
         print(c("  Auto-test setup", Col.B + Col.MAG))
         print(c("  " + "-" * 40, Col.DIM))
         for k in SWEEP_ORDER:
-            if k == "gyro":
-                continue
             en = k in sweep["enabled"]
-            vals = ",".join(str(x) for x in sweep["params"][k])
             mark = c("ON ", Col.GRN) if en else c("off", Col.DIM)
-            print(f"   {k:<7} [{mark}]  {vals}")
+            if k == "gyro":
+                print(f"   {k:<7} [{mark}]  (binary: off vs on)")
+            else:
+                vals = ",".join(str(x) for x in sweep["params"][k])
+                print(f"   {k:<7} [{mark}]  {vals}")
         n = (1 if sweep["mode"] == "grid" else 0)
         keys = [k for k in SWEEP_ORDER if k in sweep["enabled"]]
         if sweep["mode"] == "grid":
@@ -1399,12 +1404,17 @@ def autotest_setup(node, geo, sweep, weights):
         print(f"  mode={c(sweep['mode'], Col.CYN)}  dir={c(sweep['direction'], Col.CYN)}  "
               f"-> ~{n} runs")
         editable = [k for k in SWEEP_ORDER if k != "gyro"]  # fc fb fv lpf kd_lat
-        print(f"\n   1-{len(editable)}) edit {'/'.join(editable)} list (or 'off')   "
-              "m) mode   d) dir")
+        print(f"\n   1-{len(editable)}) edit {'/'.join(editable)} (or 'off')   "
+              "y) gyro on/off   m) mode   d) dir")
         print("   R) RUN sweep                                 b) back")
         ch = ask("  choice: ").lower()
         edit = {str(i + 1): k for i, k in enumerate(editable)}
-        if ch in edit:
+        if ch == "y":
+            if "gyro" in sweep["enabled"]:
+                sweep["enabled"].remove("gyro")
+            else:
+                sweep["enabled"].append("gyro")
+        elif ch in edit:
             k = edit[ch]
             a = ask(f"  {k} comma-list (e.g. 20,25,30), 'off' to disable, blank=keep: ").strip()
             if a == "off":
@@ -1460,7 +1470,7 @@ def main():
     sweep = {
         "params": {"fc": [20.0, 25.0, 30.0], "fb": [35.0, 40.0, 45.0],
                    "fv": [120.0, 150.0, 180.0], "lpf": [0.1, 0.2, 0.3],
-                   "kd_lat": [1.0, 1.5, 2.0]},
+                   "kd_lat": [1.0, 1.5, 2.0], "gyro": [False, True]},
         "enabled": ["fc", "fb"],
         "mode": "descent",
         "direction": "ccw",
