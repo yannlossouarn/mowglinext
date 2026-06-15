@@ -54,6 +54,8 @@ from rcl_interfaces.srv import GetParameters, SetParameters
 from nav2_msgs.action import ComputePathToPose, FollowPath, Spin
 from nav2_msgs.srv import ClearEntireCostmap
 from builtin_interfaces.msg import Duration
+from opennav_coverage_msgs.action import ComputeCoveragePath
+from opennav_coverage_msgs.msg import Coordinate, Coordinates
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from sensor_msgs.msg import Imu
@@ -336,6 +338,7 @@ class PathCal(Node):
         self.cp = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
         self.fp = ActionClient(self, FollowPath, "/follow_path")
         self.sp = ActionClient(self, Spin, "/spin")
+        self.cov = ActionClient(self, ComputeCoveragePath, "/compute_coverage_path")
         self.hlc = self.create_client(HighLevelControl, "/behavior_tree_node/high_level_control")
         self.clr_g = self.create_client(ClearEntireCostmap,
                                         "/global_costmap/clear_entirely_global_costmap")
@@ -486,13 +489,68 @@ class PathCal(Node):
             return None
         return res.result.path
 
-    def follow(self, path, record=True, timeout=180.0):
+    def coverage_path(self, name, headland=0.5):
+        """Ask the real F2C coverage server for the mowing path of an area
+        (same goal the BT uses). Returns nav_msgs/Path or (None, names)."""
+        verts, names = self.fetch_area(name)
+        if not verts:
+            return None, names
+        if not self.cov.wait_for_server(timeout_sec=8.0):
+            return None, names
+        ring = Coordinates()
+        ring.coordinates = [Coordinate(axis1=float(x), axis2=float(y)) for (x, y) in verts]
+        if verts[0] != verts[-1]:  # close the ring (F2C expects closed)
+            ring.coordinates.append(Coordinate(axis1=float(verts[0][0]), axis2=float(verts[0][1])))
+        g = ComputeCoveragePath.Goal()
+        g.generate_headland = g.generate_route = g.generate_path = True
+        g.use_gml_file = False
+        g.frame_id = "map"
+        g.polygons = [ring]
+        g.headland_mode.mode = "CONSTANT"
+        g.headland_mode.width = float(headland)
+        g.swath_mode.objective = "LENGTH"
+        g.swath_mode.mode = "BRUTE_FORCE"
+        g.swath_mode.best_angle = 0.0
+        g.swath_mode.step_angle = math.pi / 180.0
+        g.route_mode.mode = "BOUSTROPHEDON"
+        g.path_mode.mode = "DUBIN"
+        g.path_mode.continuity_mode = "DISCONTINUOUS"
+        g.path_mode.turn_point_distance = 0.05
+        gh = self._await(self.cov.send_goal_async(g), 8.0)
+        if not gh or not gh.accepted:
+            return None, names
+        res = self._await(gh.get_result_async(), 30.0)
+        if not res or not res.result.nav_path.poses:
+            return None, names
+        return res.result.nav_path, names
+
+    def straight_path(self, ax, ay, bx, by, yaw, step=0.05):
+        """A straight, densified Path from (ax,ay) to (bx,by), every pose at
+        `yaw`. This is the literal edge of the polygon — the reference for
+        measuring straight-line following (vs Smac, which inserts turn arcs)."""
+        d = math.hypot(bx - ax, by - ay)
+        n = max(1, int(d / step))
+        qz, qw = yq(yaw)
+        p = Path()
+        p.header.frame_id = "map"
+        for k in range(n + 1):
+            t = k / n
+            ps = PoseStamped()
+            ps.header.frame_id = "map"
+            ps.pose.position.x = ax + (bx - ax) * t
+            ps.pose.position.y = ay + (by - ay) * t
+            ps.pose.orientation.z, ps.pose.orientation.w = qz, qw
+            p.poses.append(ps)
+        return p
+
+    def follow(self, path, record=True, timeout=180.0,
+               controller_id="FollowPath", goal_checker_id="stopped_goal_checker"):
         if not self.fp.wait_for_server(timeout_sec=6.0):
             return "NO_SRV"
         g = FollowPath.Goal()
         g.path = path
-        g.controller_id = "FollowPath"
-        g.goal_checker_id = "stopped_goal_checker"
+        g.controller_id = controller_id
+        g.goal_checker_id = goal_checker_id
         if record:
             self.samples = []
             self.recording = True
@@ -622,7 +680,9 @@ def header(node, cfg, geo):
         src = c(f"area '{geo['name']}'{ins}", Col.CYN)
     else:
         src = c(f"rectangle {geo['a']:.1f} x {geo['b']:.1f} m", Col.CYN)
-    print(f"  outline    : {src}")
+    edges = geo.get("edges", "straight")
+    em = c("straight edges", Col.GRN) if edges == "straight" else c("smac (curvy)", Col.YEL)
+    print(f"  outline    : {src}  |  {em}")
     print(bar)
 
 
@@ -688,12 +748,17 @@ def run_outline(node, direction, geo):
     print(c(f"\n  === OUTLINE {direction.upper()} ({len(pts)-1} legs) ===", Col.B + Col.BLU))
     print_legend(node)
     cmd_v = cruise_cmd(node)
+    straight = geo.get("edges", "straight") == "straight"
     for i in range(len(pts) - 1):
         gx, gy = pts[i + 1]
         gyaw = math.atan2(gy - pts[i][1], gx - pts[i][0])
-        sys.stdout.write(f"  leg {i+1}: plan -> ({gx:.2f},{gy:.2f}) ... ")
+        kind = "straight" if straight else "plan"
+        sys.stdout.write(f"  leg {i+1}: {kind} -> ({gx:.2f},{gy:.2f}) ... ")
         sys.stdout.flush()
-        path = node.plan(gx, gy, gyaw)
+        if straight:
+            path = node.straight_path(pts[i][0], pts[i][1], gx, gy, gyaw)
+        else:
+            path = node.plan(gx, gy, gyaw)
         if path is None:
             print(c("PLAN_FAIL (skipping)", Col.RED))
             continue
@@ -719,6 +784,46 @@ def run_outline(node, direction, geo):
     if result:
         result["attempted"] = len(pts) - 1
     return result
+
+
+def run_coverage(node, geo):
+    """Drive the REAL F2C coverage path (swaths + Dubins arcs) via the coverage
+    controller -- the production mowing path, not a synthetic outline."""
+    print(c("\n  === COVERAGE PATH TEST (real F2C mowing path) ===", Col.B + Col.BLU))
+    if node.hl_state not in HL_DRIVES:
+        print(c("  not in a driving mode -- press 'p' first.", Col.RED))
+        return None
+    print(c(f"  requesting coverage path for area '{geo['name']}' ...", Col.DIM))
+    cov, names = node.coverage_path(geo["name"], geo.get("headland", 0.5))
+    if cov is None:
+        print(c(f"  coverage planning FAILED (area {geo['name']!r}? available: {names})", Col.RED))
+        return None
+    poly = [(p.pose.position.x, p.pose.position.y) for p in cov.poses]
+    print(c(f"  coverage path: {len(poly)} poses; transit to start ...", Col.DIM))
+    if len(poly) >= 2:
+        s0, s1 = poly[0], poly[1]
+        tp = node.plan(s0[0], s0[1], math.atan2(s1[1] - s0[1], s1[0] - s0[0]))
+        if tp is not None:
+            node.follow(tp, record=False)
+            time.sleep(0.6)
+    print_legend(node)
+    cmd_v = cruise_cmd(node)
+    st = node.follow(cov, record=True, timeout=600.0,
+                     controller_id="FollowCoveragePath", goal_checker_id="coverage_goal_checker")
+    m = analyze(node.samples, poly)
+    if m:
+        v = m["speed"]
+        vc = Col.GRN if v >= 0.9 * cmd_v else (Col.YEL if v >= 0.7 * cmd_v else Col.RED)
+        stc = c(st, Col.GRN if st == "OK" else Col.YEL)
+        print(f"  {stc}  swaths: " + mv("ct", m["s_ct_rms"] * 100, "cm", 5, 10) + " "
+              + mv("hunt", m["s_wz_zc"], "/s", 1.5, 3) + " | arcs: "
+              + mv("ctpk", m["t_ct_peak"] * 100, "cm", 15, 30)
+              + f"  herrpk={m['t_herr_peak']:.0f}deg | v=" + c(f"{v:.2f}", vc))
+        for ln in suggest(node, m, None):
+            print(ln)
+    else:
+        print(c(f"  {st}  (no usable samples)", Col.YEL))
+    return m
 
 
 def show_summary(node, cw, ccw):
@@ -1239,7 +1344,8 @@ def main():
     node = PathCal()
     threading.Thread(target=lambda: rclpy.spin(node), daemon=True).start()
     time.sleep(1.0)
-    geo = {"mode": "area", "name": "TestArea", "inset": 0.0, "a": 3.0, "b": 2.0}
+    geo = {"mode": "area", "name": "TestArea", "inset": 0.0, "a": 3.0, "b": 2.0,
+           "edges": "straight"}
     sweep = {
         "params": {"fc": [20.0, 25.0, 30.0], "fb": [35.0, 40.0, 45.0],
                    "fv": [120.0, 150.0, 180.0], "kd_lat": [1.0, 1.5, 2.0]},
@@ -1260,6 +1366,7 @@ def main():
             print("   2) Run outline CCW         6) Set fv Viscous")
             print("   3) Run BOTH + compare      7) Set fb Breakaway")
             print("   4) Show last summary       8) Set kd_lat")
+            print("   c) COVERAGE path test (real F2C swaths + arcs)")
             print("   x) AUTO-TEST (sweep)       z) Rotation (yaw)  f) Fine-yaw")
             print("   p) Prep (RECORDING+clear)  9) Set derivative_filter_tau")
             print("   s) STOP (cancel motion)    g) Toggle gyro rate loop")
@@ -1291,6 +1398,9 @@ def main():
                         print(ln)
                 else:
                     print(c("  no runs yet", Col.YEL))
+                ask(c("\n  ENTER...", Col.DIM))
+            elif ch == "c":
+                run_coverage(node, geo)
                 ask(c("\n  ENTER...", Col.DIM))
             elif ch == "p":
                 print("  setting RECORDING mode + clearing costmaps...")
@@ -1364,6 +1474,9 @@ def main():
                             pass
                 elif m == "2":
                     geo["mode"] = "rect"
+                em = ask("  edges: [1] straight (measure line-following)  "
+                         "[2] smac (curvy/feasible) [1]: ").strip()
+                geo["edges"] = "smac" if em == "2" else "straight"
             elif ch == "o":
                 for k, lbl, lo, hi in (("a", "length (forward) m", 1.0, 15.0),
                                        ("b", "width (lateral) m", 1.0, 15.0)):
