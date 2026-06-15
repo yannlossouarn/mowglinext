@@ -216,7 +216,7 @@ def analyze(samples, poly):
         he = abs(math.degrees(wrap(s[3] - best_tan)))
         ct_all.append(best_d)
         herr_all.append(he)
-        spd.append(abs(s[7]))  # fused ACHIEVED speed
+        spd.append(abs(s[7]))  # wheel-odom ACHIEVED forward speed
         if flags[best_i]:
             t_ct.append(best_d)
             t_herr.append(he)
@@ -310,7 +310,8 @@ def agg(legs):
         "speed": w("speed"), "n": tot, "legs": len(legs),
         # straight regime
         "s_ct_rms": ws("s_ct_rms"), "s_ct_peak": max(m["s_ct_peak"] for m in legs),
-        "s_herr_rms": ws("s_herr_rms"), "s_wz_zc": ws("s_wz_zc"), "s_n": stot,
+        "s_herr_rms": ws("s_herr_rms"), "s_wz_zc": ws("s_wz_zc"),
+        "s_gz_zc": ws("s_gz_zc"), "s_n": stot,
         # turn regime
         "t_ct_peak": max(m["t_ct_peak"] for m in legs),
         "t_herr_peak": max(m["t_herr_peak"] for m in legs),
@@ -324,6 +325,7 @@ class PathCal(Node):
         self.sub_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE,
                                   history=HistoryPolicy.KEEP_LAST)
         self.create_subscription(Odometry, "/odometry/filtered_map", self._odom, 10)
+        self.create_subscription(Odometry, "/wheel_odom", self._on_wheel, self.sub_qos)
         self.create_subscription(TwistStamped, "/cmd_vel_nav", self._cmd, 10)
         self.create_subscription(Imu, "/imu/data", self._imu, qos_profile_sensor_data)
         self.create_subscription(HighLevelStatus, "/behavior_tree_node/high_level_status",
@@ -345,7 +347,7 @@ class PathCal(Node):
 
         self.x = self.y = self.yaw = self.sx = None
         self._vx = self._wz = self._gz = 0.0
-        self._fused_v = 0.0  # fused achieved forward speed (EKF twist)
+        self._wheel_v = 0.0  # achieved forward speed from /wheel_odom (encoders)
         self.hl_state = None
         self.emergency = False
         self.is_charging = None
@@ -364,10 +366,12 @@ class PathCal(Node):
         self.y = m.pose.pose.position.y
         self.yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
         self.sx = math.sqrt(max(0.0, m.pose.covariance[0]))
-        self._fused_v = m.twist.twist.linear.x
         if self.recording:
             self.samples.append((time.time(), self.x, self.y, self.yaw,
-                                 self._vx, self._wz, self._gz, self._fused_v))
+                                 self._vx, self._wz, self._gz, self._wheel_v))
+
+    def _on_wheel(self, m):
+        self._wheel_v = m.twist.twist.linear.x  # encoder-derived forward speed
 
     def _cmd(self, m):
         self._vx = m.twist.linear.x
@@ -622,6 +626,29 @@ def header(node, cfg, geo):
     print(bar)
 
 
+def vcol(val, good, marg):
+    """ANSI colour for a lower-is-better metric."""
+    return Col.GRN if val <= good else (Col.YEL if val <= marg else Col.RED)
+
+
+def mv(label, val, unit, good, marg):
+    """'label=VALUE' with VALUE coloured good/marginal/poor."""
+    return f"{label}=" + c(f"{val:.1f}{unit}", vcol(val, good, marg))
+
+
+def print_legend(node):
+    cmd = cruise_cmd(node)
+    g, y, r = c("good", Col.GRN), c("marginal", Col.YEL), c("poor", Col.RED)
+    print(c("  --- metrics (lower is better unless noted) ---", Col.DIM))
+    print(f"    ct     cross-track from planned path [cm]   straight: {g} <5 / {y} 5-10 / {r} >10")
+    print(f"    ctpk   cross-track PEAK on this section [cm] turn:     {g} <15 / {y} 15-30 / {r} >30")
+    print(f"    hunt   steering oscillation [zero-cross/s]            {g} <1.5 / {y} 1.5-3 / {r} >3")
+    print(c(f"    herrpk heading-error PEAK [deg] -- ~30-45 at SHARP corners is normal (the robot "
+            "rounds the vertex); judge it against the straights, not in absolute.", Col.DIM))
+    print(f"    v      achieved cruise speed [m/s]  -- want >= {0.9*cmd:.2f} (90% of commanded {cmd:.2f})")
+    print(c("  " + "-" * 60, Col.DIM))
+
+
 def local_to_map(node, lx, ly):
     cy, sy = math.cos(node.yaw), math.sin(node.yaw)
     return node.x + lx * cy - ly * sy, node.y + lx * sy + ly * cy
@@ -659,6 +686,8 @@ def run_outline(node, direction, geo):
         pts = [local_to_map(node, lx, ly) for (lx, ly) in local]
     leg_metrics = []
     print(c(f"\n  === OUTLINE {direction.upper()} ({len(pts)-1} legs) ===", Col.B + Col.BLU))
+    print_legend(node)
+    cmd_v = cruise_cmd(node)
     for i in range(len(pts) - 1):
         gx, gy = pts[i + 1]
         gyaw = math.atan2(gy - pts[i][1], gx - pts[i][0])
@@ -673,9 +702,13 @@ def run_outline(node, direction, geo):
         m = analyze(node.samples, poly)
         leg_metrics.append(m)
         if m:
-            print(c(f"{st}  straight ct={m['s_ct_rms']*100:.1f}cm hunt={m['s_wz_zc']:.1f}/s | "
-                    f"turn ctpk={m['t_ct_peak']*100:.1f}cm herrpk={m['t_herr_peak']:.0f}deg | "
-                    f"v={m['speed']:.2f}", Col.GRN if st == "OK" else Col.YEL))
+            v = m["speed"]
+            vc = Col.GRN if v >= 0.9 * cmd_v else (Col.YEL if v >= 0.7 * cmd_v else Col.RED)
+            stc = c(st, Col.GRN if st == "OK" else Col.YEL)
+            print(f"  {stc}  " + mv("straight ct", m["s_ct_rms"] * 100, "cm", 5, 10) + " "
+                  + mv("hunt", m["s_wz_zc"], "/s", 1.5, 3) + " | "
+                  + mv("turn ctpk", m["t_ct_peak"] * 100, "cm", 15, 30)
+                  + f"  herrpk={m['t_herr_peak']:.0f}deg | v=" + c(f"{v:.2f}", vc))
         else:
             print(c(f"{st}  (no usable samples)", Col.YEL))
         if node.emergency:
@@ -694,21 +727,35 @@ def show_summary(node, cw, ccw):
     print(c(hdr, Col.B))
     print(c("  " + "-" * 44, Col.DIM))
 
-    def row(label, key, scale=1.0, unit=""):
-        a = f"{cw[key]*scale:.1f}{unit}" if cw else "-"
-        d = f"{ccw[key]*scale:.1f}{unit}" if ccw else "-"
-        print(f"  {label:<22}{a:>12}{d:>12}")
+    cmd_v = cruise_cmd(node)
+
+    def row(label, key, scale=1.0, unit="", good=None, marg=None, higher=False):
+        def cell(agg):
+            if not agg:
+                return f"{'-':>12}"
+            v = agg[key] * scale
+            padded = f"{v:.1f}{unit}".rjust(12)
+            if good is None:
+                return padded
+            if higher:
+                col = Col.GRN if v >= good else (Col.YEL if v >= marg else Col.RED)
+            else:
+                col = vcol(v, good, marg)
+            return c(padded, col)
+        print(f"  {label:<22}{cell(cw)}{cell(ccw)}")
 
     if cw or ccw:
         print(c("  STRAIGHTS", Col.B))
-        row("  cross-track RMS", "s_ct_rms", 100, "cm")
-        row("  cross-track PEAK", "s_ct_peak", 100, "cm")
-        row("  hunt (zc/s)", "s_wz_zc")
+        row("  cross-track RMS", "s_ct_rms", 100, "cm", 5, 10)
+        row("  cross-track PEAK", "s_ct_peak", 100, "cm", 10, 20)
+        row("  hunt (zc/s)", "s_wz_zc", 1, "", 1.5, 3)
         print(c("  TURNS", Col.B))
-        row("  cross-track PEAK", "t_ct_peak", 100, "cm")
-        row("  heading PEAK", "t_herr_peak", 1, "deg")
+        row("  cross-track PEAK", "t_ct_peak", 100, "cm", 15, 30)
+        row("  heading PEAK", "t_herr_peak", 1, "deg")  # uncoloured: high at sharp corners
         print(c("  OVERALL", Col.B))
-        row("  cruise speed", "speed", 1, "m/s")
+        row("  cruise speed", "speed", 1, "m/s", 0.9 * cmd_v, 0.7 * cmd_v, higher=True)
+        print(c(f"  (cruise target {cmd_v:.2f} m/s; heading PEAK is high at sharp corners -- "
+                "normal)", Col.DIM))
     return suggest(node, cw, ccw)
 
 
