@@ -1178,10 +1178,11 @@ PARAM_REG = {
     "fc": (HB, "ff_coulomb_byte", "double"),
     "fb": (HB, "ff_breakaway_byte", "double"),
     "fv": (HB, "ff_viscous_byte_per_mps", "double"),
+    "lpf": (CS, "FollowPath.derivative_filter_tau", "double"),
     "kd_lat": (CS, "FollowPath.kd_lat", "double"),
     "gyro": (HB, "angular_rate_loop_enabled", "bool"),
 }
-SWEEP_ORDER = ["fc", "fb", "fv", "kd_lat", "gyro"]
+SWEEP_ORDER = ["fc", "fb", "fv", "lpf", "kd_lat", "gyro"]
 
 
 def apply_param(node, key, val):
@@ -1190,7 +1191,7 @@ def apply_param(node, key, val):
     return node.set_param(nd, pn, val, pt)
 
 
-FLOORS = {"fc": 5.0, "fb": 5.0, "fv": 10.0, "kd_lat": 0.0}  # don't suggest below these
+FLOORS = {"fc": 5.0, "fb": 5.0, "fv": 10.0, "lpf": 0.0, "kd_lat": 0.0}  # don't suggest below
 
 
 def descent_next_steps(sweep, best):
@@ -1218,6 +1219,7 @@ def descent_next_steps(sweep, best):
     untested = [k for k in SWEEP_ORDER if k not in sweep["enabled"]]
     if untested:
         hints = {"kd_lat": "controller hunting", "gyro": "yaw/rotation",
+                 "lpf": "derivative filter (anti-hunt, try before kd_lat)",
                  "fc": "low-speed effort", "fb": "breakaway", "fv": "speed"}
         names = ", ".join(f"{k} ({hints.get(k,'')})" for k in untested)
         out.append(c(f"  Not yet swept: {names}", Col.CYN))
@@ -1323,6 +1325,7 @@ def run_autotest(node, geo, sweep, weights):
             best = {"fc": _num(cfg.get("ff_coulomb_byte")),
                     "fb": _num(cfg.get("ff_breakaway_byte")),
                     "fv": _num(cfg.get("ff_viscous_byte_per_mps")),
+                    "lpf": _num(cfg.get("FollowPath.derivative_filter_tau")),
                     "kd_lat": _num(cfg.get("FollowPath.kd_lat")),
                     "gyro": cfg.get("angular_rate_loop_enabled")}
             for k in keys:
@@ -1395,10 +1398,12 @@ def autotest_setup(node, geo, sweep, weights):
         print(c("  " + "-" * 40, Col.DIM))
         print(f"  mode={c(sweep['mode'], Col.CYN)}  dir={c(sweep['direction'], Col.CYN)}  "
               f"-> ~{n} runs")
-        print("\n   1-4) edit fc/fb/fv/kd_lat list (or 'off')   m) mode   d) dir")
+        editable = [k for k in SWEEP_ORDER if k != "gyro"]  # fc fb fv lpf kd_lat
+        print(f"\n   1-{len(editable)}) edit {'/'.join(editable)} list (or 'off')   "
+              "m) mode   d) dir")
         print("   R) RUN sweep                                 b) back")
         ch = ask("  choice: ").lower()
-        edit = {"1": "fc", "2": "fb", "3": "fv", "4": "kd_lat"}
+        edit = {str(i + 1): k for i, k in enumerate(editable)}
         if ch in edit:
             k = edit[ch]
             a = ask(f"  {k} comma-list (e.g. 20,25,30), 'off' to disable, blank=keep: ").strip()
@@ -1454,7 +1459,8 @@ def main():
            "edges": "straight"}
     sweep = {
         "params": {"fc": [20.0, 25.0, 30.0], "fb": [35.0, 40.0, 45.0],
-                   "fv": [120.0, 150.0, 180.0], "kd_lat": [1.0, 1.5, 2.0]},
+                   "fv": [120.0, 150.0, 180.0], "lpf": [0.1, 0.2, 0.3],
+                   "kd_lat": [1.0, 1.5, 2.0]},
         "enabled": ["fc", "fb"],
         "mode": "descent",
         "direction": "ccw",
