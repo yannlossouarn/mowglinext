@@ -264,7 +264,8 @@ def analyze_spin(samples, target_rad):
     achieved = cum[-1]
     sgn = 1.0 if target_rad >= 0 else -1.0
     peak = max(cum) if sgn > 0 else min(cum)
-    overshoot = max(0.0, (peak - target_rad) * sgn)
+    overshoot = max(0.0, (peak - target_rad) * sgn)         # peak went past target
+    undershoot = max(0.0, (target_rad - achieved) * sgn)    # final stopped short
     err = target_rad - achieved
     # settle time = time after which |cum-target| stays within 2 deg
     tol = math.radians(2.0)
@@ -278,6 +279,7 @@ def analyze_spin(samples, target_rad):
     return {
         "target_deg": math.degrees(target_rad), "achieved_deg": math.degrees(achieved),
         "err_deg": math.degrees(err), "overshoot_deg": math.degrees(overshoot),
+        "undershoot_deg": math.degrees(undershoot),
         "settle_s": settle, "gz_rev": gz_n, "dur": ts[-1] - ts[0],
     }
 
@@ -759,28 +761,32 @@ def _agg_reps(angle, reps_m):
     tol = max(1.0, 0.4 * abs(angle))         # "landed on target" tolerance (deg)
     movethr = max(0.2, 0.3 * abs(angle))     # "actually moved" threshold (deg)
     overthr = max(1.0, 0.5 * abs(angle))     # "overshot" threshold (deg)
-    ach, over, abserr, settle = [], [], [], []
-    ok = no_move = n_over = 0
+    ach, over, under, abserr, settle = [], [], [], [], []
+    ok = no_move = n_under = n_over = 0
     osc = 0
     for st, m in reps_m:
         if not m:
             continue
         ach.append(m["achieved_deg"])
         over.append(m["overshoot_deg"])
+        under.append(m["undershoot_deg"])
         abserr.append(abs(m["err_deg"]))
         settle.append(m["settle_s"])
         osc = max(osc, m["gz_rev"])
         moved = abs(m["achieved_deg"]) > movethr
         if not moved:
-            no_move += 1
+            no_move += 1                       # never broke free (total undershoot)
+        elif m["undershoot_deg"] > tol:
+            n_under += 1                        # moved but stalled short of target
         if m["overshoot_deg"] > overthr:
             n_over += 1
         if st == "OK" and moved and abs(m["err_deg"]) <= tol:
             ok += 1
     avg = lambda L: sum(L) / len(L) if L else 0.0
     return {"angle": angle, "reps": len(reps_m), "ok": ok, "ach": avg(ach),
-            "over": avg(over), "abserr": avg(abserr), "settle": avg(settle),
-            "no_move": no_move, "n_over": n_over, "osc": osc}
+            "over": avg(over), "under": avg(under), "abserr": avg(abserr),
+            "settle": avg(settle), "no_move": no_move, "n_under": n_under,
+            "n_over": n_over, "osc": osc}
 
 
 def run_rotation(node, angles, reps=1):
@@ -815,8 +821,8 @@ def run_rotation(node, angles, reps=1):
         aggs.append(a)
         col = Col.GRN if a["ok"] == a["reps"] else (Col.YEL if a["ok"] > 0 else Col.RED)
         print(c(f"   => {ang:+.0f}deg: {a['ok']}/{a['reps']} ok  achieved {a['ach']:+.1f}  "
-                f"overshoot {a['over']:.1f}  err {a['abserr']:.1f}deg  "
-                f"({a['no_move']} no-move, {a['n_over']} overshoot)", col))
+                f"under {a['under']:.1f} / over {a['over']:.1f}  err {a['abserr']:.1f}deg  "
+                f"({a['no_move']} no-move, {a['n_under']} short, {a['n_over']} overshoot)", col))
         if node.emergency:
             break
     for ln in rotation_suggest(aggs):
@@ -832,6 +838,8 @@ def rotation_suggest(aggs):
     tot_nomove = sum(a["no_move"] for a in v)
     max_over = max(a["over"] for a in v)
     n_over = sum(a["n_over"] for a in v)
+    n_under = sum(a["n_under"] for a in v)
+    max_under = max(a["under"] for a in v)
     max_osc = max(a["osc"] for a in v)
     # smallest angle that landed on target on EVERY rep = the fine-adjustment floor
     reliable = sorted(abs(a["angle"]) for a in v if a["ok"] == a["reps"])
@@ -853,10 +861,22 @@ def rotation_suggest(aggs):
                      "kick) or raise the spin approach speed (behavior_server Spin min_rotational_vel) "
                      "-- both trade against overshoot. Otherwise ~the floor above is your practical "
                      "minimum."))
-    if max_over > max(1.0, 0.0) and (n_over > 0 or max_over > 3):
+    if n_under > 0:
+        tips.append(("UNDERSHOOT (short)", Col.YEL,
+                     f"moved but stalled short of target (up to {max_under:.1f}deg) -> the pivot "
+                     "decelerates into the deadband and stops before the goal. RAISE the spin "
+                     "approach/min speed (behavior_server Spin min_rotational_vel) so it stays above "
+                     "the deadband to target; lowering fc also helps it creep the last bit."))
+    if n_over > 0 or max_over > 3:
         tips.append(("OVERSHOOT", Col.YEL,
-                     f"small targets overshoot up to {max_over:.1f}deg -> too much pivot momentum. "
-                     "Lower fc (gentler break) and/or reduce the spin speed; keep fb just above fc."))
+                     f"overshoots up to {max_over:.1f}deg -> too much speed/momentum at the target. "
+                     "REDUCE the spin approach/max speed and/or lower fc (gentler, less momentum); "
+                     "keep fb just above fc."))
+    if n_under > 0 and (n_over > 0 or max_over > 3):
+        tips.append(("UNDER vs OVER", Col.CYN,
+                     "both short and past in the same set -> the APPROACH SPEED is the opposite-"
+                     "trade-off knob (faster cures undershoot but adds overshoot). Tune it to the "
+                     "value that just reaches target without going past."))
     if max_osc > 2:
         tips.append(("OSCILLATION", Col.RED,
                      "the pivot hunts before settling -> fc too low (stall-slip; raise fc/keep fb>fc) "
