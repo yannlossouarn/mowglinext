@@ -250,37 +250,46 @@ def analyze(samples, poly):
     }
 
 
-def analyze_spin(samples, target_rad):
-    """In-place rotation metrics: achieved vs intended yaw, overshoot, settle,
-    oscillation -- the dock-orientation case."""
-    if len(samples) < 4:
+def analyze_spin(gyro_buf, target_rad, baseline=0.0):
+    """In-place rotation metrics from HIGH-RATE IMU gyro integration (the 10 Hz
+    fused pose can't resolve a sub-second small pivot). `gyro_buf` is a list of
+    (t, gyro_z); `baseline` is the stationary gyro bias to subtract. Returns
+    achieved vs intended yaw, overshoot, undershoot, settle, oscillation."""
+    if len(gyro_buf) < 6:
         return None
-    ts = [s[0] for s in samples]
-    yaw = [s[3] for s in samples]
-    gz = [s[6] for s in samples]
+    ts = [g[0] for g in gyro_buf]
     cum = [0.0]
-    for i in range(1, len(yaw)):
-        cum.append(cum[-1] + wrap(yaw[i] - yaw[i - 1]))  # unwrapped cumulative
-    achieved = cum[-1]
+    revs = 0
+    prev = None
+    for i in range(1, len(gyro_buf)):
+        dt = ts[i] - ts[i - 1]
+        rate = gyro_buf[i][1] - baseline
+        if dt <= 0 or dt > 0.3:
+            cum.append(cum[-1])
+            continue
+        cum.append(cum[-1] + rate * dt)  # integrate bias-corrected yaw rate
+        if prev is not None and prev * rate < 0 and abs(rate) > 0.05:
+            revs += 1
+        prev = rate
+    achieved = cum[-1]                                      # FINAL resting yaw
     sgn = 1.0 if target_rad >= 0 else -1.0
-    peak = max(cum) if sgn > 0 else min(cum)
+    peak = max(cum) if sgn > 0 else min(cum)                # furthest rotated
     overshoot = max(0.0, (peak - target_rad) * sgn)         # peak went past target
-    undershoot = max(0.0, (target_rad - achieved) * sgn)    # final stopped short
+    undershoot = max(0.0, (target_rad - achieved) * sgn)    # rest stopped short
+    backcreep = max(0.0, (peak - achieved) * sgn)           # crept back from peak after stop
     err = target_rad - achieved
-    # settle time = time after which |cum-target| stays within 2 deg
-    tol = math.radians(2.0)
+    tol = math.radians(0.5)
     settle = ts[-1] - ts[0]
     for i in range(len(cum)):
         if all(abs(cum[k] - target_rad) <= tol for k in range(i, len(cum))):
             settle = ts[i] - ts[0]
             break
-    # oscillation: gyro sign reversals during the spin
-    gz_n = sum(1 for i in range(1, len(gz)) if gz[i - 1] * gz[i] < 0)
     return {
         "target_deg": math.degrees(target_rad), "achieved_deg": math.degrees(achieved),
-        "err_deg": math.degrees(err), "overshoot_deg": math.degrees(overshoot),
-        "undershoot_deg": math.degrees(undershoot),
-        "settle_s": settle, "gz_rev": gz_n, "dur": ts[-1] - ts[0],
+        "peak_deg": math.degrees(peak), "err_deg": math.degrees(err),
+        "overshoot_deg": math.degrees(overshoot), "undershoot_deg": math.degrees(undershoot),
+        "backcreep_deg": math.degrees(backcreep),
+        "settle_s": settle, "gz_rev": revs, "dur": ts[-1] - ts[0],
     }
 
 
@@ -343,6 +352,10 @@ class PathCal(Node):
         self.recording = False
         self.samples = []
         self._fp_gh = None
+        # high-rate gyro capture for the in-place yaw test (10 Hz pose can't
+        # resolve a sub-second small pivot; IMU gyro is ~90 Hz).
+        self._gz_buf = []
+        self._capture_gyro = False
 
     # ---- callbacks -------------------------------------------------------
     def _odom(self, m):
@@ -362,6 +375,8 @@ class PathCal(Node):
 
     def _imu(self, m):
         self._gz = m.angular_velocity.z
+        if self._capture_gyro:
+            self._gz_buf.append((time.time(), self._gz))
 
     def _hl(self, m):
         self.hl_state = m.state
@@ -506,13 +521,21 @@ class PathCal(Node):
         if record:
             self.samples = []
             self.recording = True
+            self._gz_buf = []
+            self._capture_gyro = True
         gh = self._await(self.sp.send_goal_async(g), 8.0)
         if not gh or not gh.accepted:
             self.recording = False
+            self._capture_gyro = False
             return "REJECTED"
         self._fp_gh = gh
         res = self._await(gh.get_result_async(), timeout + 10.0)
+        # Keep capturing ~0.9 s after the spin to record any coast-back creep:
+        # at zero command the motors go to zero PWM (no holding torque), so
+        # drivetrain backlash + tire/gearbox windup can unwind in reverse.
+        time.sleep(0.9)
         self.recording = False
+        self._capture_gyro = False
         self._fp_gh = None
         if not res:
             return "TIMEOUT"
@@ -761,32 +784,43 @@ def _agg_reps(angle, reps_m):
     tol = max(1.0, 0.4 * abs(angle))         # "landed on target" tolerance (deg)
     movethr = max(0.2, 0.3 * abs(angle))     # "actually moved" threshold (deg)
     overthr = max(1.0, 0.5 * abs(angle))     # "overshot" threshold (deg)
-    ach, over, under, abserr, settle = [], [], [], [], []
-    ok = no_move = n_under = n_over = 0
+    creepthr = max(0.5, 0.2 * abs(angle))    # "crept back" threshold (deg)
+    sgn = 1.0 if angle >= 0 else -1.0
+    tgt = abs(angle)
+    ach, peak, over, under, creep, abserr, settle = [], [], [], [], [], [], []
+    ok = no_move = n_under = n_over = n_creep = 0
     osc = 0
     for st, m in reps_m:
         if not m:
             continue
         ach.append(m["achieved_deg"])
+        peak.append(m["peak_deg"])
         over.append(m["overshoot_deg"])
         under.append(m["undershoot_deg"])
+        creep.append(m["backcreep_deg"])
         abserr.append(abs(m["err_deg"]))
         settle.append(m["settle_s"])
         osc = max(osc, m["gz_rev"])
-        moved = abs(m["achieved_deg"]) > movethr
+        peak_toward = m["peak_deg"] * sgn
+        moved = peak_toward > movethr
+        reached = peak_toward >= tgt - tol     # the pivot DID reach target at its peak
         if not moved:
-            no_move += 1                       # never broke free (total undershoot)
-        elif m["undershoot_deg"] > tol:
-            n_under += 1                        # moved but stalled short of target
+            no_move += 1                        # never broke free
+        elif not reached:
+            n_under += 1                        # deadband: peak never reached target
+        if m["backcreep_deg"] > creepthr:
+            n_creep += 1                        # reached/moved then crept back at rest
         if m["overshoot_deg"] > overthr:
             n_over += 1
         if st == "OK" and moved and abs(m["err_deg"]) <= tol:
             ok += 1
     avg = lambda L: sum(L) / len(L) if L else 0.0
-    return {"angle": angle, "reps": len(reps_m), "ok": ok, "ach": avg(ach),
-            "over": avg(over), "under": avg(under), "abserr": avg(abserr),
+    measured = sum(1 for st, m in reps_m if m)
+    return {"angle": angle, "reps": measured, "no_data": len(reps_m) - measured,
+            "ok": ok, "ach": avg(ach), "peak": avg(peak), "over": avg(over),
+            "under": avg(under), "creep": avg(creep), "abserr": avg(abserr),
             "settle": avg(settle), "no_move": no_move, "n_under": n_under,
-            "n_over": n_over, "osc": osc}
+            "n_over": n_over, "n_creep": n_creep, "osc": osc}
 
 
 def run_rotation(node, angles, reps=1):
@@ -805,24 +839,33 @@ def run_rotation(node, angles, reps=1):
                 break
             sys.stdout.write(f"  {ang:+.0f} deg (rep {r+1}/{reps}) ... ")
             sys.stdout.flush()
-            time.sleep(0.3)
+            # stationary gyro baseline (bias) over ~0.4 s before the spin
+            gb, t0 = [], time.time()
+            while time.time() - t0 < 0.4:
+                gb.append(node._gz)
+                time.sleep(0.02)
+            baseline = sum(gb) / len(gb) if gb else 0.0
             st = node.spin(math.radians(ang))
-            time.sleep(0.4)
-            m = analyze_spin(node.samples, math.radians(ang))
+            time.sleep(0.3)
+            m = analyze_spin(node._gz_buf, math.radians(ang), baseline)
             reps_m.append((st, m))
             if m:
-                print(c(f"achieved {m['achieved_deg']:+.1f} over {m['overshoot_deg']:.1f}", Col.DIM))
+                print(c(f"{st}: peak {m['peak_deg']:+.1f} -> rest {m['achieved_deg']:+.1f}  "
+                        f"creep {m['backcreep_deg']:.1f}  over {m['overshoot_deg']:.1f}", Col.DIM))
             else:
-                print(c(f"{st}", Col.YEL))
-            time.sleep(0.6)
+                print(c(f"{st}: NO IMU DATA", Col.YEL))
+            time.sleep(0.5)
         if not reps_m:
             continue
         a = _agg_reps(ang, reps_m)
         aggs.append(a)
-        col = Col.GRN if a["ok"] == a["reps"] else (Col.YEL if a["ok"] > 0 else Col.RED)
-        print(c(f"   => {ang:+.0f}deg: {a['ok']}/{a['reps']} ok  achieved {a['ach']:+.1f}  "
-                f"under {a['under']:.1f} / over {a['over']:.1f}  err {a['abserr']:.1f}deg  "
-                f"({a['no_move']} no-move, {a['n_under']} short, {a['n_over']} overshoot)", col))
+        col = Col.GRN if (a["reps"] and a["ok"] == a["reps"]) else \
+            (Col.YEL if a["ok"] > 0 else Col.RED)
+        nodata = f", {a['no_data']} no-data" if a["no_data"] else ""
+        print(c(f"   => {ang:+.0f}deg: {a['ok']}/{a['reps']} ok  peak {a['peak']:+.1f} -> rest "
+                f"{a['ach']:+.1f}  creep {a['creep']:.1f}  err {a['abserr']:.1f}deg  "
+                f"({a['no_move']} no-move, {a['n_under']} short, {a['n_over']} over, "
+                f"{a['n_creep']} creep{nodata})", col))
         if node.emergency:
             break
     for ln in rotation_suggest(aggs):
@@ -840,6 +883,8 @@ def rotation_suggest(aggs):
     n_over = sum(a["n_over"] for a in v)
     n_under = sum(a["n_under"] for a in v)
     max_under = max(a["under"] for a in v)
+    n_creep = sum(a["n_creep"] for a in v)
+    max_creep = max(a["creep"] for a in v)
     max_osc = max(a["osc"] for a in v)
     # smallest angle that landed on target on EVERY rep = the fine-adjustment floor
     reliable = sorted(abs(a["angle"]) for a in v if a["ok"] == a["reps"])
@@ -861,8 +906,15 @@ def rotation_suggest(aggs):
                      "kick) or raise the spin approach speed (behavior_server Spin min_rotational_vel) "
                      "-- both trade against overshoot. Otherwise ~the floor above is your practical "
                      "minimum."))
+    if n_creep > 0:
+        tips.append(("BACK-CREEP / HOLDING TORQUE", Col.RED,
+                     f"reaches target then creeps back ~{max_creep:.1f}deg at rest -> at zero command "
+                     "the motors coast (no holding torque) and drivetrain backlash + tire windup "
+                     "unwind. This is FIRMWARE/mechanical, NOT FF tuning: it needs an active hold/brake "
+                     "at zero command or a position-hold loop. The dock cradle's mechanical capture "
+                     "mitigates it. The FINAL resting yaw (not the peak) is what lands at the dock."))
     if n_under > 0:
-        tips.append(("UNDERSHOOT (short)", Col.YEL,
+        tips.append(("UNDERSHOOT (deadband)", Col.YEL,
                      f"moved but stalled short of target (up to {max_under:.1f}deg) -> the pivot "
                      "decelerates into the deadband and stops before the goal. RAISE the spin "
                      "approach/min speed (behavior_server Spin min_rotational_vel) so it stays above "
