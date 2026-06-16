@@ -290,6 +290,39 @@ TEST_F(DiagnosticsTest, CategoryLevelsAreValidDiagnosticLevels)
 }
 
 // ===========================================================================
+// 4b. LiDAR expectation gating
+// ===========================================================================
+
+TEST_F(DiagnosticsTest, LidarErrorWhenExpectedButNoScan)
+{
+  // Default expect_lidar=true: a robot configured with a LiDAR that never
+  // produces a scan is a real fault.
+  auto node = make_node("_lidar_expected");
+  const rclcpp::Time t = node->now();
+
+  const auto status = node->check_lidar(t);
+  EXPECT_EQ(status.name, "LiDAR");
+  EXPECT_EQ(status.level, DiagLevel::ERROR);
+  EXPECT_EQ(status.message, "No LiDAR scan received");
+}
+
+TEST_F(DiagnosticsTest, LidarOkWhenNotExpected)
+{
+  // GPS-only robot (lidar_enabled=false → expect_lidar=false): a missing scan
+  // is the expected steady state, so the check must report OK, not ERROR.
+  rclcpp::NodeOptions opts;
+  opts.arguments({"--ros-args", "--remap", "__node:=test_diag_node_lidar_off"});
+  opts.parameter_overrides({rclcpp::Parameter("expect_lidar", false)});
+  auto node = std::make_shared<mowgli_monitoring::DiagnosticsNode>(opts);
+  const rclcpp::Time t = node->now();
+
+  const auto status = node->check_lidar(t);
+  EXPECT_EQ(status.name, "LiDAR");
+  EXPECT_EQ(status.level, DiagLevel::OK);
+  EXPECT_EQ(status.message, "LiDAR not configured");
+}
+
+// ===========================================================================
 // 5. Edge cases
 // ===========================================================================
 

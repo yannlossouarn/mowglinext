@@ -153,6 +153,9 @@ std::string level_name(uint8_t level);
  * battery_error_pct    double  10.0   %  — battery ERROR level
  * motor_temp_warn_c    double  60.0   °C — ESC/motor WARN temperature
  * motor_temp_error_c   double  80.0   °C — ESC/motor ERROR temperature
+ * expect_lidar         bool    true       whether a LiDAR scan is expected; when
+ *                                         false the LiDAR check reports OK instead
+ *                                         of ERROR (GPS-only robots have no scan)
  */
 class DiagnosticsNode : public rclcpp::Node
 {
@@ -232,6 +235,7 @@ private:
   double battery_error_pct_{10.0};
   double motor_temp_warn_c_{60.0};
   double motor_temp_error_c_{80.0};
+  bool expect_lidar_{true};
 
   // ---- State snapshot -------------------------------------------------------
 
