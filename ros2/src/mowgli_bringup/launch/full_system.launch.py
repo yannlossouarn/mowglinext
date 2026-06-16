@@ -212,6 +212,12 @@ def generate_launch_description() -> LaunchDescription:
             # references in main_tree.xml. See issue #191.
             {"undock_speed": float(robot_params.get("undock_speed", 0.15))},
             {"undock_distance": float(robot_params.get("undock_distance", 1.0))},
+            # idle_nav2_suspend: PAUSE the Nav2 lifecycle stack while parked on
+            # the dock to cut idle CPU/thermal load (costmaps stop looping).
+            # Default off — a deliberate per-site opt-in. RESUME is guaranteed
+            # before motion by the root Nav2ResumeGuard + Nav2ReadyPoll.
+            {"idle_nav2_suspend":
+                bool(robot_params.get("idle_nav2_suspend", False))},
             # Dock pose scalars (mowgli_robot.yaml single source of truth) so
             # DockApproach can plan the staging pose + dock-aligned approach
             # tail. Same values map_server / hardware_bridge already receive.

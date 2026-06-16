@@ -718,9 +718,14 @@ local_costmap:
   local_costmap:
     ros__parameters:
       use_sim_time: false
-      # update_frequency > controller_frequency (5 Hz) so the costmap is always
-      # fresh when the controller ticks. publish_frequency kept low because
-      # only the visualisation consumes the topic; OpenMower uses 5/2.
+      # update_frequency is LAUNCH-INJECTED from the obstacle sensor rate
+      # (mowgli_robot.yaml.obstacle_sensor_rate_hz, default 10 Hz = LD19
+      # cadence) by navigation.launch.py — see _inject_dock_pose_and_speeds.
+      # The value here is the fallback when launched outside that path. A
+      # costmap only needs to refresh as fast as its sensor changes it;
+      # matching the LiDAR rate (not exceeding it) keeps the loop off the
+      # Pi's thermal budget. publish_frequency kept low because only the
+      # visualisation consumes the topic; OpenMower uses 5/2.
       update_frequency: 10.0
       publish_frequency: 2.0
       global_frame: odom

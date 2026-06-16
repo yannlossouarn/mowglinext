@@ -15,6 +15,19 @@ mowgli:
         automatic_mode: 0
         mowing_enabled: true
         lidar_enabled: true
+        # Nominal publish rate (Hz) of the obstacle sensor feeding the Nav2
+        # obstacle_layer (LD19 ≈ 10 Hz). The local costmap's update_frequency
+        # is derived from this at launch so the costmap refreshes no faster
+        # than the sensor changes it (keeps the Pi's costmap loop off the
+        # thermal budget). Ignored when lidar_enabled is false. Floored at 2 Hz.
+        obstacle_sensor_rate_hz: 10.0
+        # idle_nav2_suspend (default false): when true, the behaviour tree
+        # PAUSEs the entire Nav2 lifecycle stack while the robot is parked on
+        # the dock, so the costmaps stop looping and the Pi's idle thermal
+        # load drops sharply. Nav2 is RESUMEd (collision_monitor back up)
+        # before any motion. Opt-in per site; leave false until validated on
+        # your hardware.
+        idle_nav2_suspend: false
 
         # Localizer backend — when LiDAR is present we want the
         # GTSAM factor-graph localizer with scan-matching + loop

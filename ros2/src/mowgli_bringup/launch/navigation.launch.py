@@ -348,6 +348,19 @@ def generate_launch_description() -> LaunchDescription:
     # early, 0.5 over-presses" rationale). Operator-overridable via
     # mowgli_robot.yaml so sites with different chargers can tune.
     dock_charging_threshold = 0.3
+    # Obstacle-sensor publish rate (Hz) that the LOCAL costmap's
+    # update_frequency tracks when an obstacle sensor is present. A
+    # costmap only needs to refresh as fast as a sensor can change it —
+    # updating faster just re-rasters the same scan and burns CPU (the
+    # Pi 4 idle-thermal throttling triaged 2026-06-16 was the local
+    # costmap looping at 10 Hz against /scan). Default 10 Hz = LD19
+    # cadence; set to the real rate of whatever feeds the obstacle_layer
+    # (LiDAR today, depth cams in future — use the fastest source).
+    # Injected ONLY into the LiDAR param-file variant; the no_lidar
+    # variant has no obstacle source and its costmap rates are already
+    # bounded by the rolling-window re-centering need (see
+    # nav2_params_no_lidar.yaml), so they are left as-is.
+    obstacle_sensor_rate_hz = 10.0
     # Phantom-tuning knobs surfaced through mowgli_robot.yaml so the GUI
     # can edit them without an SSH session. Defaults match the C++ node
     # defaults; override on the Settings page.
@@ -381,6 +394,8 @@ def generate_launch_description() -> LaunchDescription:
             rt_rp.get("dock_approach_overshoot", 0.05))
         dock_charging_threshold = float(
             rt_rp.get("dock_charging_threshold", dock_charging_threshold))
+        obstacle_sensor_rate_hz = float(
+            rt_rp.get("obstacle_sensor_rate_hz", obstacle_sensor_rate_hz))
         # Defensive clip: a stale per-site mowgli_robot.yaml can carry
         # the legacy 0.5 m default that breaks cell-based mowing (the
         # SimpleGoalChecker fires on tick 1 because the strip end is
@@ -443,7 +458,8 @@ def generate_launch_description() -> LaunchDescription:
     # those tmp files to RewrittenYaml as its sources. RewrittenYaml then
     # handles the remaining scalar rewrites (use_sim_time, footprint, BT XML
     # paths) without touching the pose list.
-    def _inject_dock_pose_and_speeds(src_path: str) -> str:
+    def _inject_dock_pose_and_speeds(
+            src_path: str, has_obstacle_sensor: bool) -> str:
         """Write mowgli_robot.yaml-derived values into the Nav2 params YAML
         and return the temp file path.
 
@@ -453,6 +469,13 @@ def generate_launch_description() -> LaunchDescription:
         scalars and could technically go through RewrittenYaml, but
         doing them here keeps all robot-yaml → nav2-yaml wiring in one
         place — easier to find when tuning later.
+
+        has_obstacle_sensor selects the sensor-derived costmap
+        update_frequency: True for the LiDAR variant (obstacle_layer
+        present), False for the no_lidar variant (static_layer +
+        inflation only). The caller passes it per param file so the
+        injected rate always matches the sensor set that file was built
+        for, independent of how use_lidar finally resolves at runtime.
         """
         import tempfile
         with open(src_path, "r") as fh:
@@ -547,14 +570,35 @@ def generate_launch_description() -> LaunchDescription:
         cov_params["num_headland_passes"] = num_headland_passes
         cov_params["chassis_safety_inset"] = chassis_safety_inset
 
+        # Sensor-derived LOCAL costmap update_frequency (obstacle-sensor
+        # variant only — see obstacle_sensor_rate_hz rationale above).
+        # The local costmap is a rolling window that must also re-center
+        # on base_footprint as the robot drives, so floor the rate at
+        # ROLLING_WINDOW_MIN_HZ (the no_lidar variant's documented
+        # window-slide rate) to protect against a too-low sensor rate
+        # starving the window. The GLOBAL costmap keeps its in-file rate
+        # (deliberately decoupled and lower — the planner tolerates ~1 s
+        # staleness; see nav2_params.yaml). The no_lidar variant is left
+        # untouched: it has no obstacle source and its rates are already
+        # bounded by the same window-slide reasoning.
+        if has_obstacle_sensor:
+            ROLLING_WINDOW_MIN_HZ = 2.0
+            local_cm = (doc.setdefault("local_costmap", {})
+                           .setdefault("local_costmap", {})
+                           .setdefault("ros__parameters", {}))
+            local_cm["update_frequency"] = max(
+                ROLLING_WINDOW_MIN_HZ, obstacle_sensor_rate_hz)
+
         tmp = tempfile.NamedTemporaryFile(
             mode="w", prefix="mowgli_nav2_", suffix=".yaml", delete=False)
         yaml.safe_dump(doc, tmp, default_flow_style=False, sort_keys=False)
         tmp.close()
         return tmp.name
 
-    nav2_params_lidar = _inject_dock_pose_and_speeds(nav2_params_lidar)
-    nav2_params_no_lidar = _inject_dock_pose_and_speeds(nav2_params_no_lidar)
+    nav2_params_lidar = _inject_dock_pose_and_speeds(
+        nav2_params_lidar, has_obstacle_sensor=True)
+    nav2_params_no_lidar = _inject_dock_pose_and_speeds(
+        nav2_params_no_lidar, has_obstacle_sensor=False)
     nav2_params_file = PythonExpression([
         "'", nav2_params_lidar, "' if '",
         use_lidar, "'.lower() in ('true', '1') else '",

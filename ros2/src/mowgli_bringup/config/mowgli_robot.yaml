@@ -91,6 +91,24 @@ mowgli:
     lidar_z: 0.22              # vertical offset (m)
     lidar_yaw: 3.1408          # heading offset (rad) — ~π for 180°-rotated mount
 
+    # Nominal publish rate (Hz) of the obstacle sensor feeding the Nav2
+    # obstacle_layer (the LD19 ≈ 10 Hz). The LOCAL costmap's
+    # update_frequency is derived from this at launch — a costmap only
+    # needs to refresh as fast as a sensor can change it, so matching the
+    # sensor rate (rather than a fixed 10 Hz) keeps the costmap loop off
+    # the Pi's thermal budget. Set to the real rate of whatever feeds the
+    # obstacle_layer; with no obstacle sensor (lidar_enabled: false) this
+    # is ignored — the no-LiDAR costmap is static. Floored at 2 Hz so the
+    # rolling window still re-centers on the robot.
+    obstacle_sensor_rate_hz: 10.0
+
+    # idle_nav2_suspend (default false): when true, the behaviour tree PAUSEs
+    # the Nav2 lifecycle stack while the robot is parked on the dock so the
+    # costmaps stop looping and idle CPU/thermal load drops sharply. Nav2 is
+    # RESUMEd (collision_monitor back up) before any motion via the root
+    # Nav2ResumeGuard + the existing Nav2ReadyPoll. Opt-in per site.
+    idle_nav2_suspend: false
+
     # IMU mounting (relative to base_link = wheel axis centre).
     # Measured: IMU sits over the rotation centre (mid drive-wheel axle),
     # ~0.2 m above ground. base_link is at the axle (0.1 m above ground for
