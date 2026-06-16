@@ -45,6 +45,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -385,6 +386,9 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             monitoring_params,
             {"use_sim_time": use_sim_time},
+            # Suppress the LiDAR health ERROR on GPS-only robots (no scan is the
+            # expected state). Mirrors the launch's resolved use_lidar.
+            {"expect_lidar": ParameterValue(use_lidar, value_type=bool)},
         ],
     )
 
