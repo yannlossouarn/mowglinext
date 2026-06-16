@@ -174,6 +174,15 @@ struct BTContext
   /// Current navigation mode: "precise" or "degraded"
   std::string current_nav_mode{"precise"};
 
+  /// Whether SetNav2Lifecycle has suspended (PAUSEd) the Nav2 lifecycle
+  /// stack to save CPU/thermal budget while idle on the dock. Tracked here
+  /// (rather than re-querying lifecycle_manager every tick) so the
+  /// SetNav2Lifecycle RESUME/PAUSE nodes only issue a manage_nodes service
+  /// call on an actual state transition — the BT is the sole pause/resume
+  /// authority. Only meaningful when the idle_nav2_suspend feature flag is
+  /// enabled; stays false otherwise. Protected by context_mutex.
+  bool nav2_suspended{false};
+
   /// Operator-configured drive speeds (m/s), sourced from mowgli_robot.yaml
   /// by behavior_tree_node and applied to the live controllers by SetNavMode:
   /// transit_speed → FollowPath.desired_linear_vel (RPP transit), mowing_speed

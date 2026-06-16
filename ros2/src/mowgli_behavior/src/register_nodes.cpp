@@ -53,6 +53,7 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   factory.registerNodeType<SetMowerEnabled>("SetMowerEnabled");
   factory.registerNodeType<StopMoving>("StopMoving");
   factory.registerNodeType<ClearCostmap>("ClearCostmap");
+  factory.registerNodeType<SetNav2Lifecycle>("SetNav2Lifecycle");
   factory.registerNodeType<PublishHighLevelStatus>("PublishHighLevelStatus");
   factory.registerNodeType<WaitForDuration>("WaitForDuration");
   factory.registerNodeType<WaitForGpsFix>("WaitForGpsFix");

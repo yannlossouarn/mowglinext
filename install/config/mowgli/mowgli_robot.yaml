@@ -15,6 +15,13 @@ mowgli:
         automatic_mode: 0
         mowing_enabled: true
         lidar_enabled: true
+        # idle_nav2_suspend (default false): when true, the behaviour tree
+        # PAUSEs the entire Nav2 lifecycle stack while the robot is parked on
+        # the dock, so the costmaps stop looping and the Pi's idle thermal
+        # load drops sharply. Nav2 is RESUMEd (collision_monitor back up)
+        # before any motion. Opt-in per site; leave false until validated on
+        # your hardware.
+        idle_nav2_suspend: false
 
         # Localizer backend — when LiDAR is present we want the
         # GTSAM factor-graph localizer with scan-matching + loop

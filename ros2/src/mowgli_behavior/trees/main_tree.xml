@@ -146,6 +146,31 @@
       </Fallback>
 
       <!-- ================================================================
+           GUARD 4: Nav2 resume (reactive, idempotent)
+           If idle_nav2_suspend is enabled, the Nav2 lifecycle stack is
+           PAUSEd by IdleSequence while parked on the dock to save the
+           Pi's idle thermal budget (the costmaps otherwise loop flat-out
+           even docked). This guard RESUMEs it before any motion branch
+           runs: it does NOTHING while idle-on-dock (charging AND no
+           command pending) so it never fights IdleSequence's PAUSE, and
+           otherwise ensures the stack is active again. SetNav2Lifecycle
+           only issues a manage_nodes call on a real transition (it tracks
+           the suspend state on the shared context), and is a pure no-op
+           when idle_nav2_suspend is disabled — so this guard is free in
+           the default configuration. The downstream Nav2ReadyPoll in
+           MowingSequence still blocks motion until lifecycle_manager
+           reports active, guaranteeing collision_monitor is back up
+           before the robot drives. Always returns SUCCESS so the root
+           ReactiveSequence proceeds to MainLogic. -->
+      <Fallback name="Nav2ResumeGuard">
+        <Sequence name="StayIdleSuspended">
+          <IsCharging/>
+          <IsCommand command="0"/>
+        </Sequence>
+        <SetNav2Lifecycle command="RESUME"/>
+      </Fallback>
+
+      <!-- ================================================================
            MAIN LOGIC
            Priority: critical battery → mow → home → record → idle
            ================================================================ -->
@@ -783,6 +808,12 @@
           <SetMowerEnabled enabled="false"/>
           <StopMoving/>
           <PublishHighLevelStatus state="1" state_name="IDLE"/>
+          <!-- Suspend the Nav2 lifecycle stack to drop idle CPU/thermal load
+               (no-op unless idle_nav2_suspend is enabled; self-gated on
+               charging so it only fires when physically docked, where the
+               robot cannot move and the firmware is the safety authority).
+               RESUMEd by Nav2ResumeGuard before any motion branch runs. -->
+          <SetNav2Lifecycle command="PAUSE"/>
           <WaitForDuration duration_sec="0.5"/>
         </Sequence>
 

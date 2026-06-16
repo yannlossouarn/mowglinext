@@ -45,6 +45,12 @@ mowgli:
     # Behavior tree tuning (consumed by behavior_tree_node)
     tick_rate: 10.0
     bt_debug_logging: false
+    # idle_nav2_suspend (default false): when true, the BT PAUSEs the Nav2
+    # lifecycle stack while parked on the dock so the costmaps stop looping and
+    # idle CPU/thermal load drops sharply. Nav2 is RESUMEd (collision_monitor
+    # back up) before any motion via the root Nav2ResumeGuard + Nav2ReadyPoll.
+    # Opt-in per site.
+    idle_nav2_suspend: false
     # IMU calibration (consumed by hardware_bridge_node — auto-triggered on dock)
     imu_cal_samples: 200
     imu_cal_persist_path: /ros2_ws/maps/imu_calibration.txt
