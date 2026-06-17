@@ -455,6 +455,12 @@ private:
   // ill-conditioned). pivot_gps_sigma_xy_m <= 0 disables it.
   double pivot_gps_sweep_thresh_m_ = 0.03;
   double pivot_gps_sigma_xy_m_ = 0.5;
+  // Peak |gyro_z| since the last accepted GPS sample (rad/s). The pivot-aware
+  // GNSS down-weight fires when this exceeds pivot_gps_gyro_thresh_rad_per_s_
+  // — an instantaneous-rate gate that catches oscillatory in-place hunting,
+  // not just sustained pivots. Reset alongside abs_dtheta_since_last_gps_rad_.
+  double max_abs_gyro_since_gps_rad_per_s_ = 0.0;
+  double pivot_gps_gyro_thresh_rad_per_s_ = 0.10;
   // Dock-pose hold while charging: re-assert a firm ForceAnchor at the FULL
   // dock_pose (x,y,yaw) ONCE PER NEW NODE, replacing the weak live-GPS factor
   // that walked the docked pose off the anchor (field 2026-06-10: 11.5 cm + 53°

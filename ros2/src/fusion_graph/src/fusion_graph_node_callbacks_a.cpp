@@ -91,6 +91,12 @@ void FusionGraphNode::OnImu(sensor_msgs::msg::Imu::ConstSharedPtr msg)
       // pure-sweep jump as if it were a phantom translation and
       // rejects every legitimate fix.
       abs_dtheta_since_last_gps_rad_ += std::abs(gz) * dt;
+      // Peak gyro rate since the last accepted GPS — the pivot-aware GNSS yaw
+      // down-weight (OnGnss) triggers on this. Unlike the accumulated arc, an
+      // instantaneous rate fires during oscillatory in-place hunting (net arc
+      // per GPS interval ≈ 0) as well as a sustained pivot.
+      if (std::abs(gz) > max_abs_gyro_since_gps_rad_per_s_)
+        max_abs_gyro_since_gps_rad_per_s_ = std::abs(gz);
     }
   }
   last_imu_stamp_ = stamp;
@@ -126,10 +132,11 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
   double mx, my;
   LatLonToMap(msg->latitude, msg->longitude, mx, my);
 
-  // Antenna arc swept since the last accepted GPS sample. Captured here
-  // because the wrong-fix gate below resets abs_dtheta_since_last_gps_rad_;
-  // used by the pivot-aware GNSS yaw down-weight at QueueGnss (see there).
+  // Antenna arc swept + peak gyro rate since the last accepted GPS sample.
+  // Captured here because the wrong-fix gate below resets the accumulators;
+  // both feed the pivot-aware GNSS yaw down-weight at QueueGnss (see there).
   const double pivot_sweep_m = lever_arm_radius_m_ * abs_dtheta_since_last_gps_rad_;
+  const double pivot_gyro_rate = max_abs_gyro_since_gps_rad_per_s_;
 
   // RTK wrong-fix detection — fires before any QueueGnss so a bad
   // sample never reaches iSAM2. F9P can re-solve the carrier-phase
@@ -168,12 +175,14 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
       last_gps_map_xy_ = gtsam::Vector2(mx, my);
       wheel_dist_since_last_gps_m_ = 0.0;
       abs_dtheta_since_last_gps_rad_ = 0.0;
+      max_abs_gyro_since_gps_rad_per_s_ = 0.0;
       return;
     }
   }
   last_gps_map_xy_ = gtsam::Vector2(mx, my);
   wheel_dist_since_last_gps_m_ = 0.0;
   abs_dtheta_since_last_gps_rad_ = 0.0;
+  max_abs_gyro_since_gps_rad_per_s_ = 0.0;
 
   // covariance[0] is variance of east; take sqrt for sigma. Use the
   // diagonal mean for a single sigma_xy (factor model is isotropic).
@@ -281,13 +290,19 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
   // stream of tight (σ≈5 mm) factors out-votes the per-node gyro between-
   // factor — the only honest yaw source mid-pivot — pinning the estimate
   // while the chassis physically rotates (field 2026-06-17: fused yaw stuck
-  // ~24° while gyro showed ±1 rad/s, controller then hunted). When the swept
-  // arc since the last sample exceeds pivot_gps_sweep_thresh_m, floor σ at
-  // pivot_gps_sigma_xy_m: the factor still anchors x/y (gyro+wheel hold it
-  // for the brief pivot) but yields yaw to the gyro. Mirrors the existing
-  // pivot_wheel_sigma_x release. Set the threshold high to disable.
+  // ~24° while gyro showed ±1 rad/s, controller then hunted). Trigger on the
+  // PEAK gyro rate since the last sample (pivot_gps_gyro_thresh_rad_per_s) —
+  // an instantaneous-rate gate fires during oscillatory in-place HUNTING (net
+  // swept arc per GPS interval ≈ 0, so the arc-budget gate alone missed it —
+  // field 2026-06-17 v1) as well as a sustained pivot; the accumulated-arc
+  // term is kept as a belt-and-suspenders for slow large rotations. When
+  // either fires, floor σ at pivot_gps_sigma_xy_m: the factor still anchors
+  // x/y (gyro+wheel hold it for the brief turn) but yields yaw to the gyro.
+  // Mirrors the existing pivot_wheel_sigma_x release. Set σ <= 0 to disable.
   double sigma_eff = sigma;
-  if (pivot_sweep_m > pivot_gps_sweep_thresh_m_ && pivot_gps_sigma_xy_m_ > 0.0)
+  const bool pivoting = pivot_gyro_rate > pivot_gps_gyro_thresh_rad_per_s_ ||
+                        pivot_sweep_m > pivot_gps_sweep_thresh_m_;
+  if (pivoting && pivot_gps_sigma_xy_m_ > 0.0)
   {
     sigma_eff = std::max(sigma, pivot_gps_sigma_xy_m_);
   }

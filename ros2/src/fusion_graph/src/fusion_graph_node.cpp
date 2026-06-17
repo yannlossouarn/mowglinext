@@ -107,6 +107,8 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   // there). Set pivot_gps_sigma_xy_m <= 0 to disable. See OnGnss.
   pivot_gps_sweep_thresh_m_ = declare_parameter<double>("pivot_gps_sweep_thresh_m", 0.03);
   pivot_gps_sigma_xy_m_ = declare_parameter<double>("pivot_gps_sigma_xy_m", 0.5);
+  pivot_gps_gyro_thresh_rad_per_s_ =
+      declare_parameter<double>("pivot_gps_gyro_thresh_rad_per_s", 0.10);
   // Dock-pose hold while charging: re-assert a firm ForceAnchor at the full
   // dock_pose once per new node (replaces the weak live-GPS factor that walked
   // the docked pose 11.5 cm + 53° over a dwell — field 2026-06-10). σ small so

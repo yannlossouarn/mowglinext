@@ -213,6 +213,13 @@ fusion_graph_node:
     # disable. 0.03 m ≈ a 0.09 rad (5°) antenna sweep at the 0.32 m lever arm.
     pivot_gps_sweep_thresh_m: 0.03
     pivot_gps_sigma_xy_m: 0.5
+    # Instantaneous-rate trigger (the primary one). Fires the down-weight when
+    # the peak |gyro_z| since the last accepted GPS sample exceeds this — so it
+    # engages during oscillatory in-place HUNTING (net swept arc per GPS
+    # interval ≈ 0, which the arc-budget alone missed — field 2026-06-17 v1)
+    # as well as a sustained pivot. 0.10 rad/s ≈ 5.7°/s matches the existing
+    # stationary_gyro_thresh (above which the chassis is "really turning").
+    pivot_gps_gyro_thresh_rad_per_s: 0.10
 
     # ── ICP scan-match guard rails ─────────────────────────────────────
     # Applied to every scan_matcher_->Match result before queueing it
