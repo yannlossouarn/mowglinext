@@ -98,6 +98,12 @@ TEST(ProtocolSizes, DriveTelemPacketSize)
   EXPECT_EQ(sizeof(LlDriveTelem), 20u);
 }
 
+TEST(ProtocolSizes, SetDetectorParamsPacketSize)
+{
+  // type(1) + 8 float thresholds(8*4=32) + crc(2) = 35.
+  EXPECT_EQ(sizeof(LlSetDetectorParams), 35u);
+}
+
 // ---------------------------------------------------------------------------
 // Packet ID consistency (ll_datatypes.hpp enum matches mowgli_protocol.h)
 // ---------------------------------------------------------------------------
@@ -117,6 +123,7 @@ TEST(ProtocolIds, PacketIdValues)
   EXPECT_EQ(PACKET_ID_LL_CMD_BLADE, 0x51);
   EXPECT_EQ(PACKET_ID_LL_REBOOT, 0x52);
   EXPECT_EQ(PACKET_ID_LL_SET_DRIVE_PID, 0x53);
+  EXPECT_EQ(PACKET_ID_LL_SET_DETECTOR_PARAMS, 0x54);
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +320,22 @@ TEST(ProtocolRoundtrip, SetDrivePidPacket)
   pkt.wheel_pi_enabled = 1u;
   pkt.hold_enabled = 1u;
   pkt.hold_kp = 4.0f;
+
+  roundtrip_struct(pkt);
+}
+
+TEST(ProtocolRoundtrip, SetDetectorParamsPacket)
+{
+  LlSetDetectorParams pkt{};
+  pkt.type = PACKET_ID_LL_SET_DETECTOR_PARAMS;
+  pkt.yaw_thresh_rps = 0.35f;
+  pkt.stall_cmd_mps = 0.08f;
+  pkt.stall_meas_mps = 0.02f;
+  pkt.impact_thresh_mps2 = 6.0f;
+  pkt.bog_cmd_mps = 0.10f;
+  pkt.bog_ratio = 0.5f;
+  pkt.jam_load_pwm = 30.0f;
+  pkt.blade_bog_ratio = 0.6f;
 
   roundtrip_struct(pkt);
 }

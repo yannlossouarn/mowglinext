@@ -53,6 +53,7 @@ enum PacketId : uint8_t
   PACKET_ID_LL_CMD_BLADE = 0x51,  ///< Pi → STM32: blade motor control
   PACKET_ID_LL_REBOOT = 0x52,  ///< Pi → STM32: reboot the board (NVIC_SystemReset)
   PACKET_ID_LL_SET_DRIVE_PID = 0x53,  ///< Pi → STM32: drive-motor PID/feedforward gains
+  PACKET_ID_LL_SET_DETECTOR_PARAMS = 0x54,  ///< Pi → STM32: discrepancy-detector thresholds
   PACKET_ID_LL_DRIVE_TELEM = 0x06,  ///< STM32 → Pi: drive-loop telemetry (target + PWM)
 };
 
@@ -243,6 +244,27 @@ struct LlSetDrivePid
 };
 
 /**
+ * @brief Detector-threshold packet sent by the Pi (PACKET_ID_LL_SET_DETECTOR_PARAMS = 0x54).
+ *
+ * Runtime-tunable copies of the firmware discrepancy-detector magnitude
+ * thresholds (yaw residual, stall, impact, bog, jam-load, blade-bog). Firmware
+ * validates/clamps every field; debounce/persist counts stay compile-time.
+ */
+struct LlSetDetectorParams
+{
+  uint8_t type;  ///< Must equal PACKET_ID_LL_SET_DETECTOR_PARAMS
+  float yaw_thresh_rps;  ///< |wheel yaw − gyro yaw| flag threshold [rad/s]
+  float stall_cmd_mps;  ///< commanded |wheel speed| considered "moving" [m/s]
+  float stall_meas_mps;  ///< measured |wheel speed| considered "stopped" [m/s]
+  float impact_thresh_mps2;  ///< |accel − gravity baseline| impact threshold [m/s^2]
+  float bog_cmd_mps;  ///< commanded |wheel speed| to test for bog [m/s]
+  float bog_ratio;  ///< flag bog when measured < ratio * commanded [0..1]
+  float jam_load_pwm;  ///< STALL load >= this = jam (else deadband) [0-255]
+  float blade_bog_ratio;  ///< flag blade bog when rpm < ratio * running-max [0..1]
+  uint16_t crc;  ///< CRC-16 CCITT over all preceding bytes
+};
+
+/**
  * @brief Drive-loop telemetry packet from the STM32 (PACKET_ID_LL_DRIVE_TELEM = 0x06).
  *
  * Sent at ~25 Hz. Per-wheel commanded target velocity and the signed PWM the
@@ -307,6 +329,7 @@ static_assert(sizeof(LlCmdVel) == 11u, "LlCmdVel layout mismatch");
 static_assert(sizeof(LlCmdBlade) == 5u, "LlCmdBlade layout mismatch");
 static_assert(sizeof(LlBladeStatus) == 16u, "LlBladeStatus layout mismatch");
 static_assert(sizeof(LlSetDrivePid) == 33u, "LlSetDrivePid layout mismatch");
+static_assert(sizeof(LlSetDetectorParams) == 35u, "LlSetDetectorParams layout mismatch");
 static_assert(sizeof(LlDriveTelem) == 20u, "LlDriveTelem layout mismatch");
 
 }  // namespace mowgli_hardware

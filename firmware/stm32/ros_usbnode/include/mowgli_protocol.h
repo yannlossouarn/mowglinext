@@ -100,6 +100,13 @@ extern "C" {
  *  the power-on fallback. */
 #define PKT_ID_SET_DRIVE_PID 0x53u
 
+/** Drive discrepancy-detector thresholds (Host -> Firmware). Runtime-tunable
+ *  copies of the detector's compile-time magnitude thresholds (yaw residual,
+ *  stall, impact, bog, jam-load, blade-bog) so they can be tuned without a
+ *  reflash. The firmware validates/clamps every field; compile-time defaults
+ *  remain the power-on fallback. Debounce/persist counts stay compile-time. */
+#define PKT_ID_SET_DETECTOR_PARAMS 0x54u
+
 /* ---------------------------------------------------------------------------
  * status_bitmask bit definitions  (pkt_status_t::status_bitmask)
  * ---------------------------------------------------------------------------*/
@@ -416,6 +423,29 @@ typedef struct {
 } pkt_drive_telem_t;
 
 /**
+ * @brief Detector-threshold packet — Host -> Firmware (PKT_ID_SET_DETECTOR_PARAMS = 0x54).
+ *
+ * Runtime-tunable copies of the discrepancy-detector magnitude thresholds (the
+ * compile-time #defines in cpp_main.cpp). The firmware rejects the packet if any
+ * field is non-finite and clamps each field to a safe range before applying.
+ * Debounce/persist sample counts are NOT exposed (kept compile-time).
+ *
+ * Wire size: 35 bytes (must match sizeof(LlSetDetectorParams) in ll_datatypes.hpp).
+ */
+typedef struct {
+    uint8_t  type;               /**< PKT_ID_SET_DETECTOR_PARAMS */
+    float    yaw_thresh_rps;     /**< |wheel yaw − gyro yaw| flag threshold [rad/s] */
+    float    stall_cmd_mps;      /**< commanded |wheel speed| considered "moving" [m/s] */
+    float    stall_meas_mps;     /**< measured |wheel speed| considered "stopped" [m/s] */
+    float    impact_thresh_mps2; /**< |accel − gravity baseline| impact threshold [m/s^2] */
+    float    bog_cmd_mps;        /**< commanded |wheel speed| to test for bog [m/s] */
+    float    bog_ratio;          /**< flag bog when measured < ratio * commanded [0..1] */
+    float    jam_load_pwm;       /**< STALL load >= this = jam (else deadband) [0-255] */
+    float    blade_bog_ratio;    /**< flag blade bog when rpm < ratio * running-max [0..1] */
+    uint16_t crc;                /**< CRC-16 CCITT over preceding bytes */
+} pkt_set_detector_params_t;
+
+/**
  * @brief Blade motor status packet — Firmware -> Host (PKT_ID_BLADE_STATUS = 0x05).
  *
  * Sent periodically (~4 Hz) with blade motor telemetry.
@@ -482,6 +512,7 @@ _Static_assert(sizeof(pkt_hl_state_t)  ==  5u, "pkt_hl_state_t layout unexpected
 _Static_assert(sizeof(pkt_cmd_vel_t)   == 11u, "pkt_cmd_vel_t layout unexpected");
 _Static_assert(sizeof(pkt_set_drive_pid_t) == 33u, "pkt_set_drive_pid_t layout unexpected");
 _Static_assert(sizeof(pkt_drive_telem_t)   == 20u, "pkt_drive_telem_t layout unexpected");
+_Static_assert(sizeof(pkt_set_detector_params_t) == 35u, "pkt_set_detector_params_t layout unexpected");
 #endif
 
 #ifdef __cplusplus

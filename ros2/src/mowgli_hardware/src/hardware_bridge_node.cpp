@@ -173,6 +173,18 @@ private:
     // pkt_set_drive_pid_t. hold_kp is PWM per tick of position error.
     wheel_hold_enabled_ = declare_parameter<bool>("wheel_hold_enabled", true);
     wheel_hold_kp_ = declare_parameter<double>("wheel_hold_kp", 4.0);
+    // Discrepancy-detector magnitude thresholds, pushed via
+    // PACKET_ID_LL_SET_DETECTOR_PARAMS. These gate ADVISORY flags only (no
+    // actuation). Defaults mirror the firmware compile-time fallback; live-
+    // tunable via the set-parameters callback (firmware re-clamps every value).
+    det_yaw_thresh_ = declare_parameter<double>("detector_yaw_thresh_rps", 0.35);
+    det_stall_cmd_ = declare_parameter<double>("detector_stall_cmd_mps", 0.08);
+    det_stall_meas_ = declare_parameter<double>("detector_stall_meas_mps", 0.02);
+    det_impact_thresh_ = declare_parameter<double>("detector_impact_thresh_mps2", 6.0);
+    det_bog_cmd_ = declare_parameter<double>("detector_bog_cmd_mps", 0.10);
+    det_bog_ratio_ = declare_parameter<double>("detector_bog_ratio", 0.5);
+    det_jam_load_ = declare_parameter<double>("detector_jam_load_pwm", 30.0);
+    det_blade_bog_ratio_ = declare_parameter<double>("detector_blade_bog_ratio", 0.6);
     // Sub-deadband forward-velocity clamp threshold (see min_linear_vel_).
     // Default 0.05 (was a hardcoded 0.15) — the PX4 PID firmware can track
     // slow setpoints now. Live-tunable via the callback below.
@@ -183,6 +195,7 @@ private:
           rcl_interfaces::msg::SetParametersResult result;
           result.successful = true;
           bool drive_pid_changed = false;
+          bool detector_changed = false;
           for (const auto& p : params)
           {
             const std::string& name = p.get_name();
@@ -243,6 +256,46 @@ private:
               wheel_pid_pwm_per_mps_ = p.as_double();
               drive_pid_changed = true;
             }
+            else if (name == "detector_yaw_thresh_rps")
+            {
+              det_yaw_thresh_ = p.as_double();
+              detector_changed = true;
+            }
+            else if (name == "detector_stall_cmd_mps")
+            {
+              det_stall_cmd_ = p.as_double();
+              detector_changed = true;
+            }
+            else if (name == "detector_stall_meas_mps")
+            {
+              det_stall_meas_ = p.as_double();
+              detector_changed = true;
+            }
+            else if (name == "detector_impact_thresh_mps2")
+            {
+              det_impact_thresh_ = p.as_double();
+              detector_changed = true;
+            }
+            else if (name == "detector_bog_cmd_mps")
+            {
+              det_bog_cmd_ = p.as_double();
+              detector_changed = true;
+            }
+            else if (name == "detector_bog_ratio")
+            {
+              det_bog_ratio_ = p.as_double();
+              detector_changed = true;
+            }
+            else if (name == "detector_jam_load_pwm")
+            {
+              det_jam_load_ = p.as_double();
+              detector_changed = true;
+            }
+            else if (name == "detector_blade_bog_ratio")
+            {
+              det_blade_bog_ratio_ = p.as_double();
+              detector_changed = true;
+            }
           }
           // Push the new gains to the firmware immediately (live apply, no
           // restart), and arm a couple of heartbeat resends in case this packet
@@ -251,6 +304,11 @@ private:
           if (drive_pid_changed)
           {
             send_drive_pid();
+            pid_resend_count_ = std::max(pid_resend_count_, 2);
+          }
+          if (detector_changed)
+          {
+            send_detector_params();
             pid_resend_count_ = std::max(pid_resend_count_, 2);
           }
           return result;
@@ -478,6 +536,7 @@ private:
                                            if (pid_resend_count_ > 0 && serial_->is_open())
                                            {
                                              send_drive_pid();
+                                             send_detector_params();
                                              --pid_resend_count_;
                                            }
                                          });
@@ -1659,6 +1718,42 @@ private:
     }
   }
 
+  // Push the discrepancy-detector thresholds to the firmware
+  // (PACKET_ID_LL_SET_DETECTOR_PARAMS). Same re-send-on-(re)connect path as the
+  // drive PID; the firmware validates/clamps every field.
+  void send_detector_params()
+  {
+    if (!serial_)
+    {
+      return;
+    }
+    LlSetDetectorParams pkt{};
+    pkt.type = PACKET_ID_LL_SET_DETECTOR_PARAMS;
+    pkt.yaw_thresh_rps = static_cast<float>(det_yaw_thresh_);
+    pkt.stall_cmd_mps = static_cast<float>(det_stall_cmd_);
+    pkt.stall_meas_mps = static_cast<float>(det_stall_meas_);
+    pkt.impact_thresh_mps2 = static_cast<float>(det_impact_thresh_);
+    pkt.bog_cmd_mps = static_cast<float>(det_bog_cmd_);
+    pkt.bog_ratio = static_cast<float>(det_bog_ratio_);
+    pkt.jam_load_pwm = static_cast<float>(det_jam_load_);
+    pkt.blade_bog_ratio = static_cast<float>(det_blade_bog_ratio_);
+    if (send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt),
+                        sizeof(LlSetDetectorParams) - sizeof(uint16_t)))
+    {
+      RCLCPP_INFO(get_logger(),
+                  "Sent detector params: yaw=%.2f stall_cmd=%.2f stall_meas=%.2f "
+                  "impact=%.1f bog_cmd=%.2f bog_ratio=%.2f jam_load=%.0f blade_bog=%.2f",
+                  det_yaw_thresh_,
+                  det_stall_cmd_,
+                  det_stall_meas_,
+                  det_impact_thresh_,
+                  det_bog_cmd_,
+                  det_bog_ratio_,
+                  det_jam_load_,
+                  det_blade_bog_ratio_);
+    }
+  }
+
   void on_reboot_board(const std::shared_ptr<std_srvs::srv::Trigger::Request>,
                        std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
@@ -1912,6 +2007,16 @@ private:
   // controlled; released only when really idle). Pushed in the same packet.
   bool wheel_hold_enabled_{true};
   double wheel_hold_kp_{4.0};
+  // Discrepancy-detector magnitude thresholds (PACKET_ID_LL_SET_DETECTOR_PARAMS),
+  // pushed on the same (re)connect path. Defaults mirror the firmware fallback.
+  double det_yaw_thresh_{0.35};
+  double det_stall_cmd_{0.08};
+  double det_stall_meas_{0.02};
+  double det_impact_thresh_{6.0};
+  double det_bog_cmd_{0.10};
+  double det_bog_ratio_{0.5};
+  double det_jam_load_{30.0};
+  double det_blade_bog_ratio_{0.6};
   int pid_resend_count_{5};
   // Host-side sub-deadband forward-velocity clamp (on_cmd_vel): any |vx| below
   // this is zeroed before reaching the firmware. Lowered from the legacy 0.15

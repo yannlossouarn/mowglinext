@@ -219,6 +219,18 @@ static volatile uint8_t g_slip_flags = 0u;
 static volatile uint8_t g_impact_hold = 0u;
 static volatile uint8_t g_blade_bog = 0u;
 
+/* Runtime-tunable detector magnitude thresholds (PKT_ID_SET_DETECTOR_PARAMS).
+ * Seeded from the compile-time defaults above, which therefore remain the
+ * power-on fallback. Debounce/persist counts + EMA taus stay compile-time. */
+static volatile float g_det_yaw_thresh = SLIP_YAW_THRESH_RPS;
+static volatile float g_det_stall_cmd = STALL_CMD_MPS;
+static volatile float g_det_stall_meas = STALL_MEAS_MPS;
+static volatile float g_det_impact_thresh = IMPACT_THRESH_MPS2;
+static volatile float g_det_bog_cmd = BOG_CMD_MPS;
+static volatile float g_det_bog_ratio = BOG_RATIO;
+static volatile float g_det_jam_load = (float)DRIVE_JAM_LOAD_THRESH;
+static volatile float g_det_blade_bog_ratio = BLADE_BOG_RATIO;
+
 /* ---------------------------------------------------------------------------
  * Blade motor control state
  * ---------------------------------------------------------------------------*/
@@ -389,6 +401,54 @@ static void on_set_drive_pid(const uint8_t *data, size_t len)
     debug_printf(
         "set_drive_pid: kp=%.2f ki=%.2f kd=%.2f ilim=%.1f ff=%.1f db=%.1f pi=%u hold=%u hkp=%.2f\r\n",
         kp, ki, kd, ilim, ff, db, (unsigned)use_pi, (unsigned)hold, hkp);
+}
+
+static void on_set_detector_params(const uint8_t *data, size_t len)
+{
+    if (len < sizeof(pkt_set_detector_params_t) - 2u) {
+        return;
+    }
+
+    const pkt_set_detector_params_t *pkt = (const pkt_set_detector_params_t *)data;
+
+    /* Reject the whole packet if any field is non-finite, then clamp each to a
+     * sane range before applying. These only gate ADVISORY flags (no actuation),
+     * so a bad value can't move the robot — but clamp anyway for tidy telemetry.
+     * pid_constrain() comes from pid.hpp. */
+    if (!std::isfinite(pkt->yaw_thresh_rps) || !std::isfinite(pkt->stall_cmd_mps) ||
+        !std::isfinite(pkt->stall_meas_mps) || !std::isfinite(pkt->impact_thresh_mps2) ||
+        !std::isfinite(pkt->bog_cmd_mps) || !std::isfinite(pkt->bog_ratio) ||
+        !std::isfinite(pkt->jam_load_pwm) || !std::isfinite(pkt->blade_bog_ratio)) {
+        debug_printf("set_detector_params rejected: non-finite field\r\n");
+        return;
+    }
+
+    const float yaw   = pid_constrain(pkt->yaw_thresh_rps,     0.02f,  3.0f);
+    const float scmd  = pid_constrain(pkt->stall_cmd_mps,      0.01f,  1.0f);
+    const float smeas = pid_constrain(pkt->stall_meas_mps,     0.0f,   0.5f);
+    const float imp   = pid_constrain(pkt->impact_thresh_mps2, 1.0f,  50.0f);
+    const float bcmd  = pid_constrain(pkt->bog_cmd_mps,        0.01f,  1.0f);
+    const float brat  = pid_constrain(pkt->bog_ratio,          0.05f,  0.95f);
+    const float jam   = pid_constrain(pkt->jam_load_pwm,       0.0f, 255.0f);
+    const float bbrat = pid_constrain(pkt->blade_bog_ratio,    0.05f,  0.95f);
+
+    /* Detectors run in the main loop (50/100 Hz); this handler is USB RX IRQ
+     * context. Apply under the same irq guard the drive loop uses so a torn
+     * multi-field read can't briefly mix old/new thresholds. */
+    __disable_irq();
+    g_det_yaw_thresh = yaw;
+    g_det_stall_cmd = scmd;
+    g_det_stall_meas = smeas;
+    g_det_impact_thresh = imp;
+    g_det_bog_cmd = bcmd;
+    g_det_bog_ratio = brat;
+    g_det_jam_load = jam;
+    g_det_blade_bog_ratio = bbrat;
+    __enable_irq();
+
+    debug_printf("set_detector_params: yaw=%.2f stall_cmd=%.2f stall_meas=%.2f imp=%.1f "
+                 "bog_cmd=%.2f bog_ratio=%.2f jam=%.0f blade_bog=%.2f\r\n",
+                 yaw, scmd, smeas, imp, bcmd, brat, jam, bbrat);
 }
 
 static void on_hl_state(const uint8_t *data, size_t len)
@@ -913,7 +973,7 @@ static void update_slip_detector(int16_t left_v_mm_s, int16_t right_v_mm_s)
     static uint8_t yaw_count = 0u;
     static uint8_t stall_count = 0u;
     resid_ema += SLIP_EMA_ALPHA * (fabsf(wheel_yaw - gyro_yaw) - resid_ema);
-    if (resid_ema > SLIP_YAW_THRESH_RPS) {
+    if (resid_ema > g_det_yaw_thresh) {
         if (yaw_count < SLIP_YAW_PERSIST) {
             yaw_count++;
         }
@@ -925,7 +985,7 @@ static void update_slip_detector(int16_t left_v_mm_s, int16_t right_v_mm_s)
     const float cmd = (fabsf(left_target_mps) + fabsf(right_target_mps)) * 0.5f;
     const float meas = (fabsf(v_l) + fabsf(v_r)) * 0.5f;
     static uint8_t bog_count = 0u;
-    if (cmd > STALL_CMD_MPS && meas < STALL_MEAS_MPS) {
+    if (cmd > g_det_stall_cmd && meas < g_det_stall_meas) {
         if (stall_count < STALL_PERSIST) {
             stall_count++;
         }
@@ -937,7 +997,8 @@ static void update_slip_detector(int16_t left_v_mm_s, int16_t right_v_mm_s)
     // the commanded speed, and it isn't a hard impact — the chassis is loaded
     // and barely advancing. Excludes the stall case (meas above the stall floor).
     const bool impact_active = (g_impact_hold > 0u);
-    if (cmd > BOG_CMD_MPS && meas >= STALL_MEAS_MPS && meas < BOG_RATIO * cmd && !impact_active) {
+    if (cmd > g_det_bog_cmd && meas >= g_det_stall_meas && meas < g_det_bog_ratio * cmd &&
+        !impact_active) {
         if (bog_count < BOG_PERSIST) {
             bog_count++;
         }
@@ -957,7 +1018,7 @@ static void update_slip_detector(int16_t left_v_mm_s, int16_t right_v_mm_s)
         // whereas ≈0 load is a benign deadband stall. left_power/right_power are
         // extern from drivemotor.c (the PAC5210 per-wheel load bytes).
         const uint8_t load_max = (left_power > right_power) ? left_power : right_power;
-        if (load_max >= DRIVE_JAM_LOAD_THRESH) {
+        if ((float)load_max >= g_det_jam_load) {
             flags |= DRIVE_SLIP_FLAG_JAM;
         }
     }
@@ -991,7 +1052,7 @@ static void update_impact_detector(float ax, float ay, float az)
     peak = (dev > peak) ? dev : peak * IMPACT_PEAK_DECAY;
     g_accel_peak_mg = (int16_t)pid_constrain(peak / 9.81f * 1000.0f, 0.0f, 32767.0f);
 
-    if (dev > IMPACT_THRESH_MPS2) {
+    if (dev > g_det_impact_thresh) {
         g_impact_hold = IMPACT_HOLD_TICKS;
     } else if (g_impact_hold > 0u) {
         g_impact_hold--;
@@ -1019,7 +1080,7 @@ static void update_blade_bog_detector(void)
         rpm_max -= BLADE_MAX_DECAY;  // slow decay so it adapts to a lower no-load speed
     }
     const bool spun_up = rpm_max > BLADE_RPM_FLOOR;
-    if (spun_up && (float)rpm < BLADE_BOG_RATIO * (float)rpm_max) {
+    if (spun_up && (float)rpm < g_det_blade_bog_ratio * (float)rpm_max) {
         if (bog_count < BLADE_BOG_PERSIST) {
             bog_count++;
         }
@@ -1162,6 +1223,7 @@ extern "C" void init_ROS()
     mowgli_comms_register_handler(PKT_ID_CMD_BLADE, on_cmd_blade);
     mowgli_comms_register_handler(PKT_ID_REBOOT,    on_reboot);
     mowgli_comms_register_handler(PKT_ID_SET_DRIVE_PID, on_set_drive_pid);
+    mowgli_comms_register_handler(PKT_ID_SET_DETECTOR_PARAMS, on_set_detector_params);
 
     // Initialise timers
     NBT_init(&led_nbt,     LED_NBT_TIME_MS);
