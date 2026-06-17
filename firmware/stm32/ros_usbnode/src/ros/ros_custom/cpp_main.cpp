@@ -132,6 +132,20 @@ static float prev_right_target_mps = 0.0f;
  * persistence; the bridge re-sends the gains on every reconnect). */
 static volatile float g_pwm_per_mps = (float)PWM_PER_MPS;
 
+/* Static-friction breakaway feedforward [PWM], runtime-tunable via
+ * PKT_ID_SET_DRIVE_PID. When a non-zero wheel target is commanded, the loop
+ * adds sign(target) * g_drive_deadband_pwm to the open-loop feedforward so the
+ * wheel crosses the PAC5210 breakaway IMMEDIATELY, rather than the PI
+ * integrator (or the host gyro-rate loop) having to wind up to reach it. The
+ * wind-up was the stick-slip source behind the low-speed autonomous-pivot
+ * yaw/position corruption. Default 0 keeps the open-loop mapping unchanged. */
+static volatile float g_drive_deadband_pwm = 0.0f;
+
+/* Per-wheel loop selector, runtime-tunable via PKT_ID_SET_DRIVE_PID (replaces
+ * the compile-time USE_WHEEL_PI switch so the open-loop vs closed-loop A/B no
+ * longer needs a reflash). Seeded with the compile-time default. */
+static volatile uint8_t g_use_wheel_pi = (uint8_t)USE_WHEEL_PI;
+
 /* ---------------------------------------------------------------------------
  * Blade motor control state
  * ---------------------------------------------------------------------------*/
@@ -257,7 +271,8 @@ static void on_set_drive_pid(const uint8_t *data, size_t len)
      * the gains; the output limit stays fixed at 255 PWM (motor controller max).
      * pid_constrain() comes from pid.hpp. */
     if (!std::isfinite(pkt->kp) || !std::isfinite(pkt->ki) || !std::isfinite(pkt->kd) ||
-        !std::isfinite(pkt->integral_limit) || !std::isfinite(pkt->pwm_per_mps)) {
+        !std::isfinite(pkt->integral_limit) || !std::isfinite(pkt->pwm_per_mps) ||
+        !std::isfinite(pkt->deadband_pwm)) {
         debug_printf("set_drive_pid rejected: non-finite field\r\n");
         return;
     }
@@ -267,6 +282,10 @@ static void on_set_drive_pid(const uint8_t *data, size_t len)
     const float kd   = pid_constrain(pkt->kd,             0.0f,   500.0f);
     const float ilim = pid_constrain(pkt->integral_limit, 0.0f,   255.0f);
     const float ff   = pid_constrain(pkt->pwm_per_mps,   50.0f,   600.0f);
+    /* Breakaway feedforward: clamp well under the 255 PWM ceiling so it can
+     * never on its own saturate the motor command. */
+    const float db   = pid_constrain(pkt->deadband_pwm,   0.0f,   150.0f);
+    const uint8_t use_pi = pkt->wheel_pi_enabled ? 1u : 0u;
 
     /* Apply atomically w.r.t. motors_handler(), which reads these objects in the
      * main loop at 50 Hz: this handler runs in USB RX interrupt context, and a
@@ -283,10 +302,12 @@ static void on_set_drive_pid(const uint8_t *data, size_t len)
     right_wheel_pid.setIntegralLimit(ilim);
     right_wheel_pid.setOutputLimit(255.0f);
     g_pwm_per_mps = ff;
+    g_drive_deadband_pwm = db;
+    g_use_wheel_pi = use_pi;
     __enable_irq();
 
-    debug_printf("set_drive_pid: kp=%.2f ki=%.2f kd=%.2f ilim=%.1f ff=%.1f\r\n",
-                 kp, ki, kd, ilim, ff);
+    debug_printf("set_drive_pid: kp=%.2f ki=%.2f kd=%.2f ilim=%.1f ff=%.1f db=%.1f pi=%u\r\n",
+                 kp, ki, kd, ilim, ff, db, (unsigned)use_pi);
 }
 
 static void on_hl_state(const uint8_t *data, size_t len)
@@ -426,6 +447,19 @@ extern "C" void chatter_handler()
     }
 }
 
+/* Static-friction breakaway feedforward. When commanding motion, bias an
+ * open-loop PWM term by sign(target) * g_drive_deadband_pwm so the wheel
+ * crosses the PAC5210 breakaway immediately instead of waiting for a loop to
+ * wind up. No bias when the target is ~0 (a stopped wheel stays stopped). */
+static inline float apply_deadband_ff(float pwm, float target_mps)
+{
+    const float db = g_drive_deadband_pwm;
+    if (db > 0.0f && fabsf(target_mps) > 1.0e-3f) {
+        pwm += (target_mps > 0.0f) ? db : -db;
+    }
+    return pwm;
+}
+
 /* ---------------------------------------------------------------------------
  * Drive & blade motors handler
  * ---------------------------------------------------------------------------*/
@@ -476,18 +510,18 @@ extern "C" void motors_handler()
         const float l_target = hard_stop ? 0.0f : snap_left_target;
         const float r_target = hard_stop ? 0.0f : snap_right_target;
 
-#if USE_WHEEL_PI
+      if (g_use_wheel_pi) {
         /* Wheel-level PI loop.
          *
          * Reads the signed cumulative encoder count maintained by
          * drivemotor.c, derives actual_mps over the 20 ms loop
-         * period, computes a feedforward + PI PWM. The integrator
-         * is what bridges the static-friction deadband: while the
-         * target says "move 0.05 m/s" and the encoder says "0",
-         * Ki × error × dt accumulates until the PWM crosses the
-         * deadband (~40), the motor breaks free, the wheel starts
-         * counting ticks, error drops, and the integrator settles
-         * at whatever PWM keeps that wheel at target speed.
+         * period, computes a feedforward + PI PWM. With the deadband
+         * breakaway feedforward (g_drive_deadband_pwm) the integrator no
+         * longer has to wind up to cross the static-friction deadband — the
+         * breakaway PWM is applied immediately — so the PI only trims the
+         * residual velocity error, eliminating the stick-slip lurch. When the
+         * breakaway is 0 (default) the integrator still bridges the deadband
+         * the old way.
          *
          * Read left_ticks_signed/right_ticks_signed directly (these are
          * 32-bit and updated from the drivemotor rx-decode path —
@@ -553,10 +587,10 @@ extern "C" void motors_handler()
         const float l_trim = left_wheel_pid.update(l_actual_mps, WHEEL_PI_DT_S, l_update_integral);
         const float r_trim = right_wheel_pid.update(r_actual_mps, WHEEL_PI_DT_S, r_update_integral);
 
-        /* Open-loop feedforward (deadband-bridge, preserves the above-deadband
-         * mapping) + closed-loop PI trim. Sign carried through. */
-        const float l_pwm_f = l_target * g_pwm_per_mps + l_trim;
-        const float r_pwm_f = r_target * g_pwm_per_mps + r_trim;
+        /* Open-loop feedforward (velocity->PWM scale + static-friction
+         * breakaway) + closed-loop PI trim. Sign carried through. */
+        const float l_pwm_f = apply_deadband_ff(l_target * g_pwm_per_mps, l_target) + l_trim;
+        const float r_pwm_f = apply_deadband_ff(r_target * g_pwm_per_mps, r_target) + r_trim;
 
         /* When the target is exactly zero AND we're not braking from a
          * larger speed, force PWM to zero outright — avoids the residual
@@ -567,18 +601,35 @@ extern "C" void motors_handler()
         right_pwm_signed = (r_target == 0.0f && fabsf(r_actual_mps) < 0.02f)
                           ? 0
                           : (int16_t)r_pwm_f;
-#else
-        /* Open-loop fallback for bring-up / regression A/B. Replicates the
-         * pre-PI mapping exactly: PWM = target × PWM_PER_MPS, no encoder
-         * feedback, no integrator. */
-        left_pwm_signed  = (int16_t)(l_target * g_pwm_per_mps);
-        right_pwm_signed = (int16_t)(r_target * g_pwm_per_mps);
-#endif
+      } else {
+        /* Open-loop feedforward only (no encoder feedback, no integrator):
+         * velocity->PWM scale plus the static-friction breakaway feedforward,
+         * which is what lets a sub-deadband target still reach the wheels in
+         * this mode instead of buzzing below breakaway. */
+        left_pwm_signed  = (int16_t)apply_deadband_ff(l_target * g_pwm_per_mps, l_target);
+        right_pwm_signed = (int16_t)apply_deadband_ff(r_target * g_pwm_per_mps, r_target);
+      }
 
         if (hard_stop) {
             DRIVEMOTOR_SetSpeedSigned(0, 0);
         } else {
             DRIVEMOTOR_SetSpeedSigned(left_pwm_signed, right_pwm_signed);
+        }
+
+        /* Drive-loop telemetry (~25 Hz = every other 50 Hz cycle): commanded
+         * target velocity + the signed PWM actually sent, so the host can
+         * watch the velocity->PWM mapping (breakaway, PI trim) while tuning. */
+        static uint8_t telem_div = 0u;
+        if ((telem_div++ & 1u) == 0u) {
+            const int16_t sent_l = hard_stop ? 0 : left_pwm_signed;
+            const int16_t sent_r = hard_stop ? 0 : right_pwm_signed;
+            pkt_drive_telem_t telem;
+            telem.type              = PKT_ID_DRIVE_TELEM;
+            telem.left_target_mm_s  = (int16_t)(l_target * 1000.0f);
+            telem.right_target_mm_s = (int16_t)(r_target * 1000.0f);
+            telem.left_pwm          = sent_l;
+            telem.right_pwm         = sent_r;
+            mowgli_comms_send(&telem, sizeof(telem));
         }
 
         // Heartbeat watchdog: if no heartbeat for HEARTBEAT_TIMEOUT_MS, emergency stop
@@ -837,19 +888,19 @@ extern "C" void init_ROS()
     NBT_init(&motors_nbt,  MOTORS_NBT_TIME_MS);
     NBT_init(&blade_nbt,   BLADE_NBT_TIME_MS);
 
-#if USE_WHEEL_PI
     // Per-wheel velocity PI gains/limits (vendored PX4 PID, pid.hpp). D=0 — no
     // derivative on a velocity loop. Gains/limits are in PWM units, matching the
     // hand-rolled loop they replace (Kp·err + integrator, integral clamp ±100,
     // output clamp ±255). The PID adds derivative-on-measurement (unused at D=0)
-    // and conditional-integration anti-windup.
+    // and conditional-integration anti-windup. Always initialised (not gated on
+    // the compile-time default) because g_use_wheel_pi can enable the loop at
+    // runtime via PKT_ID_SET_DRIVE_PID — uninitialised gains would be zero.
     left_wheel_pid.setGains(WHEEL_PI_KP_PWM_PER_MPS, WHEEL_PI_KI_PWM_PER_MPS_S, 0.0f);
     left_wheel_pid.setIntegralLimit(WHEEL_PI_INT_MAX_PWM);
     left_wheel_pid.setOutputLimit(255.0f);
     right_wheel_pid.setGains(WHEEL_PI_KP_PWM_PER_MPS, WHEEL_PI_KI_PWM_PER_MPS_S, 0.0f);
     right_wheel_pid.setIntegralLimit(WHEEL_PI_INT_MAX_PWM);
     right_wheel_pid.setOutputLimit(255.0f);
-#endif
 
     last_odom_tick      = HAL_GetTick();
     last_heartbeat_tick = 0;

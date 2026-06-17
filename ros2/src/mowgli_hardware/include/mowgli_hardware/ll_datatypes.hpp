@@ -53,6 +53,7 @@ enum PacketId : uint8_t
   PACKET_ID_LL_CMD_BLADE = 0x51,  ///< Pi → STM32: blade motor control
   PACKET_ID_LL_REBOOT = 0x52,  ///< Pi → STM32: reboot the board (NVIC_SystemReset)
   PACKET_ID_LL_SET_DRIVE_PID = 0x53,  ///< Pi → STM32: drive-motor PID/feedforward gains
+  PACKET_ID_LL_DRIVE_TELEM = 0x06,  ///< STM32 → Pi: drive-loop telemetry (target + PWM)
 };
 
 /// Magic byte in LlReboot — a dedicated reboot packet plus this confirmation
@@ -234,6 +235,26 @@ struct LlSetDrivePid
   float kd;  ///< Derivative gain [PWM per (m/s²)]
   float integral_limit;  ///< Anti-windup clamp on the integral term [PWM]
   float pwm_per_mps;  ///< Open-loop feedforward velocity→PWM scale
+  float deadband_pwm;  ///< Static-friction breakaway feedforward [PWM]; 0 = off
+  uint8_t wheel_pi_enabled;  ///< 1 = closed-loop PI, 0 = open-loop feedforward only
+  uint16_t crc;  ///< CRC-16 CCITT over all preceding bytes
+};
+
+/**
+ * @brief Drive-loop telemetry packet from the STM32 (PACKET_ID_LL_DRIVE_TELEM = 0x06).
+ *
+ * Sent at ~25 Hz. Per-wheel commanded target velocity and the signed PWM the
+ * firmware actually sent to the PAC5210 (after feedforward + deadband breakaway
+ * + any PI trim). Paired host-side with the measured velocity from LlOdometry
+ * to monitor the velocity→PWM mapping while tuning the drive loop at runtime.
+ */
+struct LlDriveTelem
+{
+  uint8_t type;  ///< Must equal PACKET_ID_LL_DRIVE_TELEM
+  int16_t left_target_mm_s;  ///< Commanded left wheel velocity [mm/s]
+  int16_t right_target_mm_s;  ///< Commanded right wheel velocity [mm/s]
+  int16_t left_pwm;  ///< Signed PWM sent to the left motor [-255..255]
+  int16_t right_pwm;  ///< Signed PWM sent to the right motor [-255..255]
   uint16_t crc;  ///< CRC-16 CCITT over all preceding bytes
 };
 
@@ -266,6 +287,7 @@ static_assert(sizeof(LlHighLevelState) == 5u, "LlHighLevelState layout mismatch"
 static_assert(sizeof(LlCmdVel) == 11u, "LlCmdVel layout mismatch");
 static_assert(sizeof(LlCmdBlade) == 5u, "LlCmdBlade layout mismatch");
 static_assert(sizeof(LlBladeStatus) == 16u, "LlBladeStatus layout mismatch");
-static_assert(sizeof(LlSetDrivePid) == 23u, "LlSetDrivePid layout mismatch");
+static_assert(sizeof(LlSetDrivePid) == 28u, "LlSetDrivePid layout mismatch");
+static_assert(sizeof(LlDriveTelem) == 11u, "LlDriveTelem layout mismatch");
 
 }  // namespace mowgli_hardware

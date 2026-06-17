@@ -86,8 +86,15 @@ TEST(ProtocolSizes, RebootPacketSize)
 
 TEST(ProtocolSizes, SetDrivePidPacketSize)
 {
-  // type(1) + kp/ki/kd/integral_limit/pwm_per_mps(5*4=20) + crc(2) = 23.
-  EXPECT_EQ(sizeof(LlSetDrivePid), 23u);
+  // type(1) + kp/ki/kd/integral_limit/pwm_per_mps(5*4=20) + deadband_pwm(4) +
+  // wheel_pi_enabled(1) + crc(2) = 28.
+  EXPECT_EQ(sizeof(LlSetDrivePid), 28u);
+}
+
+TEST(ProtocolSizes, DriveTelemPacketSize)
+{
+  // type(1) + l/r target_mm_s(2*2) + l/r pwm(2*2) + crc(2) = 11.
+  EXPECT_EQ(sizeof(LlDriveTelem), 11u);
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +107,7 @@ TEST(ProtocolIds, PacketIdValues)
   EXPECT_EQ(PACKET_ID_LL_IMU, 0x02);
   EXPECT_EQ(PACKET_ID_LL_UI_EVENT, 0x03);
   EXPECT_EQ(PACKET_ID_LL_ODOMETRY, 0x04);
+  EXPECT_EQ(PACKET_ID_LL_DRIVE_TELEM, 0x06);
   EXPECT_EQ(PACKET_ID_LL_HIGH_LEVEL_CONFIG_REQ, 0x11);
   EXPECT_EQ(PACKET_ID_LL_HIGH_LEVEL_CONFIG_RSP, 0x12);
   EXPECT_EQ(PACKET_ID_LL_HEARTBEAT, 0x42);
@@ -300,6 +308,20 @@ TEST(ProtocolRoundtrip, SetDrivePidPacket)
   pkt.kd = 0.0f;
   pkt.integral_limit = 100.0f;
   pkt.pwm_per_mps = 300.0f;
+  pkt.deadband_pwm = 40.0f;
+  pkt.wheel_pi_enabled = 1u;
+
+  roundtrip_struct(pkt);
+}
+
+TEST(ProtocolRoundtrip, DriveTelemPacket)
+{
+  LlDriveTelem pkt{};
+  pkt.type = PACKET_ID_LL_DRIVE_TELEM;
+  pkt.left_target_mm_s = 250;
+  pkt.right_target_mm_s = -250;
+  pkt.left_pwm = 120;
+  pkt.right_pwm = -120;
 
   roundtrip_struct(pkt);
 }

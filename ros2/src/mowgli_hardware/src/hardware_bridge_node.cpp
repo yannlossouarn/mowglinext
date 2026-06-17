@@ -59,11 +59,11 @@
 
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
+#include "mowgli_hardware/angular_rate_controller.hpp"
 #include "mowgli_hardware/clock_fit.hpp"
 #include "mowgli_hardware/ll_datatypes.hpp"
 #include "mowgli_hardware/packet_handler.hpp"
 #include "mowgli_hardware/serial_port.hpp"
-#include "mowgli_hardware/angular_rate_controller.hpp"
 
 // High-level mode constants — must match HighLevelStatus.msg and the
 // HL_MODE_* defines in firmware/mowgli_protocol.h. Declared locally to
@@ -85,6 +85,7 @@ static constexpr uint8_t HL_MODE_MANUAL_MOWING = 4u;  ///< Manual teleop with bl
 #include "sensor_msgs/msg/battery_state.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/magnetic_field.hpp"
+#include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/header.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
@@ -158,6 +159,15 @@ private:
     wheel_pid_kd_ = declare_parameter<double>("wheel_pid_kd", 0.0);
     wheel_pid_integral_limit_ = declare_parameter<double>("wheel_pid_integral_limit", 100.0);
     wheel_pid_pwm_per_mps_ = declare_parameter<double>("wheel_pid_pwm_per_mps", 300.0);
+    // Static-friction breakaway feedforward [PWM] and per-wheel loop selector,
+    // also pushed to the firmware via PACKET_ID_LL_SET_DRIVE_PID. deadband_pwm
+    // makes a non-zero wheel command cross the PAC5210 breakaway immediately
+    // (no loop wind-up → no stick-slip lurch); 0 = off, behaviour-neutral with
+    // the firmware default. wheel_pi_enabled toggles closed-loop PI vs open-loop
+    // feedforward at runtime (no reflash). Both default to the firmware's
+    // compile-time fallback (deadband off, PI on).
+    wheel_pid_deadband_pwm_ = declare_parameter<double>("wheel_pid_deadband_pwm", 0.0);
+    wheel_pi_enabled_ = declare_parameter<bool>("wheel_pi_enabled", true);
     // Sub-deadband forward-velocity clamp threshold (see min_linear_vel_).
     // Default 0.05 (was a hardcoded 0.15) — the PX4 PID firmware can track
     // slow setpoints now. Live-tunable via the callback below.
@@ -170,14 +180,26 @@ private:
           bool drive_pid_changed = false;
           for (const auto& p : params)
           {
+            const std::string& name = p.get_name();
+            // Bool selector handled before the double type-gate below.
+            if (name == "wheel_pi_enabled" && p.get_type() == rclcpp::ParameterType::PARAMETER_BOOL)
+            {
+              wheel_pi_enabled_ = p.as_bool();
+              drive_pid_changed = true;
+              continue;
+            }
             if (p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE)
             {
               continue;
             }
-            const std::string& name = p.get_name();
             if (name == "min_linear_vel")
             {
               min_linear_vel_ = p.as_double();
+            }
+            else if (name == "wheel_pid_deadband_pwm")
+            {
+              wheel_pid_deadband_pwm_ = p.as_double();
+              drive_pid_changed = true;
             }
             else if (name == "wheel_pid_kp")
             {
@@ -224,8 +246,7 @@ private:
     angular_rate_params_.kp = declare_parameter<double>("angular_rate_kp", 0.4);
     angular_rate_params_.ki = declare_parameter<double>("angular_rate_ki", 2.0);
     angular_rate_params_.max_cmd = declare_parameter<double>("angular_rate_max_cmd", 1.5);
-    angular_rate_params_.integral_max =
-        declare_parameter<double>("angular_rate_integral_max", 1.5);
+    angular_rate_params_.integral_max = declare_parameter<double>("angular_rate_integral_max", 1.5);
     angular_rate_params_.target_lp_tau =
         declare_parameter<double>("angular_rate_target_lp_tau", 0.2);
 
@@ -301,6 +322,14 @@ private:
     // launch file (the GUI bridge subscribes to /wheel_ticks).
     pub_wheel_ticks_ =
         create_publisher<mowgli_interfaces::msg::WheelTick>("~/wheel_ticks", rclcpp::QoS(10));
+    // Drive-loop telemetry (PACKET_ID_LL_DRIVE_TELEM, ~25 Hz). Float32MultiArray
+    // layout [l_target, r_target, l_actual, r_actual, l_pwm, r_pwm]: per-wheel
+    // commanded velocity [m/s], firmware-measured velocity [m/s] (from the last
+    // odometry packet), and the signed PWM the firmware sent [-255..255]. Lets
+    // an operator / the session monitor watch the velocity→PWM mapping (deadband
+    // breakaway, PI trim) while tuning the drive loop at runtime.
+    pub_drive_telem_ =
+        create_publisher<std_msgs::msg::Float32MultiArray>("~/drive_telemetry", rclcpp::QoS(10));
     pub_battery_state_ =
         create_publisher<sensor_msgs::msg::BatteryState>("/battery_state", rclcpp::QoS(10));
     // Dock heading: publish dock_yaw at 1 Hz while charging so
@@ -557,6 +586,9 @@ private:
         break;
       case PACKET_ID_LL_ODOMETRY:
         handle_odometry(data, len);
+        break;
+      case PACKET_ID_LL_DRIVE_TELEM:
+        handle_drive_telem(data, len);
         break;
       case PACKET_ID_LL_BLADE_STATUS:
         handle_blade_status(data, len);
@@ -1253,6 +1285,32 @@ private:
                 pkt.press_duration);
   }
 
+  void handle_drive_telem(const uint8_t* data, std::size_t len)
+  {
+    if (len < sizeof(LlDriveTelem))
+    {
+      RCLCPP_WARN(get_logger(),
+                  "Drive telem packet too short: %zu < %zu",
+                  len,
+                  sizeof(LlDriveTelem));
+      return;
+    }
+
+    LlDriveTelem pkt{};
+    std::memcpy(&pkt, data, sizeof(LlDriveTelem));
+
+    // Layout: [l_target, r_target, l_actual, r_actual, l_pwm, r_pwm].
+    // Velocities in m/s (telem + cached odom are mm/s); PWM signed [-255..255].
+    std_msgs::msg::Float32MultiArray msg;
+    msg.data = {static_cast<float>(pkt.left_target_mm_s) / 1000.0F,
+                static_cast<float>(pkt.right_target_mm_s) / 1000.0F,
+                static_cast<float>(last_odom_left_mm_s_) / 1000.0F,
+                static_cast<float>(last_odom_right_mm_s_) / 1000.0F,
+                static_cast<float>(pkt.left_pwm),
+                static_cast<float>(pkt.right_pwm)};
+    pub_drive_telem_->publish(msg);
+  }
+
   void handle_odometry(const uint8_t* data, std::size_t len)
   {
     if (len < sizeof(LlOdometry))
@@ -1263,6 +1321,12 @@ private:
 
     LlOdometry pkt{};
     std::memcpy(&pkt, data, sizeof(LlOdometry));
+
+    // Cache the firmware-measured per-wheel velocity for the drive-telemetry
+    // topic (pairs the measured speed with the commanded target + PWM that
+    // arrive on PACKET_ID_LL_DRIVE_TELEM).
+    last_odom_left_mm_s_ = pkt.left_velocity_mm_s;
+    last_odom_right_mm_s_ = pkt.right_velocity_mm_s;
 
     // Signed tick deltas since last firmware packet (polarity = direction).
     int32_t d_left = pkt.left_ticks - prev_left_ticks_;
@@ -1516,16 +1580,21 @@ private:
     pkt.kd = static_cast<float>(wheel_pid_kd_);
     pkt.integral_limit = static_cast<float>(wheel_pid_integral_limit_);
     pkt.pwm_per_mps = static_cast<float>(wheel_pid_pwm_per_mps_);
+    pkt.deadband_pwm = static_cast<float>(wheel_pid_deadband_pwm_);
+    pkt.wheel_pi_enabled = wheel_pi_enabled_ ? 1u : 0u;
     if (send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt),
                         sizeof(LlSetDrivePid) - sizeof(uint16_t)))
     {
       RCLCPP_INFO(get_logger(),
-                  "Sent drive PID: kp=%.2f ki=%.2f kd=%.2f integral_limit=%.1f pwm_per_mps=%.1f",
+                  "Sent drive PID: kp=%.2f ki=%.2f kd=%.2f integral_limit=%.1f "
+                  "pwm_per_mps=%.1f deadband_pwm=%.1f wheel_pi=%d",
                   wheel_pid_kp_,
                   wheel_pid_ki_,
                   wheel_pid_kd_,
                   wheel_pid_integral_limit_,
-                  wheel_pid_pwm_per_mps_);
+                  wheel_pid_pwm_per_mps_,
+                  wheel_pid_deadband_pwm_,
+                  static_cast<int>(wheel_pi_enabled_));
     }
   }
 
@@ -1633,9 +1702,8 @@ private:
     if (angular_rate_loop_enabled_)
     {
       const rclcpp::Time now = this->now();
-      const double dt = last_cmd_vel_time_.nanoseconds() > 0
-                            ? (now - last_cmd_vel_time_).seconds()
-                            : 0.0;
+      const double dt =
+          last_cmd_vel_time_.nanoseconds() > 0 ? (now - last_cmd_vel_time_).seconds() : 0.0;
       last_cmd_vel_time_ = now;
       wz = mowgli_hardware::compute_angular_rate_cmd(
           wz, latest_gyro_z_, dt, angular_rate_params_, angular_rate_state_);
@@ -1708,6 +1776,11 @@ private:
   uint8_t wheel_dir_right_{1};
   rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr pub_battery_state_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_dock_heading_;
+  rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr pub_drive_telem_;
+  // Last firmware-measured per-wheel velocity [mm/s] (from PACKET_ID_LL_ODOMETRY),
+  // paired with the commanded target + PWM on the drive-telemetry topic.
+  int16_t last_odom_left_mm_s_{0};
+  int16_t last_odom_right_mm_s_{0};
 
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr sub_cmd_vel_;
   rclcpp::Subscription<mowgli_interfaces::msg::HighLevelStatus>::SharedPtr sub_hl_status_;
@@ -1769,6 +1842,11 @@ private:
   double wheel_pid_kd_{0.0};
   double wheel_pid_integral_limit_{100.0};
   double wheel_pid_pwm_per_mps_{300.0};
+  // Static-friction breakaway feedforward [PWM] (0 = off) and per-wheel loop
+  // selector, pushed in the same PACKET_ID_LL_SET_DRIVE_PID. Defaults are
+  // behaviour-neutral with the firmware compile-time fallback.
+  double wheel_pid_deadband_pwm_{0.0};
+  bool wheel_pi_enabled_{true};
   int pid_resend_count_{5};
   // Host-side sub-deadband forward-velocity clamp (on_cmd_vel): any |vx| below
   // this is zeroed before reaching the firmware. Lowered from the legacy 0.15

@@ -68,6 +68,12 @@ extern "C"
 /** Wheel odometry packet (LlOdometry / pkt_odometry_t). */
 #define PKT_ID_ODOMETRY 0x04u
 
+/** Drive-loop telemetry packet (pkt_drive_telem_t). Per-wheel commanded
+ *  target velocity and the signed PWM the firmware actually sent to the
+ *  PAC5210, so the host can observe the velocity->PWM mapping (deadband
+ *  breakaway, PI trim) while tuning PKT_ID_SET_DRIVE_PID at runtime. */
+#define PKT_ID_DRIVE_TELEM 0x06u
+
 /** High-level config response packet. */
 #define PKT_ID_CONFIG_RSP 0x12u
 
@@ -296,7 +302,17 @@ extern "C"
    * firmware rejects the packet if any field is non-finite and clamps each field
    * to a safe range before applying; the output limit stays fixed at 255 PWM.
    *
-   * Wire size: 23 bytes (must match sizeof(LlSetDrivePid) in ll_datatypes.hpp).
+   * deadband_pwm is a static-friction feedforward: when a non-zero wheel target
+   * is commanded the firmware adds sign(target) * deadband_pwm to the open-loop
+   * feedforward, so the wheel crosses the PAC5210 static-friction breakaway
+   * IMMEDIATELY instead of the PI integrator (or the host gyro-rate loop) having
+   * to wind up to reach it — the wind-up was the stick-slip source behind the
+   * low-speed autonomous-pivot yaw/position corruption. 0 disables it.
+   *
+   * wheel_pi_enabled selects the per-wheel loop at runtime (1 = closed-loop PI,
+   * 0 = open-loop feedforward only), replacing the compile-time USE_WHEEL_PI.
+   *
+   * Wire size: 28 bytes (must match sizeof(LlSetDrivePid) in ll_datatypes.hpp).
    */
   typedef struct
   {
@@ -306,8 +322,31 @@ extern "C"
     float kd; /**< Derivative gain [PWM per (m/s²)] */
     float integral_limit; /**< Anti-windup clamp on the integral term [PWM] */
     float pwm_per_mps; /**< Open-loop feedforward velocity->PWM scale */
+    float deadband_pwm; /**< Static-friction breakaway feedforward [PWM]; 0 = off */
+    uint8_t wheel_pi_enabled; /**< 1 = closed-loop PI, 0 = open-loop feedforward only */
     uint16_t crc; /**< CRC-16 CCITT over preceding bytes */
   } pkt_set_drive_pid_t;
+
+  /**
+   * @brief Drive-loop telemetry packet — Firmware -> Host (PKT_ID_DRIVE_TELEM = 0x06).
+   *
+   * Sent at ~25 Hz from the motor loop. Reports, per wheel, the commanded target
+   * velocity and the signed PWM the firmware actually sent to the PAC5210 (after
+   * feedforward + deadband breakaway + any PI trim). The host pairs this with the
+   * measured velocity from PKT_ID_ODOMETRY to monitor the velocity->PWM mapping
+   * while tuning the drive loop at runtime.
+   *
+   * Wire size: 11 bytes (must match sizeof(LlDriveTelem) in ll_datatypes.hpp).
+   */
+  typedef struct
+  {
+    uint8_t type; /**< PKT_ID_DRIVE_TELEM */
+    int16_t left_target_mm_s; /**< Commanded left wheel velocity [mm/s] */
+    int16_t right_target_mm_s; /**< Commanded right wheel velocity [mm/s] */
+    int16_t left_pwm; /**< Signed PWM sent to the left motor [-255..255] */
+    int16_t right_pwm; /**< Signed PWM sent to the right motor [-255..255] */
+    uint16_t crc; /**< CRC-16 CCITT over preceding bytes */
+  } pkt_drive_telem_t;
 
 #pragma pack(pop)
 
@@ -357,7 +396,8 @@ extern "C"
   _Static_assert(sizeof(pkt_heartbeat_t) == 5u, "pkt_heartbeat_t layout unexpected");
   _Static_assert(sizeof(pkt_hl_state_t) == 5u, "pkt_hl_state_t layout unexpected");
   _Static_assert(sizeof(pkt_cmd_vel_t) == 11u, "pkt_cmd_vel_t layout unexpected");
-  _Static_assert(sizeof(pkt_set_drive_pid_t) == 23u, "pkt_set_drive_pid_t layout unexpected");
+  _Static_assert(sizeof(pkt_set_drive_pid_t) == 28u, "pkt_set_drive_pid_t layout unexpected");
+  _Static_assert(sizeof(pkt_drive_telem_t) == 11u, "pkt_drive_telem_t layout unexpected");
 #endif
 
 #ifdef __cplusplus
