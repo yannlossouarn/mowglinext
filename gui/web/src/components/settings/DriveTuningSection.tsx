@@ -29,8 +29,41 @@ const MANEUVERS = [
 
 const PUB_URI = "/api/mowglinext/publish/driveTuningCommand";
 const SUB_URI = "/api/mowglinext/subscribe/driveTuningStatus";
+const TELEM_SUB_URI = "/api/mowglinext/subscribe/driveTelemetry";
 
 type Status = Record<string, unknown>;
+
+// /hardware_bridge/drive_telemetry Float32MultiArray layout (hardware_bridge_node.cpp).
+type Telem = {
+    lTgt: number; rTgt: number; lAct: number; rAct: number;
+    lPwm: number; rPwm: number; wheelYaw: number; imuYaw: number;
+    resid: number; accelPeakG: number; lLoad: number; rLoad: number; flags: number;
+};
+
+// slip_flags bits — see DRIVE_SLIP_FLAG_* in mowgli_protocol.h.
+const SLIP_FLAGS: { mask: number; label: string; color: string }[] = [
+    { mask: 1 << 0, label: "YAW", color: "blue" },
+    { mask: 1 << 1, label: "STALL", color: "orange" },
+    { mask: 1 << 2, label: "IMPACT", color: "red" },
+    { mask: 1 << 3, label: "BOG", color: "gold" },
+    { mask: 1 << 4, label: "BLADE_BOG", color: "volcano" },
+    { mask: 1 << 5, label: "JAM", color: "red" },
+];
+
+function parseTelem(raw: string): Telem | null {
+    try {
+        const obj = JSON.parse(raw) as { data?: number[] };
+        const d = obj?.data;
+        if (!Array.isArray(d) || d.length < 13) return null;
+        return {
+            lTgt: d[0], rTgt: d[1], lAct: d[2], rAct: d[3], lPwm: d[4], rPwm: d[5],
+            wheelYaw: d[6], imuYaw: d[7], resid: d[8], accelPeakG: d[9],
+            lLoad: d[10], rLoad: d[11], flags: d[12],
+        };
+    } catch {
+        return null;
+    }
+}
 
 // std_msgs/String wraps the node's JSON in a `data` field; unwrap then parse.
 function parseStatus(raw: string): Status | null {
@@ -73,10 +106,21 @@ export const DriveTuningSection: React.FC = () => {
         }
     }, []);
 
+    const [telem, setTelem] = useState<Telem | null>(null);
+    const onTelem = useCallback((raw: string) => {
+        const t = parseTelem(raw);
+        if (t) setTelem(t);
+    }, []);
+
     const statusStream = useWS<string>(
         () => setConnected(false),
         () => undefined,
         onStatus,
+    );
+    const telemStream = useWS<string>(
+        () => undefined,
+        () => undefined,
+        onTelem,
     );
     const cmdStream = useWS<string>(
         () => {
@@ -92,9 +136,11 @@ export const DriveTuningSection: React.FC = () => {
     useEffect(() => {
         statusStream.start(SUB_URI);
         cmdStream.start(PUB_URI);
+        telemStream.start(TELEM_SUB_URI);
         return () => {
             statusStream.stop();
             cmdStream.stop();
+            telemStream.stop();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -121,6 +167,8 @@ export const DriveTuningSection: React.FC = () => {
         const m = (result && !("best" in result) ? result : status) ?? {};
         return m as Record<string, unknown>;
     }, [result, status]);
+
+    const activeFlags = telem ? SLIP_FLAGS.filter((f) => (telem.flags & f.mask) !== 0) : [];
 
     return (
         <div>
@@ -174,6 +222,63 @@ export const DriveTuningSection: React.FC = () => {
                         </Button>
                     </Space>
                 </Space>
+            </Card>
+
+            <Card
+                size="small"
+                style={{ marginBottom: 16 }}
+                title={
+                    <Space>
+                        <span>Live telemetry</span>
+                        {telem ? <Tag color="success">streaming</Tag> : <Tag>no data</Tag>}
+                    </Space>
+                }
+            >
+                {!telem ? (
+                    <Text type="secondary">
+                        Waiting for <code>/hardware_bridge/drive_telemetry</code> — drive the robot
+                        to see load, residual, and discrepancy flags.
+                    </Text>
+                ) : (
+                    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                        <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }} bordered>
+                            <Descriptions.Item label="load L/R">
+                                {`${num(telem.lLoad, 0)} / ${num(telem.rLoad, 0)}`}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="wheel−IMU resid (rad/s)">
+                                {num(telem.resid, 2)}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="accel peak (g)">
+                                {num(telem.accelPeakG, 2)}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="vel L/R (m/s)">
+                                {`${num(telem.lAct, 2)} / ${num(telem.rAct, 2)}`}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="target L/R (m/s)">
+                                {`${num(telem.lTgt, 2)} / ${num(telem.rTgt, 2)}`}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="PWM L/R">
+                                {`${num(telem.lPwm, 0)} / ${num(telem.rPwm, 0)}`}
+                            </Descriptions.Item>
+                        </Descriptions>
+                        <div>
+                            <Text strong>Flags</Text>
+                            <div style={{ marginTop: 4 }}>
+                                {activeFlags.length > 0 ? (
+                                    <Space size={[4, 4]} wrap>
+                                        {activeFlags.map((f) => (
+                                            <Tag key={f.label} color={f.color}>
+                                                {f.label}
+                                            </Tag>
+                                        ))}
+                                    </Space>
+                                ) : (
+                                    <Tag color="default">none</Tag>
+                                )}
+                            </div>
+                        </div>
+                    </Space>
+                )}
             </Card>
 
             <Card

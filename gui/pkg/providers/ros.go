@@ -62,6 +62,9 @@ var topicMap = map[string]topicDef{
 	// Drive-tuning node status stream (JSON in a std_msgs/String). Command
 	// goes the other way via PublisherRoute -> /drive_tuning_node/command.
 	"driveTuningStatus": {"/drive_tuning_node/status", "std_msgs/msg/String"},
+	// Firmware drive-loop telemetry (Float32MultiArray, ~25 Hz): per-wheel
+	// target/PWM/load, wheel+IMU yaw + residual, accel-peak, and slip_flags.
+	"driveTelemetry": {"/hardware_bridge/drive_telemetry", "std_msgs/msg/Float32MultiArray"},
 }
 
 // ---------------------------------------------------------------------------
