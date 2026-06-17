@@ -363,15 +363,25 @@ typedef struct {
  * detector (see update_slip_detector / the impact + blade-bog detectors).
  *
  * Collision taxonomy (host derives the sub-cases from the combination):
- *   hard hit, wheels stalled  -> IMPACT & STALL
- *   hard hit, wheels dig in    -> IMPACT & !STALL  (wheels still turning)
- *   soft stall in high grass   -> BOG              (no impact, wheels bog down)
- *   blade loaded in high grass -> BLADE_BOG */
+ *   real obstruction / jam     -> STALL & JAM       (wheels stopped + motor driving hard)
+ *   deadband / not energized   -> STALL & !JAM      (wheels stopped, motor barely driven)
+ *   hard hit, wheels stalled   -> IMPACT & STALL
+ *   hard hit, wheels dig in    -> IMPACT & !STALL   (wheels still turning)
+ *   soft stall in high grass   -> BOG               (no impact, wheels bog down)
+ *   blade loaded in high grass -> BLADE_BOG
+ *
+ * JAM uses the per-wheel drive-controller load byte: that byte is a commanded-
+ * effort proxy (≈0 only when the motor is uncommanded; ~35-140 whenever it is
+ * driven, loaded or not — field-calibrated 2026-06-17), so it cannot sense free
+ * vs loaded motion, but it cleanly separates a STALL where the motor is pushing
+ * hard (load ≥ DRIVE_JAM_LOAD_THRESH = real obstruction) from a benign deadband
+ * stall (load ≈ 0). */
 #define DRIVE_SLIP_FLAG_YAW       (1u << 0) /**< |wheel yaw-rate − gyro yaw-rate| over threshold: stick-slip / wheel-slip / impact-induced rotation */
 #define DRIVE_SLIP_FLAG_STALL     (1u << 1) /**< commanded motion but wheels not turning: obstruction / deadband stall */
 #define DRIVE_SLIP_FLAG_IMPACT    (1u << 2) /**< IMU acceleration peak: a hard collision (combine with STALL for the sub-case) */
 #define DRIVE_SLIP_FLAG_BOG       (1u << 3) /**< wheels turning but well below the commanded speed, no impact: soft resistance / high grass */
 #define DRIVE_SLIP_FLAG_BLADE_BOG (1u << 4) /**< blade commanded on but RPM collapsed vs its free-running max: blade loaded (slow the advance) */
+#define DRIVE_SLIP_FLAG_JAM       (1u << 5) /**< STALL with the motor driving hard (load ≥ DRIVE_JAM_LOAD_THRESH): a real obstruction, vs a deadband stall */
 
 /**
  * @brief Drive-loop telemetry packet — Firmware -> Host (PKT_ID_DRIVE_TELEM = 0x06).

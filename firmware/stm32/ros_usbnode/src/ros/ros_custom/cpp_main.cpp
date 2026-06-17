@@ -180,6 +180,10 @@ static volatile float g_hold_kp = 4.0f;
 #define STALL_CMD_MPS        0.08f  /* commanded |wheel speed| considered "moving" */
 #define STALL_MEAS_MPS       0.02f  /* measured |wheel speed| considered "stopped" */
 #define STALL_PERSIST        5u     /* consecutive samples to latch a stall */
+/* Jam vs deadband: a stall with max wheel load >= this is a real obstruction
+ * (motor driving hard), vs a benign deadband stall (~0 load). Field-calibrated
+ * 2026-06-17: idle load=0, driving load >=35, jam railed wheel 100-140. */
+#define DRIVE_JAM_LOAD_THRESH 30u
 /* Soft "bog" (high grass): the wheels turn but well below the commanded speed,
  * with no impact — the chassis is loaded and barely advancing. */
 #define BOG_CMD_MPS          0.10f  /* commanded |wheel speed| to test for bog */
@@ -947,6 +951,15 @@ static void update_slip_detector(int16_t left_v_mm_s, int16_t right_v_mm_s)
     }
     if (stall_count >= STALL_PERSIST) {
         flags |= DRIVE_SLIP_FLAG_STALL;
+        // Jam vs deadband: the drive-controller load byte is a commanded-effort
+        // proxy (≈0 only when uncommanded), so a stall with the motor still
+        // driving hard (max wheel load ≥ threshold) is a real obstruction,
+        // whereas ≈0 load is a benign deadband stall. left_power/right_power are
+        // extern from drivemotor.c (the PAC5210 per-wheel load bytes).
+        const uint8_t load_max = (left_power > right_power) ? left_power : right_power;
+        if (load_max >= DRIVE_JAM_LOAD_THRESH) {
+            flags |= DRIVE_SLIP_FLAG_JAM;
+        }
     }
     if (bog_count >= BOG_PERSIST) {
         flags |= DRIVE_SLIP_FLAG_BOG;

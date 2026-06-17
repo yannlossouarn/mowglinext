@@ -274,6 +274,8 @@ constexpr uint8_t DRIVE_SLIP_FLAG_STALL = (1u << 1);  ///< commanded but wheels 
 constexpr uint8_t DRIVE_SLIP_FLAG_IMPACT = (1u << 2);  ///< IMU accel peak: hard collision
 constexpr uint8_t DRIVE_SLIP_FLAG_BOG = (1u << 3);  ///< wheels bog below command: high grass
 constexpr uint8_t DRIVE_SLIP_FLAG_BLADE_BOG = (1u << 4);  ///< blade RPM collapsed under load
+constexpr uint8_t DRIVE_SLIP_FLAG_JAM =
+    (1u << 5);  ///< STALL + motor driving hard (load high): real jam
 
 /**
  * @brief Blade motor status packet from STM32 (PACKET_ID_LL_BLADE_STATUS = 0x05).

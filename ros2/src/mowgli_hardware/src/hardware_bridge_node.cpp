@@ -1353,7 +1353,7 @@ private:
                            1000,
                            "Drive discrepancy flags=0x%02X (yaw_residual=%.2f rad/s "
                            "accel_peak=%.2f g load L/R=%u/%u): "
-                           "YAW=%d STALL=%d IMPACT=%d BOG=%d BLADE_BOG=%d",
+                           "YAW=%d STALL=%d JAM=%d IMPACT=%d BOG=%d BLADE_BOG=%d",
                            pkt.slip_flags,
                            wheel_yaw - imu_yaw,
                            accel_peak_g,
@@ -1361,6 +1361,7 @@ private:
                            pkt.right_load,
                            (pkt.slip_flags & DRIVE_SLIP_FLAG_YAW) ? 1 : 0,
                            (pkt.slip_flags & DRIVE_SLIP_FLAG_STALL) ? 1 : 0,
+                           (pkt.slip_flags & DRIVE_SLIP_FLAG_JAM) ? 1 : 0,
                            (pkt.slip_flags & DRIVE_SLIP_FLAG_IMPACT) ? 1 : 0,
                            (pkt.slip_flags & DRIVE_SLIP_FLAG_BOG) ? 1 : 0,
                            (pkt.slip_flags & DRIVE_SLIP_FLAG_BLADE_BOG) ? 1 : 0);

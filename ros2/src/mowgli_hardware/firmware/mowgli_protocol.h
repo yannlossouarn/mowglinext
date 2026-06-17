@@ -336,14 +336,18 @@ extern "C"
   } pkt_set_drive_pid_t;
 
   /* pkt_drive_telem_t::slip_flags bits — firmware IMU-to-odometry detector.
-   * hard hit + wheels stalled = IMPACT&STALL; hard hit + wheels dig =
-   * IMPACT&!STALL; soft high-grass stall = BOG; loaded blade = BLADE_BOG. */
+   * real jam = STALL&JAM; deadband stall = STALL&!JAM; hard hit + wheels
+   * stalled = IMPACT&STALL; hard hit + wheels dig = IMPACT&!STALL; soft
+   * high-grass stall = BOG; loaded blade = BLADE_BOG. JAM uses the load byte
+   * (a commanded-effort proxy: high under a real jam, ~0 in a deadband stall). */
 #define DRIVE_SLIP_FLAG_YAW (1u << 0) /**< wheel vs gyro yaw-rate residual over threshold */
 #define DRIVE_SLIP_FLAG_STALL (1u << 1) /**< commanded motion but wheels not turning */
 #define DRIVE_SLIP_FLAG_IMPACT (1u << 2) /**< IMU acceleration peak: hard collision */
 #define DRIVE_SLIP_FLAG_BOG \
   (1u << 3) /**< wheels turning but well below command, no impact: high grass */
 #define DRIVE_SLIP_FLAG_BLADE_BOG (1u << 4) /**< blade on but RPM collapsed vs free-running max */
+#define DRIVE_SLIP_FLAG_JAM \
+  (1u << 5) /**< STALL with motor driving hard (load high): real obstruction */
 
   /**
    * @brief Drive-loop telemetry packet — Firmware -> Host (PKT_ID_DRIVE_TELEM = 0x06).
