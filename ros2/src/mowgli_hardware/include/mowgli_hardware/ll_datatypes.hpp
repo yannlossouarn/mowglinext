@@ -237,6 +237,8 @@ struct LlSetDrivePid
   float pwm_per_mps;  ///< Open-loop feedforward velocity→PWM scale
   float deadband_pwm;  ///< Static-friction breakaway feedforward [PWM]; 0 = off
   uint8_t wheel_pi_enabled;  ///< 1 = closed-loop PI, 0 = open-loop feedforward only
+  uint8_t hold_enabled;  ///< 1 = position-hold at standstill while controlled
+  float hold_kp;  ///< Position-hold gain [PWM per tick of error]
   uint16_t crc;  ///< CRC-16 CCITT over all preceding bytes
 };
 
@@ -287,7 +289,7 @@ static_assert(sizeof(LlHighLevelState) == 5u, "LlHighLevelState layout mismatch"
 static_assert(sizeof(LlCmdVel) == 11u, "LlCmdVel layout mismatch");
 static_assert(sizeof(LlCmdBlade) == 5u, "LlCmdBlade layout mismatch");
 static_assert(sizeof(LlBladeStatus) == 16u, "LlBladeStatus layout mismatch");
-static_assert(sizeof(LlSetDrivePid) == 28u, "LlSetDrivePid layout mismatch");
+static_assert(sizeof(LlSetDrivePid) == 33u, "LlSetDrivePid layout mismatch");
 static_assert(sizeof(LlDriveTelem) == 11u, "LlDriveTelem layout mismatch");
 
 }  // namespace mowgli_hardware

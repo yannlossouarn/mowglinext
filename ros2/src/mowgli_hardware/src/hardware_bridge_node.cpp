@@ -168,6 +168,11 @@ private:
     // compile-time fallback (deadband off, PI on).
     wheel_pid_deadband_pwm_ = declare_parameter<double>("wheel_pid_deadband_pwm", 0.0);
     wheel_pi_enabled_ = declare_parameter<bool>("wheel_pi_enabled", true);
+    // Standstill position hold: keep the wheels engaged against creep while the
+    // robot is controlled (released only when really idle — IDLE/emergency). See
+    // pkt_set_drive_pid_t. hold_kp is PWM per tick of position error.
+    wheel_hold_enabled_ = declare_parameter<bool>("wheel_hold_enabled", true);
+    wheel_hold_kp_ = declare_parameter<double>("wheel_hold_kp", 4.0);
     // Sub-deadband forward-velocity clamp threshold (see min_linear_vel_).
     // Default 0.05 (was a hardcoded 0.15) — the PX4 PID firmware can track
     // slow setpoints now. Live-tunable via the callback below.
@@ -181,10 +186,17 @@ private:
           for (const auto& p : params)
           {
             const std::string& name = p.get_name();
-            // Bool selector handled before the double type-gate below.
+            // Bool selectors handled before the double type-gate below.
             if (name == "wheel_pi_enabled" && p.get_type() == rclcpp::ParameterType::PARAMETER_BOOL)
             {
               wheel_pi_enabled_ = p.as_bool();
+              drive_pid_changed = true;
+              continue;
+            }
+            if (name == "wheel_hold_enabled" &&
+                p.get_type() == rclcpp::ParameterType::PARAMETER_BOOL)
+            {
+              wheel_hold_enabled_ = p.as_bool();
               drive_pid_changed = true;
               continue;
             }
@@ -199,6 +211,11 @@ private:
             else if (name == "wheel_pid_deadband_pwm")
             {
               wheel_pid_deadband_pwm_ = p.as_double();
+              drive_pid_changed = true;
+            }
+            else if (name == "wheel_hold_kp")
+            {
+              wheel_hold_kp_ = p.as_double();
               drive_pid_changed = true;
             }
             else if (name == "wheel_pid_kp")
@@ -1582,19 +1599,23 @@ private:
     pkt.pwm_per_mps = static_cast<float>(wheel_pid_pwm_per_mps_);
     pkt.deadband_pwm = static_cast<float>(wheel_pid_deadband_pwm_);
     pkt.wheel_pi_enabled = wheel_pi_enabled_ ? 1u : 0u;
+    pkt.hold_enabled = wheel_hold_enabled_ ? 1u : 0u;
+    pkt.hold_kp = static_cast<float>(wheel_hold_kp_);
     if (send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt),
                         sizeof(LlSetDrivePid) - sizeof(uint16_t)))
     {
       RCLCPP_INFO(get_logger(),
                   "Sent drive PID: kp=%.2f ki=%.2f kd=%.2f integral_limit=%.1f "
-                  "pwm_per_mps=%.1f deadband_pwm=%.1f wheel_pi=%d",
+                  "pwm_per_mps=%.1f deadband_pwm=%.1f wheel_pi=%d hold=%d hold_kp=%.2f",
                   wheel_pid_kp_,
                   wheel_pid_ki_,
                   wheel_pid_kd_,
                   wheel_pid_integral_limit_,
                   wheel_pid_pwm_per_mps_,
                   wheel_pid_deadband_pwm_,
-                  static_cast<int>(wheel_pi_enabled_));
+                  static_cast<int>(wheel_pi_enabled_),
+                  static_cast<int>(wheel_hold_enabled_),
+                  wheel_hold_kp_);
     }
   }
 
@@ -1847,6 +1868,10 @@ private:
   // behaviour-neutral with the firmware compile-time fallback.
   double wheel_pid_deadband_pwm_{0.0};
   bool wheel_pi_enabled_{true};
+  // Standstill position hold (keeps the wheels engaged against creep while
+  // controlled; released only when really idle). Pushed in the same packet.
+  bool wheel_hold_enabled_{true};
+  double wheel_hold_kp_{4.0};
   int pid_resend_count_{5};
   // Host-side sub-deadband forward-velocity clamp (on_cmd_vel): any |vx| below
   // this is zeroed before reaching the firmware. Lowered from the legacy 0.15

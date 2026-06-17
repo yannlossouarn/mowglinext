@@ -146,6 +146,21 @@ static volatile float g_drive_deadband_pwm = 0.0f;
  * longer needs a reflash). Seeded with the compile-time default. */
 static volatile uint8_t g_use_wheel_pi = (uint8_t)USE_WHEEL_PI;
 
+/* Standstill position hold (runtime-tunable via PKT_ID_SET_DRIVE_PID). While
+ * the robot is actively controlled (not IDLE / not emergency) and commanded to
+ * ~0 velocity, the loop latches the encoder position and pushes back against
+ * creep instead of coasting — fixing the backlash/tire-windup back-creep that
+ * walks the heading off after a pivot. Released (coast) only when really idle.
+ * g_hold_kp is PWM per tick of position error; the breakaway (g_drive_deadband_
+ * pwm) supplies the static-friction floor so a small error can still correct. */
+static volatile uint8_t g_hold_enabled = 1u;
+static volatile float g_hold_kp = 4.0f;
+/* Hold deadzone (ticks) and output clamp (PWM). A tick is ~3.3 mm; tolerate a
+ * couple before correcting so quantization noise doesn't buzz the motors, and
+ * clamp the corrective PWM well under the motion range. */
+#define HOLD_TOL_TICKS  2
+#define HOLD_MAX_PWM    120.0f
+
 /* ---------------------------------------------------------------------------
  * Blade motor control state
  * ---------------------------------------------------------------------------*/
@@ -272,7 +287,7 @@ static void on_set_drive_pid(const uint8_t *data, size_t len)
      * pid_constrain() comes from pid.hpp. */
     if (!std::isfinite(pkt->kp) || !std::isfinite(pkt->ki) || !std::isfinite(pkt->kd) ||
         !std::isfinite(pkt->integral_limit) || !std::isfinite(pkt->pwm_per_mps) ||
-        !std::isfinite(pkt->deadband_pwm)) {
+        !std::isfinite(pkt->deadband_pwm) || !std::isfinite(pkt->hold_kp)) {
         debug_printf("set_drive_pid rejected: non-finite field\r\n");
         return;
     }
@@ -286,6 +301,8 @@ static void on_set_drive_pid(const uint8_t *data, size_t len)
      * never on its own saturate the motor command. */
     const float db   = pid_constrain(pkt->deadband_pwm,   0.0f,   150.0f);
     const uint8_t use_pi = pkt->wheel_pi_enabled ? 1u : 0u;
+    const uint8_t hold  = pkt->hold_enabled ? 1u : 0u;
+    const float hkp     = pid_constrain(pkt->hold_kp,     0.0f,    50.0f);
 
     /* Apply atomically w.r.t. motors_handler(), which reads these objects in the
      * main loop at 50 Hz: this handler runs in USB RX interrupt context, and a
@@ -304,10 +321,13 @@ static void on_set_drive_pid(const uint8_t *data, size_t len)
     g_pwm_per_mps = ff;
     g_drive_deadband_pwm = db;
     g_use_wheel_pi = use_pi;
+    g_hold_enabled = hold;
+    g_hold_kp = hkp;
     __enable_irq();
 
-    debug_printf("set_drive_pid: kp=%.2f ki=%.2f kd=%.2f ilim=%.1f ff=%.1f db=%.1f pi=%u\r\n",
-                 kp, ki, kd, ilim, ff, db, (unsigned)use_pi);
+    debug_printf(
+        "set_drive_pid: kp=%.2f ki=%.2f kd=%.2f ilim=%.1f ff=%.1f db=%.1f pi=%u hold=%u hkp=%.2f\r\n",
+        kp, ki, kd, ilim, ff, db, (unsigned)use_pi, (unsigned)hold, hkp);
 }
 
 static void on_hl_state(const uint8_t *data, size_t len)
@@ -460,6 +480,27 @@ static inline float apply_deadband_ff(float pwm, float target_mps)
     return pwm;
 }
 
+/* Position-hold corrective PWM for one wheel from its tick error (latched
+ * reference minus current). A small deadzone avoids buzzing on encoder
+ * quantization; the breakaway supplies the static-friction floor so even a
+ * one-tick error can push back, and hold_kp scales the rest. Clamped well
+ * under the motion PWM range. */
+static inline int16_t hold_pwm(int32_t err_ticks)
+{
+    if (err_ticks > -HOLD_TOL_TICKS && err_ticks < HOLD_TOL_TICKS) {
+        return 0;
+    }
+    const float floor_pwm = (err_ticks > 0) ? g_drive_deadband_pwm : -g_drive_deadband_pwm;
+    float pwm = floor_pwm + g_hold_kp * (float)err_ticks;
+    if (pwm > HOLD_MAX_PWM) {
+        pwm = HOLD_MAX_PWM;
+    }
+    if (pwm < -HOLD_MAX_PWM) {
+        pwm = -HOLD_MAX_PWM;
+    }
+    return (int16_t)pwm;
+}
+
 /* ---------------------------------------------------------------------------
  * Drive & blade motors handler
  * ---------------------------------------------------------------------------*/
@@ -510,7 +551,39 @@ extern "C" void motors_handler()
         const float l_target = hard_stop ? 0.0f : snap_left_target;
         const float r_target = hard_stop ? 0.0f : snap_right_target;
 
-      if (g_use_wheel_pi) {
+        /* Standstill position hold. While actively controlled (not hard_stop,
+         * i.e. not IDLE / emergency / cmd_vel watchdog) and commanded to ~0 on
+         * both wheels, latch the encoder position and push back against creep
+         * instead of coasting. Mutually exclusive with the velocity loop so the
+         * PI state stays clean across the hold. Released to coast by hard_stop
+         * (the "really idle" paths) below. */
+        static bool was_holding = false;
+        static int32_t hold_l_ref = 0;
+        static int32_t hold_r_ref = 0;
+        const bool want_hold = (g_hold_enabled != 0u) && !hard_stop &&
+                               fabsf(l_target) < 1.0e-3f && fabsf(r_target) < 1.0e-3f;
+
+      if (want_hold) {
+        const int32_t cur_l = left_ticks_signed;
+        const int32_t cur_r = right_ticks_signed;
+        if (!was_holding) {
+            hold_l_ref = cur_l;
+            hold_r_ref = cur_r;
+            // Drop velocity-loop state so it resumes clean when hold releases.
+            left_wheel_pid.resetIntegral();
+            left_wheel_pid.resetDerivative();
+            right_wheel_pid.resetIntegral();
+            right_wheel_pid.resetDerivative();
+            prev_left_target_mps = 0.0f;
+            prev_right_target_mps = 0.0f;
+            prev_left_ticks_signed_pi = cur_l;
+            prev_right_ticks_signed_pi = cur_r;
+            was_holding = true;
+        }
+        left_pwm_signed = hold_pwm(hold_l_ref - cur_l);
+        right_pwm_signed = hold_pwm(hold_r_ref - cur_r);
+      } else if (g_use_wheel_pi) {
+        was_holding = false;
         /* Wheel-level PI loop.
          *
          * Reads the signed cumulative encoder count maintained by
@@ -602,6 +675,7 @@ extern "C" void motors_handler()
                           ? 0
                           : (int16_t)r_pwm_f;
       } else {
+        was_holding = false;
         /* Open-loop feedforward only (no encoder feedback, no integrator):
          * velocity->PWM scale plus the static-friction breakaway feedforward,
          * which is what lets a sub-deadband target still reach the wheels in

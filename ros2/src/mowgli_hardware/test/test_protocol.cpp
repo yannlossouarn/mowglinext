@@ -87,8 +87,8 @@ TEST(ProtocolSizes, RebootPacketSize)
 TEST(ProtocolSizes, SetDrivePidPacketSize)
 {
   // type(1) + kp/ki/kd/integral_limit/pwm_per_mps(5*4=20) + deadband_pwm(4) +
-  // wheel_pi_enabled(1) + crc(2) = 28.
-  EXPECT_EQ(sizeof(LlSetDrivePid), 28u);
+  // wheel_pi_enabled(1) + hold_enabled(1) + hold_kp(4) + crc(2) = 33.
+  EXPECT_EQ(sizeof(LlSetDrivePid), 33u);
 }
 
 TEST(ProtocolSizes, DriveTelemPacketSize)
@@ -310,6 +310,8 @@ TEST(ProtocolRoundtrip, SetDrivePidPacket)
   pkt.pwm_per_mps = 300.0f;
   pkt.deadband_pwm = 40.0f;
   pkt.wheel_pi_enabled = 1u;
+  pkt.hold_enabled = 1u;
+  pkt.hold_kp = 4.0f;
 
   roundtrip_struct(pkt);
 }

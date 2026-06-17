@@ -335,7 +335,15 @@ typedef struct {
  * compile-time USE_WHEEL_PI switch so the open-loop vs PI A/B no longer needs
  * a reflash.
  *
- * Wire size: 28 bytes (must match sizeof(LlSetDrivePid) in ll_datatypes.hpp).
+ * hold_enabled + hold_kp drive the standstill POSITION HOLD: while the robot is
+ * actively controlled (not IDLE / not emergency) and commanded to ~0 velocity,
+ * the firmware latches the encoder position and applies sign(err)*deadband_pwm
+ * + hold_kp*err_ticks to resist the backlash/tire-windup creep that otherwise
+ * walks the heading off after a pivot. Releases (coasts) only when the robot is
+ * really idle (IDLE mode or emergency). hold_kp is PWM per tick of position
+ * error; 0 with hold_enabled=1 still holds via the breakaway floor alone.
+ *
+ * Wire size: 33 bytes (must match sizeof(LlSetDrivePid) in ll_datatypes.hpp).
  */
 typedef struct {
     uint8_t  type;            /**< PKT_ID_SET_DRIVE_PID */
@@ -346,6 +354,8 @@ typedef struct {
     float    pwm_per_mps;     /**< Open-loop feedforward velocity->PWM scale */
     float    deadband_pwm;    /**< Static-friction breakaway feedforward [PWM]; 0 = off */
     uint8_t  wheel_pi_enabled;/**< 1 = closed-loop PI, 0 = open-loop feedforward only */
+    uint8_t  hold_enabled;    /**< 1 = position-hold at standstill while controlled */
+    float    hold_kp;         /**< Position-hold gain [PWM per tick of error] */
     uint16_t crc;             /**< CRC-16 CCITT over preceding bytes */
 } pkt_set_drive_pid_t;
 
@@ -434,7 +444,7 @@ _Static_assert(sizeof(pkt_odometry_t)  == 17u, "pkt_odometry_t layout unexpected
 _Static_assert(sizeof(pkt_heartbeat_t) ==  5u, "pkt_heartbeat_t layout unexpected");
 _Static_assert(sizeof(pkt_hl_state_t)  ==  5u, "pkt_hl_state_t layout unexpected");
 _Static_assert(sizeof(pkt_cmd_vel_t)   == 11u, "pkt_cmd_vel_t layout unexpected");
-_Static_assert(sizeof(pkt_set_drive_pid_t) == 28u, "pkt_set_drive_pid_t layout unexpected");
+_Static_assert(sizeof(pkt_set_drive_pid_t) == 33u, "pkt_set_drive_pid_t layout unexpected");
 _Static_assert(sizeof(pkt_drive_telem_t)   == 11u, "pkt_drive_telem_t layout unexpected");
 #endif
 
