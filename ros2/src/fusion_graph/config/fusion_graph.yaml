@@ -197,6 +197,23 @@ fusion_graph_node:
     rtk_wrongfix_max_jump_m: 0.05
     rtk_wrongfix_max_wheel_m: 0.02
 
+    # ── Pivot-aware GNSS yaw down-weight ───────────────────────────────
+    # During an in-place pivot (swath-start PRE_ROTATE, headland turn) the
+    # GPS antenna sweeps on its lever arm, so the GnssLeverArmFactor's
+    # coupling to YAW becomes ill-conditioned (small position noise → large
+    # yaw error) and the ~7 Hz stream of tight (σ≈5 mm) factors out-votes the
+    # per-node gyro between-factor — the only honest yaw source mid-pivot —
+    # pinning the heading while the chassis physically rotates (field
+    # 2026-06-17: fused yaw stuck ~24° while the gyro showed ±1 rad/s, and the
+    # controller then hunted). When the antenna arc swept since the last
+    # accepted sample exceeds pivot_gps_sweep_thresh_m, the GPS σ is floored
+    # at pivot_gps_sigma_xy_m so the factor still anchors x/y (gyro+wheel hold
+    # it for the brief pivot) but yields yaw to the gyro. Mirrors the
+    # pivot_wheel_sigma_x release above. Set pivot_gps_sigma_xy_m <= 0 to
+    # disable. 0.03 m ≈ a 0.09 rad (5°) antenna sweep at the 0.32 m lever arm.
+    pivot_gps_sweep_thresh_m: 0.03
+    pivot_gps_sigma_xy_m: 0.5
+
     # ── ICP scan-match guard rails ─────────────────────────────────────
     # Applied to every scan_matcher_->Match result before queueing it
     # as a graph factor. See fusion_graph_node.hpp comments for the

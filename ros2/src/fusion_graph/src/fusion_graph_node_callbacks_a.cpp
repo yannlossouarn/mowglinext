@@ -126,6 +126,11 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
   double mx, my;
   LatLonToMap(msg->latitude, msg->longitude, mx, my);
 
+  // Antenna arc swept since the last accepted GPS sample. Captured here
+  // because the wrong-fix gate below resets abs_dtheta_since_last_gps_rad_;
+  // used by the pivot-aware GNSS yaw down-weight at QueueGnss (see there).
+  const double pivot_sweep_m = lever_arm_radius_m_ * abs_dtheta_since_last_gps_rad_;
+
   // RTK wrong-fix detection — fires before any QueueGnss so a bad
   // sample never reaches iSAM2. F9P can re-solve the carrier-phase
   // ambiguity on a different integer set after a brief signal drop
@@ -270,7 +275,23 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
     TrySeedInitialPose();
     return;
   }
-  graph_->QueueGnss(mx, my, sigma, /*robust=*/true);
+  // Pivot-aware GNSS yaw down-weight. During an in-place pivot the antenna
+  // sweeps on the lever arm, so the GnssLeverArmFactor's coupling to YAW is
+  // ill-conditioned (small position noise → large yaw error) and the ~7 Hz
+  // stream of tight (σ≈5 mm) factors out-votes the per-node gyro between-
+  // factor — the only honest yaw source mid-pivot — pinning the estimate
+  // while the chassis physically rotates (field 2026-06-17: fused yaw stuck
+  // ~24° while gyro showed ±1 rad/s, controller then hunted). When the swept
+  // arc since the last sample exceeds pivot_gps_sweep_thresh_m, floor σ at
+  // pivot_gps_sigma_xy_m: the factor still anchors x/y (gyro+wheel hold it
+  // for the brief pivot) but yields yaw to the gyro. Mirrors the existing
+  // pivot_wheel_sigma_x release. Set the threshold high to disable.
+  double sigma_eff = sigma;
+  if (pivot_sweep_m > pivot_gps_sweep_thresh_m_ && pivot_gps_sigma_xy_m_ > 0.0)
+  {
+    sigma_eff = std::max(sigma, pivot_gps_sigma_xy_m_);
+  }
+  graph_->QueueGnss(mx, my, sigma_eff, /*robust=*/true);
   seed_xy_ = gtsam::Vector2(mx, my);
   // Latch whether the most recent seed came from RTK-Fixed so the next
   // graph initialization can use a tight prior matching that quality.

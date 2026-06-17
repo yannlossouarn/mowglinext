@@ -448,6 +448,13 @@ private:
   // (vx_max ≈ 0.30 m/s × 0.1 s = 30 mm). 50 mm leaves headroom for
   // 1-2σ outliers while still catching ≥0.5σ wrong-fix jumps.
   double rtk_wrongfix_max_jump_m_ = 0.05;
+  // Pivot-aware GNSS yaw down-weight (OnGnss). When the antenna arc swept
+  // since the last accepted GPS sample exceeds pivot_gps_sweep_thresh_m, the
+  // GnssLeverArmFactor σ is floored at pivot_gps_sigma_xy_m so it yields yaw
+  // to the gyro through an in-place pivot (where the GPS yaw coupling is
+  // ill-conditioned). pivot_gps_sigma_xy_m <= 0 disables it.
+  double pivot_gps_sweep_thresh_m_ = 0.03;
+  double pivot_gps_sigma_xy_m_ = 0.5;
   // Dock-pose hold while charging: re-assert a firm ForceAnchor at the FULL
   // dock_pose (x,y,yaw) ONCE PER NEW NODE, replacing the weak live-GPS factor
   // that walked the docked pose off the anchor (field 2026-06-10: 11.5 cm + 53°

@@ -100,6 +100,13 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   // RTK wrong-fix detection (handled in OnGnss, not in graph_manager).
   rtk_wrongfix_max_jump_m_ =
       declare_parameter<double>("rtk_wrongfix_max_jump_m", 0.05);
+  // Pivot-aware GNSS yaw down-weight (handled in OnGnss). When the antenna
+  // arc swept since the last accepted sample exceeds pivot_gps_sweep_thresh_m,
+  // floor the GnssLeverArmFactor σ at pivot_gps_sigma_xy_m so it yields yaw to
+  // the gyro during an in-place pivot (the GPS yaw coupling is ill-conditioned
+  // there). Set pivot_gps_sigma_xy_m <= 0 to disable. See OnGnss.
+  pivot_gps_sweep_thresh_m_ = declare_parameter<double>("pivot_gps_sweep_thresh_m", 0.03);
+  pivot_gps_sigma_xy_m_ = declare_parameter<double>("pivot_gps_sigma_xy_m", 0.5);
   // Dock-pose hold while charging: re-assert a firm ForceAnchor at the full
   // dock_pose once per new node (replaces the weak live-GPS factor that walked
   // the docked pose 11.5 cm + 53° over a dwell — field 2026-06-10). σ small so
