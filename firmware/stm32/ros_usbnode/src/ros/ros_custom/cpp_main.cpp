@@ -180,6 +180,25 @@ static volatile float g_hold_kp = 4.0f;
 #define STALL_CMD_MPS        0.08f  /* commanded |wheel speed| considered "moving" */
 #define STALL_MEAS_MPS       0.02f  /* measured |wheel speed| considered "stopped" */
 #define STALL_PERSIST        5u     /* consecutive samples to latch a stall */
+/* Soft "bog" (high grass): the wheels turn but well below the commanded speed,
+ * with no impact — the chassis is loaded and barely advancing. */
+#define BOG_CMD_MPS          0.10f  /* commanded |wheel speed| to test for bog */
+#define BOG_RATIO            0.5f   /* flag when measured < BOG_RATIO * commanded */
+#define BOG_PERSIST          25u    /* ~0.5 s at the 50 Hz odom cadence */
+/* Hard-collision impact: a peak in the dynamic acceleration (|accel| deviation
+ * from a slow gravity baseline) at the 100 Hz IMU cadence. Magnitude-based, so
+ * it is independent of IMU mounting orientation. */
+#define IMPACT_BASELINE_ALPHA 0.01f /* slow EMA on |accel| (~1 s) → tracks gravity */
+#define IMPACT_THRESH_MPS2    6.0f  /* |accel − baseline| over this = a hard hit */
+#define IMPACT_HOLD_TICKS     30u   /* latch the flag ~300 ms at 100 Hz */
+#define IMPACT_PEAK_DECAY     0.95f /* peak-hold decay for the reported magnitude */
+/* Blade bog (high grass loading the blade): commanded on but the RPM has
+ * collapsed relative to its own free-running maximum this session. Self-
+ * calibrating, so no absolute nominal-RPM constant is needed. */
+#define BLADE_BOG_RATIO       0.6f  /* flag when rpm < ratio * running-max rpm */
+#define BLADE_RPM_FLOOR       800u  /* running-max must exceed this to trust the ratio */
+#define BLADE_MAX_DECAY       2u    /* per-tick decay of the running max [rpm] */
+#define BLADE_BOG_PERSIST     20u   /* consecutive 100 Hz samples to latch */
 
 /* Latest raw IMU yaw rate [rad/s], published by broadcast_handler, read by the
  * detector in wheelTicks_handler. Single-writer/single-reader, both on the main
@@ -188,7 +207,13 @@ static volatile float g_imu_gyro_z = 0.0f;
 /* Detector outputs (read by the drive-telem builder in motors_handler). */
 static volatile int16_t g_wheel_yaw_mrad_s = 0;
 static volatile int16_t g_imu_yaw_mrad_s = 0;
+static volatile int16_t g_accel_peak_mg = 0;
 static volatile uint8_t g_slip_flags = 0u;
+/* Impact + blade-bog detector outputs, set in broadcast_handler (100 Hz, where
+ * the accel + blade RPM are read), folded into g_slip_flags by the odom-rate
+ * detector. g_impact_hold counts down so the 25 Hz telem catches a brief hit. */
+static volatile uint8_t g_impact_hold = 0u;
+static volatile uint8_t g_blade_bog = 0u;
 
 /* ---------------------------------------------------------------------------
  * Blade motor control state
@@ -237,6 +262,8 @@ static uint32_t last_odom_tick = 0;
 /* Forward declarations */
 static void update_blade_led(void);
 static void update_slip_detector(int16_t left_v_mm_s, int16_t right_v_mm_s);
+static void update_impact_detector(float ax, float ay, float az);
+static void update_blade_bog_detector(void);
 
 /* ---------------------------------------------------------------------------
  * COBS packet handlers (Host -> Firmware)
@@ -735,6 +762,7 @@ extern "C" void motors_handler()
             telem.right_pwm         = sent_r;
             telem.wheel_yaw_mrad_s  = g_wheel_yaw_mrad_s;
             telem.imu_yaw_mrad_s    = g_imu_yaw_mrad_s;
+            telem.accel_peak_mg     = g_accel_peak_mg;
             telem.slip_flags        = g_slip_flags;
             mowgli_comms_send(&telem, sizeof(telem));
         }
@@ -890,12 +918,25 @@ static void update_slip_detector(int16_t left_v_mm_s, int16_t right_v_mm_s)
     // Stall: a meaningful forward/turn command but the wheels aren't moving.
     const float cmd = (fabsf(left_target_mps) + fabsf(right_target_mps)) * 0.5f;
     const float meas = (fabsf(v_l) + fabsf(v_r)) * 0.5f;
+    static uint8_t bog_count = 0u;
     if (cmd > STALL_CMD_MPS && meas < STALL_MEAS_MPS) {
         if (stall_count < STALL_PERSIST) {
             stall_count++;
         }
     } else {
         stall_count = 0u;
+    }
+
+    // Bog (soft resistance / high grass): the wheels are turning but well below
+    // the commanded speed, and it isn't a hard impact — the chassis is loaded
+    // and barely advancing. Excludes the stall case (meas above the stall floor).
+    const bool impact_active = (g_impact_hold > 0u);
+    if (cmd > BOG_CMD_MPS && meas >= STALL_MEAS_MPS && meas < BOG_RATIO * cmd && !impact_active) {
+        if (bog_count < BOG_PERSIST) {
+            bog_count++;
+        }
+    } else {
+        bog_count = 0u;
     }
 
     uint8_t flags = 0u;
@@ -905,10 +946,72 @@ static void update_slip_detector(int16_t left_v_mm_s, int16_t right_v_mm_s)
     if (stall_count >= STALL_PERSIST) {
         flags |= DRIVE_SLIP_FLAG_STALL;
     }
+    if (bog_count >= BOG_PERSIST) {
+        flags |= DRIVE_SLIP_FLAG_BOG;
+    }
+    if (impact_active) {
+        flags |= DRIVE_SLIP_FLAG_IMPACT;
+    }
+    if (g_blade_bog) {
+        flags |= DRIVE_SLIP_FLAG_BLADE_BOG;
+    }
 
     g_wheel_yaw_mrad_s = (int16_t)pid_constrain(wheel_yaw * 1000.0f, -32767.0f, 32767.0f);
     g_imu_yaw_mrad_s = (int16_t)pid_constrain(gyro_yaw * 1000.0f, -32767.0f, 32767.0f);
     g_slip_flags = flags;
+}
+
+/// @brief Hard-collision detector: a peak in the dynamic acceleration (|accel|
+///        deviation from a slow gravity baseline). Magnitude-based, so it is
+///        independent of IMU mounting. Runs at the 100 Hz IMU cadence; latches
+///        g_impact_hold for ~300 ms and reports the peak magnitude in milli-g.
+static void update_impact_detector(float ax, float ay, float az)
+{
+    const float amag = sqrtf(ax * ax + ay * ay + az * az);
+    static float baseline = 9.81f;  // slow EMA tracks gravity through any tilt
+    baseline += IMPACT_BASELINE_ALPHA * (amag - baseline);
+    const float dev = fabsf(amag - baseline);
+
+    static float peak = 0.0f;
+    peak = (dev > peak) ? dev : peak * IMPACT_PEAK_DECAY;
+    g_accel_peak_mg = (int16_t)pid_constrain(peak / 9.81f * 1000.0f, 0.0f, 32767.0f);
+
+    if (dev > IMPACT_THRESH_MPS2) {
+        g_impact_hold = IMPACT_HOLD_TICKS;
+    } else if (g_impact_hold > 0u) {
+        g_impact_hold--;
+    }
+}
+
+/// @brief Blade-bog detector: blade commanded on but its RPM has collapsed
+///        relative to its own free-running maximum this session (high grass
+///        loading the blade → the operator should slow the advance rate).
+///        Self-calibrating, so no absolute nominal-RPM constant is needed.
+static void update_blade_bog_detector(void)
+{
+    static uint16_t rpm_max = 0u;
+    static uint8_t bog_count = 0u;
+    if (!blade_on_off) {
+        rpm_max = 0u;
+        bog_count = 0u;
+        g_blade_bog = 0u;
+        return;
+    }
+    const uint16_t rpm = BLADEMOTOR_u16RPM;
+    if (rpm > rpm_max) {
+        rpm_max = rpm;  // track the free-running peak
+    } else if (rpm_max > BLADE_MAX_DECAY) {
+        rpm_max -= BLADE_MAX_DECAY;  // slow decay so it adapts to a lower no-load speed
+    }
+    const bool spun_up = rpm_max > BLADE_RPM_FLOOR;
+    if (spun_up && (float)rpm < BLADE_BOG_RATIO * (float)rpm_max) {
+        if (bog_count < BLADE_BOG_PERSIST) {
+            bog_count++;
+        }
+    } else {
+        bog_count = 0u;
+    }
+    g_blade_bog = (bog_count >= BLADE_BOG_PERSIST) ? 1u : 0u;
 }
 
 /* ---------------------------------------------------------------------------
@@ -931,6 +1034,7 @@ extern "C" void broadcast_handler()
         imu_pkt.acceleration_mss[0] = ax;
         imu_pkt.acceleration_mss[1] = ay;
         imu_pkt.acceleration_mss[2] = az;
+        update_impact_detector(ax, ay, az);  // hard-collision peak detector
 #else
         imu_pkt.acceleration_mss[0] = 0.0f;
         imu_pkt.acceleration_mss[1] = 0.0f;
@@ -952,6 +1056,8 @@ extern "C" void broadcast_handler()
 
         // Magnetometer — uses generic IMU_ReadMag (works with any IMU that has mag)
         IMU_ReadMag(&imu_pkt.mag_uT[0], &imu_pkt.mag_uT[1], &imu_pkt.mag_uT[2]);
+
+        update_blade_bog_detector();  // blade RPM collapse under high-grass load
 
         mowgli_comms_send_imu(&imu_pkt);
     }

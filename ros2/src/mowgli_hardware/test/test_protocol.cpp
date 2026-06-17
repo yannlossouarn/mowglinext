@@ -94,8 +94,8 @@ TEST(ProtocolSizes, SetDrivePidPacketSize)
 TEST(ProtocolSizes, DriveTelemPacketSize)
 {
   // type(1) + l/r target_mm_s(2*2) + l/r pwm(2*2) + wheel_yaw(2) + imu_yaw(2)
-  // + slip_flags(1) + crc(2) = 16.
-  EXPECT_EQ(sizeof(LlDriveTelem), 16u);
+  // + accel_peak_mg(2) + slip_flags(1) + crc(2) = 18.
+  EXPECT_EQ(sizeof(LlDriveTelem), 18u);
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +327,8 @@ TEST(ProtocolRoundtrip, DriveTelemPacket)
   pkt.right_pwm = -120;
   pkt.wheel_yaw_mrad_s = 700;
   pkt.imu_yaw_mrad_s = 350;
-  pkt.slip_flags = DRIVE_SLIP_FLAG_YAW | DRIVE_SLIP_FLAG_STALL;
+  pkt.accel_peak_mg = 1800;
+  pkt.slip_flags = DRIVE_SLIP_FLAG_YAW | DRIVE_SLIP_FLAG_IMPACT | DRIVE_SLIP_FLAG_BLADE_BOG;
 
   roundtrip_struct(pkt);
 }

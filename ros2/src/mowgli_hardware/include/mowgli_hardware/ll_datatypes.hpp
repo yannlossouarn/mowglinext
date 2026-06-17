@@ -259,13 +259,19 @@ struct LlDriveTelem
   int16_t right_pwm;  ///< Signed PWM sent to the right motor [-255..255]
   int16_t wheel_yaw_mrad_s;  ///< Wheel-derived chassis yaw rate [milli-rad/s]
   int16_t imu_yaw_mrad_s;  ///< IMU gyro chassis yaw rate [milli-rad/s] (raw)
+  int16_t accel_peak_mg;  ///< Peak |accel − gravity baseline| [milli-g]: impact magnitude
   uint8_t slip_flags;  ///< See DRIVE_SLIP_FLAG_* (IMU-to-odometry discrepancy)
   uint16_t crc;  ///< CRC-16 CCITT over all preceding bytes
 };
 
-// pkt_drive_telem_t::slip_flags bits (mirror of mowgli_protocol.h).
+// pkt_drive_telem_t::slip_flags bits (mirror of mowgli_protocol.h). hard hit +
+// wheels stalled = IMPACT&STALL; hard hit + wheels dig = IMPACT&!STALL; soft
+// high-grass stall = BOG; loaded blade = BLADE_BOG.
 constexpr uint8_t DRIVE_SLIP_FLAG_YAW = (1u << 0);  ///< wheel vs gyro yaw residual
 constexpr uint8_t DRIVE_SLIP_FLAG_STALL = (1u << 1);  ///< commanded but wheels stalled
+constexpr uint8_t DRIVE_SLIP_FLAG_IMPACT = (1u << 2);  ///< IMU accel peak: hard collision
+constexpr uint8_t DRIVE_SLIP_FLAG_BOG = (1u << 3);  ///< wheels bog below command: high grass
+constexpr uint8_t DRIVE_SLIP_FLAG_BLADE_BOG = (1u << 4);  ///< blade RPM collapsed under load
 
 /**
  * @brief Blade motor status packet from STM32 (PACKET_ID_LL_BLADE_STATUS = 0x05).
@@ -297,6 +303,6 @@ static_assert(sizeof(LlCmdVel) == 11u, "LlCmdVel layout mismatch");
 static_assert(sizeof(LlCmdBlade) == 5u, "LlCmdBlade layout mismatch");
 static_assert(sizeof(LlBladeStatus) == 16u, "LlBladeStatus layout mismatch");
 static_assert(sizeof(LlSetDrivePid) == 33u, "LlSetDrivePid layout mismatch");
-static_assert(sizeof(LlDriveTelem) == 16u, "LlDriveTelem layout mismatch");
+static_assert(sizeof(LlDriveTelem) == 18u, "LlDriveTelem layout mismatch");
 
 }  // namespace mowgli_hardware

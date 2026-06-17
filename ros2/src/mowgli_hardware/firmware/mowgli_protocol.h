@@ -335,9 +335,15 @@ extern "C"
     uint16_t crc; /**< CRC-16 CCITT over preceding bytes */
   } pkt_set_drive_pid_t;
 
-  /* pkt_drive_telem_t::slip_flags bits — firmware IMU-to-odometry detector. */
+  /* pkt_drive_telem_t::slip_flags bits — firmware IMU-to-odometry detector.
+   * hard hit + wheels stalled = IMPACT&STALL; hard hit + wheels dig =
+   * IMPACT&!STALL; soft high-grass stall = BOG; loaded blade = BLADE_BOG. */
 #define DRIVE_SLIP_FLAG_YAW (1u << 0) /**< wheel vs gyro yaw-rate residual over threshold */
 #define DRIVE_SLIP_FLAG_STALL (1u << 1) /**< commanded motion but wheels not turning */
+#define DRIVE_SLIP_FLAG_IMPACT (1u << 2) /**< IMU acceleration peak: hard collision */
+#define DRIVE_SLIP_FLAG_BOG \
+  (1u << 3) /**< wheels turning but well below command, no impact: high grass */
+#define DRIVE_SLIP_FLAG_BLADE_BOG (1u << 4) /**< blade on but RPM collapsed vs free-running max */
 
   /**
    * @brief Drive-loop telemetry packet — Firmware -> Host (PKT_ID_DRIVE_TELEM = 0x06).
@@ -360,6 +366,7 @@ extern "C"
     int16_t right_pwm; /**< Signed PWM sent to the right motor [-255..255] */
     int16_t wheel_yaw_mrad_s; /**< Wheel-derived chassis yaw rate [milli-rad/s] */
     int16_t imu_yaw_mrad_s; /**< IMU gyro chassis yaw rate [milli-rad/s] (raw) */
+    int16_t accel_peak_mg; /**< Peak |accel − gravity baseline| [milli-g]: impact magnitude */
     uint8_t slip_flags; /**< See DRIVE_SLIP_FLAG_* */
     uint16_t crc; /**< CRC-16 CCITT over preceding bytes */
   } pkt_drive_telem_t;
@@ -413,7 +420,7 @@ extern "C"
   _Static_assert(sizeof(pkt_hl_state_t) == 5u, "pkt_hl_state_t layout unexpected");
   _Static_assert(sizeof(pkt_cmd_vel_t) == 11u, "pkt_cmd_vel_t layout unexpected");
   _Static_assert(sizeof(pkt_set_drive_pid_t) == 33u, "pkt_set_drive_pid_t layout unexpected");
-  _Static_assert(sizeof(pkt_drive_telem_t) == 16u, "pkt_drive_telem_t layout unexpected");
+  _Static_assert(sizeof(pkt_drive_telem_t) == 18u, "pkt_drive_telem_t layout unexpected");
 #endif
 
 #ifdef __cplusplus

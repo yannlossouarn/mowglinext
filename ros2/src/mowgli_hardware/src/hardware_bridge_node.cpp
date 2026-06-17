@@ -1318,11 +1318,13 @@ private:
 
     const float wheel_yaw = static_cast<float>(pkt.wheel_yaw_mrad_s) / 1000.0F;
     const float imu_yaw = static_cast<float>(pkt.imu_yaw_mrad_s) / 1000.0F;
+    const float accel_peak_g = static_cast<float>(pkt.accel_peak_mg) / 1000.0F;
 
     // Layout: [l_target, r_target, l_actual, r_actual, l_pwm, r_pwm,
-    //          wheel_yaw, imu_yaw, yaw_residual, slip_flags]. Velocities m/s
-    // (telem + cached odom are mm/s), yaw rates rad/s, PWM signed [-255..255],
-    // slip_flags = firmware IMU-to-odometry detector (DRIVE_SLIP_FLAG_*).
+    //          wheel_yaw, imu_yaw, yaw_residual, accel_peak_g, slip_flags].
+    // Velocities m/s (telem + cached odom are mm/s), yaw rates rad/s, PWM signed
+    // [-255..255], accel_peak in g, slip_flags = firmware IMU-to-odometry detector
+    // (DRIVE_SLIP_FLAG_* — YAW/STALL/IMPACT/BOG/BLADE_BOG).
     std_msgs::msg::Float32MultiArray msg;
     msg.data = {static_cast<float>(pkt.left_target_mm_s) / 1000.0F,
                 static_cast<float>(pkt.right_target_mm_s) / 1000.0F,
@@ -1333,6 +1335,7 @@ private:
                 wheel_yaw,
                 imu_yaw,
                 wheel_yaw - imu_yaw,
+                accel_peak_g,
                 static_cast<float>(pkt.slip_flags)};
     pub_drive_telem_->publish(msg);
 
@@ -1344,12 +1347,16 @@ private:
       RCLCPP_WARN_THROTTLE(get_logger(),
                            *get_clock(),
                            1000,
-                           "Drive discrepancy flags=0x%02X (wheel_yaw=%.2f imu_yaw=%.2f "
-                           "residual=%.2f rad/s)",
+                           "Drive discrepancy flags=0x%02X (yaw_residual=%.2f rad/s "
+                           "accel_peak=%.2f g): YAW=%d STALL=%d IMPACT=%d BOG=%d BLADE_BOG=%d",
                            pkt.slip_flags,
-                           wheel_yaw,
-                           imu_yaw,
-                           wheel_yaw - imu_yaw);
+                           wheel_yaw - imu_yaw,
+                           accel_peak_g,
+                           (pkt.slip_flags & DRIVE_SLIP_FLAG_YAW) ? 1 : 0,
+                           (pkt.slip_flags & DRIVE_SLIP_FLAG_STALL) ? 1 : 0,
+                           (pkt.slip_flags & DRIVE_SLIP_FLAG_IMPACT) ? 1 : 0,
+                           (pkt.slip_flags & DRIVE_SLIP_FLAG_BOG) ? 1 : 0,
+                           (pkt.slip_flags & DRIVE_SLIP_FLAG_BLADE_BOG) ? 1 : 0);
     }
   }
 

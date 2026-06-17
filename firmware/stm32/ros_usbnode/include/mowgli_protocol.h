@@ -360,9 +360,18 @@ typedef struct {
 } pkt_set_drive_pid_t;
 
 /* pkt_drive_telem_t::slip_flags bits — firmware IMU-to-odometry discrepancy
- * detector (see wheelTicks_handler). */
-#define DRIVE_SLIP_FLAG_YAW   (1u << 0) /**< |wheel yaw-rate − gyro yaw-rate| over threshold: stick-slip / wheel-slip / impact-induced rotation */
-#define DRIVE_SLIP_FLAG_STALL (1u << 1) /**< commanded motion but wheels not turning: obstruction / collision / deadband stall */
+ * detector (see update_slip_detector / the impact + blade-bog detectors).
+ *
+ * Collision taxonomy (host derives the sub-cases from the combination):
+ *   hard hit, wheels stalled  -> IMPACT & STALL
+ *   hard hit, wheels dig in    -> IMPACT & !STALL  (wheels still turning)
+ *   soft stall in high grass   -> BOG              (no impact, wheels bog down)
+ *   blade loaded in high grass -> BLADE_BOG */
+#define DRIVE_SLIP_FLAG_YAW       (1u << 0) /**< |wheel yaw-rate − gyro yaw-rate| over threshold: stick-slip / wheel-slip / impact-induced rotation */
+#define DRIVE_SLIP_FLAG_STALL     (1u << 1) /**< commanded motion but wheels not turning: obstruction / deadband stall */
+#define DRIVE_SLIP_FLAG_IMPACT    (1u << 2) /**< IMU acceleration peak: a hard collision (combine with STALL for the sub-case) */
+#define DRIVE_SLIP_FLAG_BOG       (1u << 3) /**< wheels turning but well below the commanded speed, no impact: soft resistance / high grass */
+#define DRIVE_SLIP_FLAG_BLADE_BOG (1u << 4) /**< blade commanded on but RPM collapsed vs its free-running max: blade loaded (slow the advance) */
 
 /**
  * @brief Drive-loop telemetry packet — Firmware -> Host (PKT_ID_DRIVE_TELEM = 0x06).
@@ -371,12 +380,12 @@ typedef struct {
  * velocity and the signed PWM the firmware actually sent to the PAC5210 (after
  * feedforward + deadband breakaway + any PI trim), plus the IMU-to-odometry
  * discrepancy detector: the chassis yaw rate from the wheel encoders and from
- * the IMU gyro (so the host can take the residual), and slip_flags raised by the
- * firmware when they disagree (stick-slip / wheel-slip) or the wheels stall under
- * command (obstruction / collision). The host pairs this with the measured
- * velocity from PKT_ID_ODOMETRY to monitor the velocity->PWM mapping while tuning.
+ * the IMU gyro (so the host can take the residual), an IMU acceleration-peak
+ * magnitude for hard-collision detection, and slip_flags (stick-slip / stall /
+ * impact / bog / blade-bog). The host pairs this with PKT_ID_ODOMETRY (velocity)
+ * and PKT_ID_BLADE_STATUS (blade rpm/power) to interpret and retune thresholds.
  *
- * Wire size: 16 bytes (must match sizeof(LlDriveTelem) in ll_datatypes.hpp).
+ * Wire size: 18 bytes (must match sizeof(LlDriveTelem) in ll_datatypes.hpp).
  */
 typedef struct {
     uint8_t  type;              /**< PKT_ID_DRIVE_TELEM */
@@ -386,6 +395,7 @@ typedef struct {
     int16_t  right_pwm;         /**< Signed PWM sent to the right motor [-255..255] */
     int16_t  wheel_yaw_mrad_s;  /**< Wheel-derived chassis yaw rate [milli-rad/s] */
     int16_t  imu_yaw_mrad_s;    /**< IMU gyro chassis yaw rate [milli-rad/s] (raw) */
+    int16_t  accel_peak_mg;     /**< Peak |accel − gravity baseline| [milli-g]: impact magnitude */
     uint8_t  slip_flags;        /**< See DRIVE_SLIP_FLAG_* */
     uint16_t crc;               /**< CRC-16 CCITT over preceding bytes */
 } pkt_drive_telem_t;
@@ -456,7 +466,7 @@ _Static_assert(sizeof(pkt_heartbeat_t) ==  5u, "pkt_heartbeat_t layout unexpecte
 _Static_assert(sizeof(pkt_hl_state_t)  ==  5u, "pkt_hl_state_t layout unexpected");
 _Static_assert(sizeof(pkt_cmd_vel_t)   == 11u, "pkt_cmd_vel_t layout unexpected");
 _Static_assert(sizeof(pkt_set_drive_pid_t) == 33u, "pkt_set_drive_pid_t layout unexpected");
-_Static_assert(sizeof(pkt_drive_telem_t)   == 16u, "pkt_drive_telem_t layout unexpected");
+_Static_assert(sizeof(pkt_drive_telem_t)   == 18u, "pkt_drive_telem_t layout unexpected");
 #endif
 
 #ifdef __cplusplus
