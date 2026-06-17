@@ -335,16 +335,21 @@ extern "C"
     uint16_t crc; /**< CRC-16 CCITT over preceding bytes */
   } pkt_set_drive_pid_t;
 
+  /* pkt_drive_telem_t::slip_flags bits — firmware IMU-to-odometry detector. */
+#define DRIVE_SLIP_FLAG_YAW (1u << 0) /**< wheel vs gyro yaw-rate residual over threshold */
+#define DRIVE_SLIP_FLAG_STALL (1u << 1) /**< commanded motion but wheels not turning */
+
   /**
    * @brief Drive-loop telemetry packet — Firmware -> Host (PKT_ID_DRIVE_TELEM = 0x06).
    *
    * Sent at ~25 Hz from the motor loop. Reports, per wheel, the commanded target
-   * velocity and the signed PWM the firmware actually sent to the PAC5210 (after
-   * feedforward + deadband breakaway + any PI trim). The host pairs this with the
-   * measured velocity from PKT_ID_ODOMETRY to monitor the velocity->PWM mapping
-   * while tuning the drive loop at runtime.
+   * velocity and the signed PWM the firmware sent to the PAC5210, plus the
+   * IMU-to-odometry discrepancy detector: the wheel-derived and IMU-gyro chassis
+   * yaw rates (host takes the residual) and slip_flags raised when they disagree
+   * (stick-slip / wheel-slip) or the wheels stall under command (obstruction /
+   * collision). Paired with PKT_ID_ODOMETRY to monitor the velocity->PWM mapping.
    *
-   * Wire size: 11 bytes (must match sizeof(LlDriveTelem) in ll_datatypes.hpp).
+   * Wire size: 16 bytes (must match sizeof(LlDriveTelem) in ll_datatypes.hpp).
    */
   typedef struct
   {
@@ -353,6 +358,9 @@ extern "C"
     int16_t right_target_mm_s; /**< Commanded right wheel velocity [mm/s] */
     int16_t left_pwm; /**< Signed PWM sent to the left motor [-255..255] */
     int16_t right_pwm; /**< Signed PWM sent to the right motor [-255..255] */
+    int16_t wheel_yaw_mrad_s; /**< Wheel-derived chassis yaw rate [milli-rad/s] */
+    int16_t imu_yaw_mrad_s; /**< IMU gyro chassis yaw rate [milli-rad/s] (raw) */
+    uint8_t slip_flags; /**< See DRIVE_SLIP_FLAG_* */
     uint16_t crc; /**< CRC-16 CCITT over preceding bytes */
   } pkt_drive_telem_t;
 
@@ -405,7 +413,7 @@ extern "C"
   _Static_assert(sizeof(pkt_hl_state_t) == 5u, "pkt_hl_state_t layout unexpected");
   _Static_assert(sizeof(pkt_cmd_vel_t) == 11u, "pkt_cmd_vel_t layout unexpected");
   _Static_assert(sizeof(pkt_set_drive_pid_t) == 33u, "pkt_set_drive_pid_t layout unexpected");
-  _Static_assert(sizeof(pkt_drive_telem_t) == 11u, "pkt_drive_telem_t layout unexpected");
+  _Static_assert(sizeof(pkt_drive_telem_t) == 16u, "pkt_drive_telem_t layout unexpected");
 #endif
 
 #ifdef __cplusplus

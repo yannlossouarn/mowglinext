@@ -1316,16 +1316,41 @@ private:
     LlDriveTelem pkt{};
     std::memcpy(&pkt, data, sizeof(LlDriveTelem));
 
-    // Layout: [l_target, r_target, l_actual, r_actual, l_pwm, r_pwm].
-    // Velocities in m/s (telem + cached odom are mm/s); PWM signed [-255..255].
+    const float wheel_yaw = static_cast<float>(pkt.wheel_yaw_mrad_s) / 1000.0F;
+    const float imu_yaw = static_cast<float>(pkt.imu_yaw_mrad_s) / 1000.0F;
+
+    // Layout: [l_target, r_target, l_actual, r_actual, l_pwm, r_pwm,
+    //          wheel_yaw, imu_yaw, yaw_residual, slip_flags]. Velocities m/s
+    // (telem + cached odom are mm/s), yaw rates rad/s, PWM signed [-255..255],
+    // slip_flags = firmware IMU-to-odometry detector (DRIVE_SLIP_FLAG_*).
     std_msgs::msg::Float32MultiArray msg;
     msg.data = {static_cast<float>(pkt.left_target_mm_s) / 1000.0F,
                 static_cast<float>(pkt.right_target_mm_s) / 1000.0F,
                 static_cast<float>(last_odom_left_mm_s_) / 1000.0F,
                 static_cast<float>(last_odom_right_mm_s_) / 1000.0F,
                 static_cast<float>(pkt.left_pwm),
-                static_cast<float>(pkt.right_pwm)};
+                static_cast<float>(pkt.right_pwm),
+                wheel_yaw,
+                imu_yaw,
+                wheel_yaw - imu_yaw,
+                static_cast<float>(pkt.slip_flags)};
     pub_drive_telem_->publish(msg);
+
+    // Surface a discrepancy as a throttled warning so it shows up in logs even
+    // when nobody is watching the telemetry topic (the flag still rides the
+    // topic for fusion_graph / the tuning node / the GUI to consume).
+    if (pkt.slip_flags != 0u)
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(),
+                           *get_clock(),
+                           1000,
+                           "Drive discrepancy flags=0x%02X (wheel_yaw=%.2f imu_yaw=%.2f "
+                           "residual=%.2f rad/s)",
+                           pkt.slip_flags,
+                           wheel_yaw,
+                           imu_yaw,
+                           wheel_yaw - imu_yaw);
+    }
   }
 
   void handle_odometry(const uint8_t* data, std::size_t len)

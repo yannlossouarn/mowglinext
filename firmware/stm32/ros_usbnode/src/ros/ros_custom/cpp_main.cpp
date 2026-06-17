@@ -162,6 +162,35 @@ static volatile float g_hold_kp = 4.0f;
 #define HOLD_MAX_PWM    120.0f
 
 /* ---------------------------------------------------------------------------
+ * IMU-to-odometry discrepancy detector
+ * ---------------------------------------------------------------------------
+ * Flags stick-slip / wheel-slip / impact from the residual between the chassis
+ * yaw rate the WHEEL ENCODERS imply ((v_r - v_l)/WHEEL_BASE) and the one the IMU
+ * GYRO measures, plus a stall flag when a real velocity is commanded but the
+ * wheels aren't turning (obstruction / collision / deadband stall). Computed in
+ * wheelTicks_handler at the ~50 Hz odom cadence; the raw rates + flags ride the
+ * drive-telem packet so the host can take its own residual / threshold too.
+ *
+ * The gyro here is RAW (the host bias-corrects); a ~0.05 rad/s raw bias sits well
+ * under the yaw threshold, and an EMA + a few-sample debounce reject transients.
+ * Thresholds are deliberately gross — this is a flag, not a precise estimator. */
+#define SLIP_EMA_ALPHA       0.3f   /* low-pass on |yaw residual| */
+#define SLIP_YAW_THRESH_RPS  0.35f  /* |wheel yaw − gyro yaw| flag threshold [rad/s] */
+#define SLIP_YAW_PERSIST     3u     /* consecutive samples over threshold to latch */
+#define STALL_CMD_MPS        0.08f  /* commanded |wheel speed| considered "moving" */
+#define STALL_MEAS_MPS       0.02f  /* measured |wheel speed| considered "stopped" */
+#define STALL_PERSIST        5u     /* consecutive samples to latch a stall */
+
+/* Latest raw IMU yaw rate [rad/s], published by broadcast_handler, read by the
+ * detector in wheelTicks_handler. Single-writer/single-reader, both on the main
+ * loop — volatile is belt-and-suspenders. */
+static volatile float g_imu_gyro_z = 0.0f;
+/* Detector outputs (read by the drive-telem builder in motors_handler). */
+static volatile int16_t g_wheel_yaw_mrad_s = 0;
+static volatile int16_t g_imu_yaw_mrad_s = 0;
+static volatile uint8_t g_slip_flags = 0u;
+
+/* ---------------------------------------------------------------------------
  * Blade motor control state
  * ---------------------------------------------------------------------------*/
 static volatile uint8_t target_blade_on_off = 0;
@@ -207,6 +236,7 @@ static uint32_t last_odom_tick = 0;
 
 /* Forward declarations */
 static void update_blade_led(void);
+static void update_slip_detector(int16_t left_v_mm_s, int16_t right_v_mm_s);
 
 /* ---------------------------------------------------------------------------
  * COBS packet handlers (Host -> Firmware)
@@ -703,6 +733,9 @@ extern "C" void motors_handler()
             telem.right_target_mm_s = (int16_t)(r_target * 1000.0f);
             telem.left_pwm          = sent_l;
             telem.right_pwm         = sent_r;
+            telem.wheel_yaw_mrad_s  = g_wheel_yaw_mrad_s;
+            telem.imu_yaw_mrad_s    = g_imu_yaw_mrad_s;
+            telem.slip_flags        = g_slip_flags;
             mowgli_comms_send(&telem, sizeof(telem));
         }
 
@@ -822,6 +855,60 @@ extern "C" void wheelTicks_handler(
     odom.right_velocity_mm_s  = right_v_mm_s;
 
     mowgli_comms_send_odometry(&odom);
+
+    /* IMU-to-odometry discrepancy detector (see the SLIP_* block above). */
+    update_slip_detector(left_v_mm_s, right_v_mm_s);
+}
+
+/// @brief Compare the wheel-implied chassis yaw rate to the IMU gyro and flag a
+///        discrepancy (stick-slip / wheel-slip / impact), plus a stall flag when
+///        a real command produces no wheel motion (obstruction / collision).
+///
+/// Results are stashed in g_wheel_yaw_mrad_s / g_imu_yaw_mrad_s / g_slip_flags
+/// for the drive-telem packet. Pure integer/float math, no I/O.
+static void update_slip_detector(int16_t left_v_mm_s, int16_t right_v_mm_s)
+{
+    const float v_l = (float)left_v_mm_s / 1000.0f;   // m/s
+    const float v_r = (float)right_v_mm_s / 1000.0f;
+    const float wheel_yaw = (v_r - v_l) / (float)WHEEL_BASE;  // rad/s, CCW+
+    const float gyro_yaw = g_imu_gyro_z;                      // rad/s, raw
+
+    // Low-passed |residual| with a short debounce so a single noisy frame can't
+    // raise the flag, but a sustained disagreement does within ~60 ms.
+    static float resid_ema = 0.0f;
+    static uint8_t yaw_count = 0u;
+    static uint8_t stall_count = 0u;
+    resid_ema += SLIP_EMA_ALPHA * (fabsf(wheel_yaw - gyro_yaw) - resid_ema);
+    if (resid_ema > SLIP_YAW_THRESH_RPS) {
+        if (yaw_count < SLIP_YAW_PERSIST) {
+            yaw_count++;
+        }
+    } else {
+        yaw_count = 0u;
+    }
+
+    // Stall: a meaningful forward/turn command but the wheels aren't moving.
+    const float cmd = (fabsf(left_target_mps) + fabsf(right_target_mps)) * 0.5f;
+    const float meas = (fabsf(v_l) + fabsf(v_r)) * 0.5f;
+    if (cmd > STALL_CMD_MPS && meas < STALL_MEAS_MPS) {
+        if (stall_count < STALL_PERSIST) {
+            stall_count++;
+        }
+    } else {
+        stall_count = 0u;
+    }
+
+    uint8_t flags = 0u;
+    if (yaw_count >= SLIP_YAW_PERSIST) {
+        flags |= DRIVE_SLIP_FLAG_YAW;
+    }
+    if (stall_count >= STALL_PERSIST) {
+        flags |= DRIVE_SLIP_FLAG_STALL;
+    }
+
+    g_wheel_yaw_mrad_s = (int16_t)pid_constrain(wheel_yaw * 1000.0f, -32767.0f, 32767.0f);
+    g_imu_yaw_mrad_s = (int16_t)pid_constrain(gyro_yaw * 1000.0f, -32767.0f, 32767.0f);
+    g_slip_flags = flags;
 }
 
 /* ---------------------------------------------------------------------------
@@ -856,6 +943,7 @@ extern "C" void broadcast_handler()
         imu_pkt.gyro_rads[0] = gx;
         imu_pkt.gyro_rads[1] = gy;
         imu_pkt.gyro_rads[2] = gz;
+        g_imu_gyro_z = gz;  // feed the IMU-to-odometry discrepancy detector
 #else
         imu_pkt.gyro_rads[0] = 0.0f;
         imu_pkt.gyro_rads[1] = 0.0f;
