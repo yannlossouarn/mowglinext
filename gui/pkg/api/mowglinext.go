@@ -14,6 +14,7 @@ import (
 
 	"github.com/cedbossneo/mowglinext/pkg/msgs/geometry"
 	"github.com/cedbossneo/mowglinext/pkg/msgs/mowgli"
+	stdmsgs "github.com/cedbossneo/mowglinext/pkg/msgs/std"
 	"github.com/cedbossneo/mowglinext/pkg/types"
 	"github.com/docker/distribution/uuid"
 	"github.com/gin-gonic/gin"
@@ -75,7 +76,7 @@ func topicSubscribeInterval(topic string) (int, bool) {
 	case "diagnostics", "status", "highLevelStatus", "btLog", "map",
 		"path", "plan", "power", "emergency", "dockingSensor",
 		"robotDescription", "recordingTrajectory",
-		"fusionDiag":
+		"fusionDiag", "driveTuningStatus":
 		return -1, true
 	default:
 		return -1, false
@@ -314,6 +315,8 @@ func SubscriberRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			def, err = subscribe(provider, c, conn, "magYaw", 200)
 		case "fusionDiag":
 			def, err = subscribe(provider, c, conn, "fusionDiag", -1)
+		case "driveTuningStatus":
+			def, err = subscribe(provider, c, conn, "driveTuningStatus", -1)
 		default:
 			log.Printf("SubscriberRoute: unknown topic %q", topic)
 			return
@@ -341,7 +344,7 @@ func SubscriberRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 // @Router /mowglinext/publish/{topic} [get]
 func PublisherRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 	group.GET("/publish/:topic", func(c *gin.Context) {
-		var err error
+		topic := c.Param("topic")
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
 			return
@@ -353,17 +356,31 @@ func PublisherRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				c.Error(err)
 				break
 			}
-			var msgObj geometry.TwistStamped
-			err = json.Unmarshal(msg, &msgObj)
-			if err != nil {
-				log.Printf("PublisherRoute: unmarshal error: %v", err)
-				continue
-			}
-			err = provider.Publish("/cmd_vel_teleop", "geometry_msgs/msg/TwistStamped", &msgObj)
-			if err != nil {
-				log.Printf("PublisherRoute: publish error: %v", err)
-				// Don't break — foxglove may reconnect; keep the browser WebSocket alive
-				continue
+			switch topic {
+			case "driveTuningCommand":
+				// Browser sends the std_msgs/String JSON {"data": "<command json>"}.
+				var strObj stdmsgs.String
+				if err = json.Unmarshal(msg, &strObj); err != nil {
+					log.Printf("PublisherRoute: drive-tuning unmarshal error: %v", err)
+					continue
+				}
+				if err = provider.Publish("/drive_tuning_node/command",
+					"std_msgs/msg/String", &strObj); err != nil {
+					log.Printf("PublisherRoute: drive-tuning publish error: %v", err)
+					continue
+				}
+			default: // "joy" (and any legacy caller) -> teleop twist
+				var msgObj geometry.TwistStamped
+				if err = json.Unmarshal(msg, &msgObj); err != nil {
+					log.Printf("PublisherRoute: unmarshal error: %v", err)
+					continue
+				}
+				if err = provider.Publish("/cmd_vel_teleop",
+					"geometry_msgs/msg/TwistStamped", &msgObj); err != nil {
+					log.Printf("PublisherRoute: publish error: %v", err)
+					// Don't break — foxglove may reconnect; keep the WebSocket alive
+					continue
+				}
 			}
 		}
 	})

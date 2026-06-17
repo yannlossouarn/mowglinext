@@ -10,6 +10,7 @@ import { ContentType } from "../api/Api.ts";
 export type SettingsSection =
     | "hardware"
     | "drive_motor"
+    | "drive_tuning"
     | "ntrip"
     | "positioning"
     | "sensors"
@@ -52,6 +53,15 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
             "wheel_pid_kp", "wheel_pid_ki", "wheel_pid_kd",
             "wheel_pid_integral_limit", "wheel_pid_pwm_per_mps",
         ],
+    },
+    {
+        id: "drive_tuning",
+        label: "Drive Tuning",
+        icon: "experiment",
+        description: "Automated maneuver runs + descent optimizer for the drive params (drives the robot)",
+        // Interactive runner — no persisted params of its own (it tunes the
+        // live /hardware_bridge knobs via the drive_tuning_node).
+        keys: [],
     },
     {
         id: "ntrip",

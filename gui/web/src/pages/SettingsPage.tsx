@@ -16,6 +16,7 @@ import { useContainerRestart } from "../hooks/useContainerRestart.ts";
 import { SettingsNav } from "../components/settings/SettingsNav.tsx";
 import { HardwareSection } from "../components/settings/HardwareSection.tsx";
 import { DriveMotorSection } from "../components/settings/DriveMotorSection.tsx";
+import { DriveTuningSection } from "../components/settings/DriveTuningSection.tsx";
 import { NtripSection } from "../components/settings/NtripSection.tsx";
 import { PositioningSection } from "../components/settings/PositioningSection.tsx";
 import { SensorsSection } from "../components/settings/SensorsSection.tsx";
@@ -77,6 +78,8 @@ export const SettingsPage = () => {
                 return <HardwareSection values={values} onChange={handleChange} onBulkChange={handleBulkChange} />;
             case "drive_motor":
                 return <DriveMotorSection values={values} onChange={handleChange} />;
+            case "drive_tuning":
+                return <DriveTuningSection />;
             case "ntrip":
                 return <NtripSection values={values} onChange={handleChange} />;
             case "positioning":

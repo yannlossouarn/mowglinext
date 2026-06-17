@@ -59,6 +59,9 @@ var topicMap = map[string]topicDef{
 	// mag_yaw_publisher.py in mowgli_localization.
 	"cogHeading": {"/imu/cog_heading", "sensor_msgs/msg/Imu"},
 	"magYaw":     {"/imu/mag_yaw", "sensor_msgs/msg/Imu"},
+	// Drive-tuning node status stream (JSON in a std_msgs/String). Command
+	// goes the other way via PublisherRoute -> /drive_tuning_node/command.
+	"driveTuningStatus": {"/drive_tuning_node/status", "std_msgs/msg/String"},
 }
 
 // ---------------------------------------------------------------------------

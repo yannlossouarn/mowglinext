@@ -209,11 +209,17 @@ def generate_launch_description() -> LaunchDescription:
         default_value=_early_fusion_graph_period,
         description="fusion_graph factor-graph node cadence (seconds). Default read from mowgli_robot.yaml; hardware fallback 0.04 = 25 Hz, recommended 0.1 = 10 Hz on Pi. Sim default 0.02 = 50 Hz.",
     )
+    drive_tuning_arg = DeclareLaunchArgument(
+        "drive_tuning",
+        default_value="false",
+        description="Launch the drive_tuning_node (maneuver runner + descent optimizer for the GUI Drive Tuning panel). Default off — it subscribes to odom/imu/cmd_vel continuously, so only enable it during a tuning session.",
+    )
 
     # ------------------------------------------------------------------
     # Resolved substitutions
     # ------------------------------------------------------------------
     use_sim_time = LaunchConfiguration("use_sim_time")
+    drive_tuning = LaunchConfiguration("drive_tuning")
     use_lidar = LaunchConfiguration("use_lidar")
     use_magnetometer = LaunchConfiguration("use_magnetometer")
     use_scan_matching = LaunchConfiguration("use_scan_matching")
@@ -974,9 +980,21 @@ def generate_launch_description() -> LaunchDescription:
     # ------------------------------------------------------------------
     # LaunchDescription
     # ------------------------------------------------------------------
+    # Drive-tuning node (opt-in). Standalone rclpy script (matches the repo's
+    # ros2/scripts convention; no ament_python package). The GUI Drive Tuning
+    # panel talks to it over /drive_tuning_node/{command,status}.
+    drive_tuning_node = ExecuteProcess(
+        condition=IfCondition(drive_tuning),
+        cmd=["python3", "/ros2_ws/scripts/drive_tuning_node.py"],
+        name="drive_tuning_node",
+        output="screen",
+    )
+
     return LaunchDescription(
         [
             use_sim_time_arg,
+            drive_tuning_arg,
+            drive_tuning_node,
             use_lidar_arg,
             use_magnetometer_arg,
             use_scan_matching_arg,
