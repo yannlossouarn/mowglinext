@@ -367,6 +367,9 @@ extern "C"
     int16_t wheel_yaw_mrad_s; /**< Wheel-derived chassis yaw rate [milli-rad/s] */
     int16_t imu_yaw_mrad_s; /**< IMU gyro chassis yaw rate [milli-rad/s] (raw) */
     int16_t accel_peak_mg; /**< Peak |accel − gravity baseline| [milli-g]: impact magnitude */
+    uint8_t left_load; /**< Left drive-controller load byte [0-255] (~current/duty; uncalibrated) */
+    uint8_t
+        right_load; /**< Right drive-controller load byte [0-255] (~current/duty; uncalibrated) */
     uint8_t slip_flags; /**< See DRIVE_SLIP_FLAG_* */
     uint16_t crc; /**< CRC-16 CCITT over preceding bytes */
   } pkt_drive_telem_t;
@@ -420,7 +423,7 @@ extern "C"
   _Static_assert(sizeof(pkt_hl_state_t) == 5u, "pkt_hl_state_t layout unexpected");
   _Static_assert(sizeof(pkt_cmd_vel_t) == 11u, "pkt_cmd_vel_t layout unexpected");
   _Static_assert(sizeof(pkt_set_drive_pid_t) == 33u, "pkt_set_drive_pid_t layout unexpected");
-  _Static_assert(sizeof(pkt_drive_telem_t) == 18u, "pkt_drive_telem_t layout unexpected");
+  _Static_assert(sizeof(pkt_drive_telem_t) == 20u, "pkt_drive_telem_t layout unexpected");
 #endif
 
 #ifdef __cplusplus

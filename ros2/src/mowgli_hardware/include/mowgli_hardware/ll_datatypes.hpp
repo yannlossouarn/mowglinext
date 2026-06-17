@@ -260,6 +260,8 @@ struct LlDriveTelem
   int16_t wheel_yaw_mrad_s;  ///< Wheel-derived chassis yaw rate [milli-rad/s]
   int16_t imu_yaw_mrad_s;  ///< IMU gyro chassis yaw rate [milli-rad/s] (raw)
   int16_t accel_peak_mg;  ///< Peak |accel − gravity baseline| [milli-g]: impact magnitude
+  uint8_t left_load;  ///< Left drive-controller load byte [0-255] (~current/duty; uncalibrated)
+  uint8_t right_load;  ///< Right drive-controller load byte [0-255] (~current/duty; uncalibrated)
   uint8_t slip_flags;  ///< See DRIVE_SLIP_FLAG_* (IMU-to-odometry discrepancy)
   uint16_t crc;  ///< CRC-16 CCITT over all preceding bytes
 };
@@ -303,6 +305,6 @@ static_assert(sizeof(LlCmdVel) == 11u, "LlCmdVel layout mismatch");
 static_assert(sizeof(LlCmdBlade) == 5u, "LlCmdBlade layout mismatch");
 static_assert(sizeof(LlBladeStatus) == 16u, "LlBladeStatus layout mismatch");
 static_assert(sizeof(LlSetDrivePid) == 33u, "LlSetDrivePid layout mismatch");
-static_assert(sizeof(LlDriveTelem) == 18u, "LlDriveTelem layout mismatch");
+static_assert(sizeof(LlDriveTelem) == 20u, "LlDriveTelem layout mismatch");
 
 }  // namespace mowgli_hardware

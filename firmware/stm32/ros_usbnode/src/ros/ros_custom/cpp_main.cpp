@@ -763,6 +763,8 @@ extern "C" void motors_handler()
             telem.wheel_yaw_mrad_s  = g_wheel_yaw_mrad_s;
             telem.imu_yaw_mrad_s    = g_imu_yaw_mrad_s;
             telem.accel_peak_mg     = g_accel_peak_mg;
+            telem.left_load         = left_power;   // drive-controller load bytes
+            telem.right_load        = right_power;  // (extern from drivemotor.c)
             telem.slip_flags        = g_slip_flags;
             mowgli_comms_send(&telem, sizeof(telem));
         }
