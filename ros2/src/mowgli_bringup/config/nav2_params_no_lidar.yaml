@@ -33,6 +33,14 @@ global_costmap:
 local_costmap:
   local_costmap:
     ros__parameters:
+      # No environment sensor feeds this costmap (static_layer + inflation only),
+      # so each periodic assemble just re-copies an unchanged map. Run it at a
+      # trickle rate to keep the loop off the Pi's thermal budget — the base
+      # default (10 Hz) only makes sense when a LiDAR is updating it. Real
+      # obstacles are injected as persistent marks via map_server + global
+      # replan (the collision-detector path), not through this local costmap.
+      update_frequency: 0.5
+      publish_frequency: 1.0
       plugins: ["static_layer", "inflation_layer"]
 
       static_layer:
