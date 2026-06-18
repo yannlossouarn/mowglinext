@@ -30,7 +30,7 @@ namespace
 //   [l_target, r_target, l_actual, r_actual, l_pwm, r_pwm, wheel_yaw, imu_yaw,
 //    yaw_residual, accel_peak_g, left_load, right_load, slip_flags]
 constexpr int kSlipFlagsIndex = 12;
-constexpr int kImpactBit = 1 << 2;    // DRIVE_SLIP_FLAG_IMPACT
+constexpr int kImpactBit = 1 << 2;  // DRIVE_SLIP_FLAG_IMPACT
 constexpr double kDebounceSec = 3.0;  // ignore repeat IMPACT within this window
 
 double yaw_from_quat(const geometry_msgs::msg::Quaternion& q)
@@ -50,20 +50,42 @@ DetectCollision::DetectCollision(const std::string& name, const BT::NodeConfig& 
   // Match the publisher's reliable QoS (hardware_bridge publishes at depth 10)
   // so we never miss the (rare, brief) IMPACT edge.
   telem_sub_ = ctx_->node->create_subscription<std_msgs::msg::Float32MultiArray>(
-      "/hardware_bridge/drive_telemetry", rclcpp::QoS(10),
+      "/hardware_bridge/drive_telemetry",
+      rclcpp::QoS(10),
       std::bind(&DetectCollision::onTelem, this, std::placeholders::_1));
+  // Runtime inhibit (latched so a late-set state is honored). When disabled,
+  // IMPACT edges are tracked but never latched, so no keepout is promoted —
+  // used by the tuning tool to bump an obstacle repeatedly for test purposes.
+  enable_sub_ = ctx_->node->create_subscription<std_msgs::msg::Bool>(
+      "~/collision_keepout_enabled",
+      rclcpp::QoS(1).transient_local().reliable(),
+      std::bind(&DetectCollision::onEnable, this, std::placeholders::_1));
+}
+
+void DetectCollision::onEnable(std_msgs::msg::Bool::SharedPtr msg)
+{
+  enabled_ = msg->data;
+  RCLCPP_INFO(ctx_->node->get_logger(),
+              "Collision keepout creation %s",
+              msg->data ? "ENABLED" : "INHIBITED");
 }
 
 void DetectCollision::onTelem(std_msgs::msg::Float32MultiArray::SharedPtr msg)
 {
-  if (static_cast<int>(msg->data.size()) <= kSlipFlagsIndex) {
+  if (static_cast<int>(msg->data.size()) <= kSlipFlagsIndex)
+  {
     return;
   }
   const bool impact = (static_cast<int>(msg->data[kSlipFlagsIndex]) & kImpactBit) != 0;
   const bool rising = impact && !last_impact_;
-  last_impact_ = impact;
-  if (!rising) {
+  last_impact_ = impact;  // tracked even when inhibited, so re-arming is edge-clean
+  if (!rising)
+  {
     return;
+  }
+  if (!enabled_)
+  {
+    return;  // keepout creation inhibited (e.g. tuning-tool collision tests)
   }
 
   std::lock_guard<std::mutex> lk(ctx_->context_mutex);
@@ -75,28 +97,35 @@ void DetectCollision::onTelem(std_msgs::msg::Float32MultiArray::SharedPtr msg)
   // mission (battery dock + resume included). The obstacle is attached to an
   // area downstream; if no area is active yet (early undock) the recovery still
   // stops/backs off but PromoteCollisionObstacle skips the (area-less) promote.
-  if (ctx_->current_command != 1 /* COMMAND_START */) {
+  if (ctx_->current_command != 1 /* COMMAND_START */)
+  {
     return;
   }
-  if (ctx_->collision_pending) {
+  if (ctx_->collision_pending)
+  {
     return;  // a promotion is already queued
   }
   const auto now = ctx_->node->now();
-  if (last_latch_.nanoseconds() != 0 && (now - last_latch_).seconds() < kDebounceSec) {
+  if (last_latch_.nanoseconds() != 0 && (now - last_latch_).seconds() < kDebounceSec)
+  {
     return;
   }
 
   geometry_msgs::msg::PoseStamped pose;
-  try {
+  try
+  {
     const auto tf = ctx_->tf_buffer->lookupTransform("map", "base_footprint", tf2::TimePointZero);
     pose.header = tf.header;
     pose.pose.position.x = tf.transform.translation.x;
     pose.pose.position.y = tf.transform.translation.y;
     pose.pose.position.z = tf.transform.translation.z;
     pose.pose.orientation = tf.transform.rotation;
-  } catch (const std::exception& ex) {
+  }
+  catch (const std::exception& ex)
+  {
     RCLCPP_WARN(ctx_->node->get_logger(),
-                "DetectCollision: TF map<-base_footprint failed, dropping impact: %s", ex.what());
+                "DetectCollision: TF map<-base_footprint failed, dropping impact: %s",
+                ex.what());
     return;
   }
 
@@ -105,7 +134,9 @@ void DetectCollision::onTelem(std_msgs::msg::Float32MultiArray::SharedPtr msg)
   last_latch_ = now;
   RCLCPP_WARN(ctx_->node->get_logger(),
               "Firmware IMPACT during autonomous op (area %d) at (%.2f, %.2f) — will recover",
-              ctx_->current_area, pose.pose.position.x, pose.pose.position.y);
+              ctx_->current_area,
+              pose.pose.position.x,
+              pose.pose.position.y);
 }
 
 BT::NodeStatus DetectCollision::tick()
@@ -143,21 +174,24 @@ BT::NodeStatus PromoteCollisionObstacle::tick()
   int area_idx = -1;
   {
     std::lock_guard<std::mutex> lk(ctx_->context_mutex);
-    if (!ctx_->collision_pending) {
+    if (!ctx_->collision_pending)
+    {
       return BT::NodeStatus::FAILURE;
     }
     pose = ctx_->collision_pose;
     area_idx = ctx_->current_area;
   }
 
-  if (area_idx < 0) {
+  if (area_idx < 0)
+  {
     // No area to attach the obstacle to — clear the latch and bail.
     std::lock_guard<std::mutex> lk(ctx_->context_mutex);
     ctx_->collision_pending = false;
     return BT::NodeStatus::FAILURE;
   }
 
-  if (probe) {
+  if (probe)
+  {
     // FUTURE: drive slowly along/around the contact to trace the obstacle's
     // real footprint before promoting. Not implemented yet — fall through to
     // the fixed box so the behavior stays safe.
@@ -186,7 +220,8 @@ BT::NodeStatus PromoteCollisionObstacle::tick()
   auto req = std::make_shared<PromoteObstacle::Request>();
   req->area_index = static_cast<uint32_t>(area_idx);
   req->obstacle_id = 0;  // 0 => use the polygon field directly
-  for (const auto& c : corners) {
+  for (const auto& c : corners)
+  {
     geometry_msgs::msg::Point32 p;
     p.x = static_cast<float>(cx + c[0] * std::cos(yaw) - c[1] * std::sin(yaw));
     p.y = static_cast<float>(cy + c[0] * std::sin(yaw) + c[1] * std::cos(yaw));
@@ -204,8 +239,12 @@ BT::NodeStatus PromoteCollisionObstacle::tick()
     ctx_->collision_pending = false;
   }
   RCLCPP_INFO(ctx_->node->get_logger(),
-              "Promoted collision keepout (%.2f x %.2f m) to area %d at (%.2f, %.2f)", width, depth,
-              area_idx, cx, cy);
+              "Promoted collision keepout (%.2f x %.2f m) to area %d at (%.2f, %.2f)",
+              width,
+              depth,
+              area_idx,
+              cx,
+              cy);
   return BT::NodeStatus::SUCCESS;
 }
 

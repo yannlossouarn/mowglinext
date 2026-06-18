@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -22,6 +23,7 @@
 #include "mowgli_behavior/bt_context.hpp"
 #include "mowgli_interfaces/srv/promote_obstacle.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 
 namespace mowgli_behavior
@@ -40,20 +42,32 @@ namespace mowgli_behavior
 // collision is pending, FAILURE otherwise. On a sensor-less robot (no
 // LiDAR/depth/radar) the firmware IMPACT detector is the ONLY obstacle source,
 // so this is what feeds Option B.
+//
+// Runtime inhibit: publish std_msgs/Bool{false} (latched) on
+// ~/collision_keepout_enabled to suppress keepout creation while the firmware
+// IMPACT telemetry keeps flowing — e.g. the tuning tool deliberately bumps an
+// obstacle repeatedly and must NOT have it promoted/avoided each time. Default
+// enabled; publish true to re-arm.
 class DetectCollision : public BT::ConditionNode
 {
 public:
   DetectCollision(const std::string& name, const BT::NodeConfig& config);
 
-  static BT::PortsList providedPorts() { return {}; }
+  static BT::PortsList providedPorts()
+  {
+    return {};
+  }
 
   BT::NodeStatus tick() override;
 
 private:
   void onTelem(std_msgs::msg::Float32MultiArray::SharedPtr msg);
+  void onEnable(std_msgs::msg::Bool::SharedPtr msg);
 
   std::shared_ptr<BTContext> ctx_;
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr telem_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr enable_sub_;
+  std::atomic<bool> enabled_{true};
   bool last_impact_{false};
   rclcpp::Time last_latch_;
 };
@@ -91,14 +105,15 @@ public:
     // of the keepout (no "start in collision") even though the obstacle is at
     // the true contact position. Defaults match the YardForce500; the XML should
     // bind {chassis_*} so the box follows the operator-configured shape.
-    return {
-        BT::InputPort<double>("chassis_width", 0.40, "Robot width across heading (m)"),
-        BT::InputPort<double>("chassis_length", 0.54, "Robot length along heading (m)"),
-        BT::InputPort<double>("chassis_center_x", 0.18,
-                              "base_footprint->chassis-center distance along heading (m)"),
-        BT::InputPort<double>("box_depth", 0.10, "Obstacle box depth along heading (m)"),
-        BT::InputPort<bool>("probe_obstacle", false,
-                            "FUTURE: slowly probe the obstacle to map its real footprint")};
+    return {BT::InputPort<double>("chassis_width", 0.40, "Robot width across heading (m)"),
+            BT::InputPort<double>("chassis_length", 0.54, "Robot length along heading (m)"),
+            BT::InputPort<double>("chassis_center_x",
+                                  0.18,
+                                  "base_footprint->chassis-center distance along heading (m)"),
+            BT::InputPort<double>("box_depth", 0.10, "Obstacle box depth along heading (m)"),
+            BT::InputPort<bool>("probe_obstacle",
+                                false,
+                                "FUTURE: slowly probe the obstacle to map its real footprint")};
   }
 
   BT::NodeStatus tick() override;
