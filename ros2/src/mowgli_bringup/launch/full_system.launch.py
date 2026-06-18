@@ -290,6 +290,11 @@ def generate_launch_description() -> LaunchDescription:
             # around discrete obstacles uses the correct robot footprint
             # and the wall-vs-obstacle threshold operators tune per site.
             {"chassis_width": float(robot_params.get("chassis_width", 0.40))},
+            # chassis_length + chassis_center_x let PromoteCollisionObstacle place
+            # a collision keepout at the real front bumper (center_x + length/2),
+            # matching the URDF/Nav2 footprint built from the same dims.
+            {"chassis_length": float(robot_params.get("chassis_length", 0.54))},
+            {"chassis_center_x": float(robot_params.get("chassis_center_x", 0.18))},
             # Mirror the chassis_safety_inset coverage_server gets from
             # navigation.launch.py (operator override, else chassis_width/2).
             # The BT no longer pre-gates polygon size (the coverage server

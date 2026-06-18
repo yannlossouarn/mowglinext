@@ -248,6 +248,20 @@ struct BTContext
   /// don't fall through to MarkBlockedAndSkip and get permanently DEAD-marked.
   std::chrono::steady_clock::time_point last_collision_stop_end{};
 
+  // -----------------------------------------------------------------------
+  // Firmware IMPACT collision -> persistent keepout (Option B, sensor-less)
+  // -----------------------------------------------------------------------
+
+  /// Set true by DetectCollision's drive_telemetry watcher on a rising-edge
+  /// firmware IMPACT (slip_flags bit 2) while mowing; consumed and cleared by
+  /// PromoteCollisionObstacle once the obstacle is written to map_server.
+  /// Guarded by context_mutex (set from the subscription callback thread).
+  bool collision_pending{false};
+
+  /// Map-frame robot pose captured when IMPACT fired — the obstacle box is
+  /// placed forward of this pose. Valid only while collision_pending is true.
+  geometry_msgs::msg::PoseStamped collision_pose;
+
   /// Number of obstacle-backoff recoveries already attempted in the
   /// current session. Reset by EndSession.
   int obstacle_backoff_count{0};

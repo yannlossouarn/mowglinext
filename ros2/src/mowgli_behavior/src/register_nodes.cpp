@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #include "mowgli_behavior/calibration_nodes.hpp"
+#include "mowgli_behavior/collision_nodes.hpp"
 #include "mowgli_behavior/condition_nodes.hpp"
 #include "mowgli_behavior/coverage_nodes.hpp"
 #include "mowgli_behavior/docking_nodes.hpp"
@@ -48,6 +49,7 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   factory.registerNodeType<Nav2Active>("Nav2Active");
   factory.registerNodeType<IsObstacleStuck>("IsObstacleStuck");
   factory.registerNodeType<WasRecentlyInCollisionStop>("WasRecentlyInCollisionStop");
+  factory.registerNodeType<DetectCollision>("DetectCollision");
 
   // Action nodes
   factory.registerNodeType<SetMowerEnabled>("SetMowerEnabled");
@@ -60,6 +62,7 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   factory.registerNodeType<NavigateToPose>("NavigateToPose");
   factory.registerNodeType<NavigateInsideBoundary>("NavigateInsideBoundary");
   factory.registerNodeType<BackUp>("BackUp");
+  factory.registerNodeType<PromoteCollisionObstacle>("PromoteCollisionObstacle");
   factory.registerNodeType<ClearCommand>("ClearCommand");
   factory.registerNodeType<EndSession>("EndSession");
   factory.registerNodeType<IncrementSkippedSwaths>("IncrementSkippedSwaths");

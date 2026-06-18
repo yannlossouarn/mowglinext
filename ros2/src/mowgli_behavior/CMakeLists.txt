@@ -41,6 +41,7 @@ find_package(rcl_interfaces REQUIRED)
 
 add_executable(behavior_tree_node
   src/behavior_tree_node.cpp
+  src/collision_nodes.cpp
   src/condition_nodes.cpp
   src/navigation_nodes.cpp
   src/docking_nodes.cpp

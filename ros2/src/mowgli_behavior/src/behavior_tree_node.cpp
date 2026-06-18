@@ -503,9 +503,18 @@ private:
 
     // Robot footprint — used by PlanCoverageArea to inset the perimeter
     // ring path so the chassis (wider than the mower deck) stays inside
-    // the polygon. Default matches YardForce 500 (mowgli_robot.yaml).
-    declare_parameter<double>("chassis_width", 0.40);
-    declare_parameter<double>("chassis_length", 0.60);
+    // the polygon. Default matches YardForce 500 (mowgli_robot.yaml). Also
+    // exposed on the blackboard (with chassis_center_x) so the BT XML can bind
+    // them into PromoteCollisionObstacle, which places a collision keepout at
+    // the real front bumper (chassis_center_x + chassis_length/2) rather than a
+    // hardcoded box. These are the same dims that build the URDF and Nav2
+    // footprint, edited via the GUI Settings.
+    const double chassis_width = declare_parameter<double>("chassis_width", 0.40);
+    const double chassis_length = declare_parameter<double>("chassis_length", 0.60);
+    const double chassis_center_x = declare_parameter<double>("chassis_center_x", 0.18);
+    blackboard_->set("chassis_width", chassis_width);
+    blackboard_->set("chassis_length", chassis_length);
+    blackboard_->set("chassis_center_x", chassis_center_x);
 
     // Battery voltage curve — configurable via mowgli_robot.yaml.
     // YardForce500 SLA packs top out around 28.0 V on the dock; the previous
