@@ -600,7 +600,7 @@ class DriveTuning(Node):
         try:
             cmd = json.loads(msg.data)
         except (ValueError, TypeError):
-            self.get_logger().warn("ignoring malformed ~/command JSON")
+            self.get_logger().warn(f"ignoring malformed ~/command JSON: {msg.data!r}")
             return
         action = cmd.get("action")
         if action == "stop":

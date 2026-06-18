@@ -355,9 +355,17 @@ func (c *Client) Advertise(topic, msgType string) error {
 	return nil
 }
 
-// Publish sends a message on topic. The message is JSON-encoded and sent as a
-// client publish message. An optional schemaName (e.g. "geometry_msgs/msg/Twist")
-// tells the bridge how to convert JSON to CDR for ROS2 publishing.
+// Publish sends a message on topic as a client publish message.
+//
+// foxglove_bridge does NOT honor JSON-encoded client publishes — it treats the
+// payload as CDR regardless of the advertised encoding, so a JSON frame is
+// misparsed and the subscriber receives a default (empty) message. (This is the
+// same limitation the cmd_vel relay exists to bypass.) So when we have a parsed
+// schema for this message type — cached from the server's advertisement of any
+// topic of the same type we subscribe to — we serialize to CDR exactly like
+// CallService does. Only if no schema is available do we fall back to the
+// (bridge-unsupported) JSON path, which preserves prior behavior for callers
+// whose type we've never seen.
 func (c *Client) Publish(topic string, msg interface{}, schemaName ...string) error {
 	if !c.connected.Load() {
 		return fmt.Errorf("foxglove: Publish %s: not connected", topic)
@@ -368,21 +376,36 @@ func (c *Client) Publish(topic string, msg interface{}, schemaName ...string) er
 		return fmt.Errorf("foxglove: Publish marshal: %w", err)
 	}
 
+	sn := ""
+	if len(schemaName) > 0 {
+		sn = schemaName[0]
+	}
+
+	encoding := "json"
+	payload := data
+	if sn != "" {
+		if schema := c.schemaForType(sn); schema != nil {
+			if cdrData, cerr := SerializeCDR(data, schema); cerr == nil {
+				encoding = "cdr"
+				payload = cdrData
+			} else {
+				logrus.WithError(cerr).WithField("topic", topic).
+					Warn("foxglove: Publish CDR serialize failed, falling back to JSON")
+			}
+		}
+	}
+
 	c.advMu.Lock()
 	chanID, ok := c.advertised[topic]
 	if !ok {
 		chanID = c.chanIDCounter.Add(1)
-		sn := ""
-		if len(schemaName) > 0 {
-			sn = schemaName[0]
-		}
 		advMsg := clientAdvertise{
 			Op: "advertise",
 			Channels: []clientChannelDef{
 				{
 					ID:         chanID,
 					Topic:      topic,
-					Encoding:   "json",
+					Encoding:   encoding,
 					SchemaName: sn,
 				},
 			},
@@ -395,11 +418,11 @@ func (c *Client) Publish(topic string, msg interface{}, schemaName ...string) er
 	}
 	c.advMu.Unlock()
 
-	// Binary frame: opcode(1) + channelID(4) + data
-	buf := make([]byte, 5+len(data))
+	// Binary frame: opcode(1) + channelID(4) + payload
+	buf := make([]byte, 5+len(payload))
 	buf[0] = clientBinMessageData
 	binary.LittleEndian.PutUint32(buf[1:5], chanID)
-	copy(buf[5:], data)
+	copy(buf[5:], payload)
 
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
@@ -407,6 +430,22 @@ func (c *Client) Publish(topic string, msg interface{}, schemaName ...string) er
 		return fmt.Errorf("foxglove: Publish: no connection")
 	}
 	return c.conn.WriteMessage(websocket.BinaryMessage, buf)
+}
+
+// schemaForType returns a parsed schema for the given ROS2 type name (e.g.
+// "std_msgs/msg/String") if any known channel carries it, else nil. Schemas are
+// cached from the server's channel advertisements, so a type we publish but
+// never subscribe to is still resolvable as long as some advertised topic uses
+// it — which lets Publish CDR-encode without a publish-side schema definition.
+func (c *Client) schemaForType(schemaName string) *msgSchema {
+	c.chanMu.RLock()
+	defer c.chanMu.RUnlock()
+	for _, ch := range c.channels {
+		if ch.def.SchemaName == schemaName && ch.schema != nil && len(ch.schema.Fields) > 0 {
+			return ch.schema
+		}
+	}
+	return nil
 }
 
 // CallService invokes a ROS2 service and blocks until a response arrives or
