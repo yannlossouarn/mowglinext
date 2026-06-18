@@ -43,7 +43,7 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -437,7 +437,19 @@ def generate_launch_description() -> LaunchDescription:
                 "capabilities": [
                     "clientPublish",
                     "services",
-                    "connectionGraph",
+                    # connectionGraph intentionally OMITTED: it makes the
+                    # bridge continuously poll and diff the full ROS graph
+                    # (~45 participants here) to stream pub/sub/service
+                    # topology to clients. The Go GUI discovers channels via
+                    # the standard advertise messages (channelsByID), not the
+                    # connection graph, so this was pure idle CPU (~part of
+                    # the 4.3% foxglove_bridge baseline). Re-add only if a
+                    # client genuinely needs the live topic-graph view.
+                    # NOTE: topic_whitelist is deliberately left broad — the
+                    # bridge only serializes topics a client actually
+                    # SUBSCRIBES to, so narrowing the whitelist saves no
+                    # steady-state CPU and only risks silently breaking GUI
+                    # panels that subscribe to an excluded topic.
                     # Allow Foxglove Studio to read AND set ROS parameters live
                     # (e.g. tuning controller_server / coverage critics in the
                     # field). param_whitelist (default '.*') gates which params.
@@ -495,8 +507,17 @@ def generate_launch_description() -> LaunchDescription:
     # bystander-permanently-shapes-the-map effect at the cost of slower
     # adaptation to real new obstacles). Toggle off via the
     # use_obstacle_tracker launch arg if it misbehaves on real grass.
+    # Also gated on use_lidar: the tracker DBSCAN-clusters LiDAR obstacle
+    # returns out of the global costmap obstacle layer, which only exists in
+    # the LiDAR variant. With no LiDAR there is nothing to cluster, so it was
+    # idle CPU + a wasted DDS participant (~1.0% of a core measured docked,
+    # 2026-06-18). Requires BOTH the feature toggle AND a LiDAR.
     obstacle_tracker_node = Node(
-        condition=IfCondition(LaunchConfiguration("use_obstacle_tracker")),
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration("use_obstacle_tracker"),
+            "'.lower() in ('true', '1') and '",
+            use_lidar, "'.lower() in ('true', '1')",
+        ])),
         package="mowgli_map",
         executable="obstacle_tracker_node",
         name="obstacle_tracker",

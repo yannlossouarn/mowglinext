@@ -877,7 +877,13 @@ def generate_launch_description() -> LaunchDescription:
     # Motion-compensates the sequential LaserScan rays so a 360° scan
     # acquired while rotating doesn't appear smeared by ω×scan_period in
     # the map frame. Output /scan_deskewed feeds the rest of the pipeline.
+    # Gated on use_lidar: with no LiDAR there is no /scan, so this node has
+    # no input and its output (/scan_deskewed) feeds only LiDAR-mode
+    # consumers (fusion_graph scan-matching, costmap_scan_filter). Launching
+    # it in GPS-only mode was pure idle CPU + a wasted DDS participant
+    # (~2.7% of a core measured docked, 2026-06-18).
     scan_deskew = Node(
+        condition=IfCondition(use_lidar),
         package="mowgli_localization",
         executable="scan_deskew_node",
         name="scan_deskew",
@@ -892,7 +898,13 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
+    # Gated on use_lidar: its output (/scan_costmap) is consumed only by the
+    # LiDAR-variant obstacle_layer + scan-based collision_monitor
+    # (nav2_params_lidar.yaml). In no-lidar mode nothing subscribes, so this
+    # was idle CPU + a wasted DDS participant (~2.0% of a core measured
+    # docked, 2026-06-18).
     costmap_scan_filter = Node(
+        condition=IfCondition(use_lidar),
         package="mowgli_localization",
         executable="costmap_scan_filter_node",
         name="costmap_scan_filter",

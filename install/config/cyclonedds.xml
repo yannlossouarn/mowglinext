@@ -7,10 +7,14 @@
       </Interfaces>
     </General>
     <Discovery>
-      <!-- Raised from default (9) to keep us comfortably above the
-           total participant count once every container + short-lived
-           CLI clients have joined. -->
-      <MaxAutoParticipantIndex>500</MaxAutoParticipantIndex>
+      <!-- Sized to sit comfortably above the steady-state participant
+           count (measured ~45 nodes across the mowgli-ros2 + gps
+           containers) plus short-lived CLI clients and GUI reconnects,
+           while keeping discovery-index probing far below the old 500.
+           Do NOT drop near the live node count: participants past this
+           index silently fail discovery, which manifests as the
+           intermittent GPS loss seen at the default of 9. -->
+      <MaxAutoParticipantIndex>128</MaxAutoParticipantIndex>
     </Discovery>
   </Domain>
 </CycloneDDS>
