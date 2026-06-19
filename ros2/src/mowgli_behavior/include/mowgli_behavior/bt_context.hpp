@@ -132,6 +132,14 @@ struct BTContext
   /// Areas whose every swath is completed-or-skipped this session. Skipped by
   /// GetNextUnmowedArea. Cleared by EndSession.
   std::set<uint32_t> completed_areas;
+  /// Areas that had a collision keepout promoted this session (set by
+  /// PromoteCollisionObstacle). For these, FollowStrip switches from the
+  /// deterministic index-resume model to a CELL-PRECISE rewrite: it splits each
+  /// planned swath into runs of un-mowed cells (per map_server mow_progress)
+  /// and drives only those — so the obstacle re-plan never re-mows the band
+  /// covered before the collision. Normal areas keep the index model. Cleared
+  /// by EndSession.
+  std::set<uint32_t> cell_precise_areas;
 
   // -----------------------------------------------------------------------
   // Derived / convenience fields (computed from latest_* messages)

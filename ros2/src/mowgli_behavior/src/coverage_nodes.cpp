@@ -15,7 +15,6 @@
 
 #include "mowgli_behavior/coverage_nodes.hpp"
 
-#include <algorithm>
 #include <cmath>
 
 #include "action_msgs/msg/goal_status.hpp"
@@ -87,32 +86,56 @@ BT::NodeStatus FollowStrip::onStart()
   transit_active_ = false;
   swath_goal_sent_ = false;
   area_idx_ = (ctx->current_area >= 0) ? static_cast<uint32_t>(ctx->current_area) : 0u;
-  // Swath-completion model (replaces the mow_progress cell grid): record this
-  // area's swath count and resume at the first swath NOT already mowed. F2C is
-  // deterministic for a fixed area+params, so indices are stable across the
-  // re-plan that a recharge/preempt resume triggers.
+
+  if (!mow_progress_sub_)
+  {
+    // Latched (map_server publishes transient_local). Created early so the
+    // cell-precise rewrite below has coverage data on a post-collision re-plan
+    // (the sub is established on an earlier pass; data has arrived by then).
+    mow_progress_sub_ = ctx->node->create_subscription<nav_msgs::msg::OccupancyGrid>(
+        "/map_server_node/mow_progress",
+        rclcpp::QoS(1).transient_local().reliable(),
+        [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
+        {
+          mow_progress_ = msg;
+        });
+  }
+
+  // Cell-precise rewrite for areas with a promoted collision keepout: replace
+  // each planned swath with its un-mowed runs (per mow_progress) so the obstacle
+  // re-plan drives ONLY un-mowed ground — never re-mowing the band covered
+  // before the collision. Normal areas keep the deterministic index-resume model
+  // below (F2C is deterministic there, so indices are stable across a
+  // recharge/preempt re-plan).
+  if (mow_progress_ && ctx->cell_precise_areas.count(area_idx_) > 0)
+  {
+    std::vector<nav_msgs::msg::Path> runs;
+    for (const auto& sw : swaths_)
+    {
+      for (auto& piece : splitUnmowed(sw))
+      {
+        runs.push_back(std::move(piece));
+      }
+    }
+    RCLCPP_INFO(ctx->node->get_logger(),
+                "FollowStrip: area %u cell-precise re-plan — %zu swath(s) -> %zu un-mowed run(s)",
+                area_idx_,
+                swaths_.size(),
+                runs.size());
+    swaths_.swap(runs);
+    ctx->area_completed_swaths[area_idx_].clear();  // the runs ARE the un-mowed work
+  }
+
+  // Index-resume model: record this area's swath count and resume at the first
+  // swath NOT already mowed this session. F2C is deterministic for a fixed
+  // area+params, so indices are stable across a recharge/preempt re-plan.
   ctx->area_swath_count[area_idx_] = swaths_.size();
   swath_idx_ = 0;
   {
-    auto& done = ctx->area_completed_swaths[area_idx_];
-    // Skip swaths already done this session (index model) OR already covered per
-    // mow_progress (cell truth). The obstacle re-plan changes the segment list,
-    // so the index model alone can't tell which new swaths overlap the
-    // already-mowed region — mow_progress prevents re-mowing them.
-    while (swath_idx_ < swaths_.size())
+    const auto& done = ctx->area_completed_swaths[area_idx_];
+    while (swath_idx_ < swaths_.size() && done.count(swath_idx_) > 0)
     {
-      if (done.count(swath_idx_) > 0)
-      {
-        ++swath_idx_;
-        continue;
-      }
-      if (swathAlreadyMowed(swath_idx_))
-      {
-        done.insert(swath_idx_);  // count covered swaths as done (area-complete accounting)
-        ++swath_idx_;
-        continue;
-      }
-      break;
+      ++swath_idx_;
     }
     if (swath_idx_ >= swaths_.size())
     {
@@ -145,18 +168,6 @@ BT::NodeStatus FollowStrip::onStart()
     // the active segment.
     coverage_plan_pub_ = ctx->node->create_publisher<nav_msgs::msg::Path>(
         "/controller_server/FollowCoveragePath/global_plan", rclcpp::QoS(1).transient_local());
-  }
-  if (!mow_progress_sub_)
-  {
-    // Latched (map_server publishes transient_local); used to skip swaths that
-    // overlap the already-mowed region on a post-collision re-plan.
-    mow_progress_sub_ = ctx->node->create_subscription<nav_msgs::msg::OccupancyGrid>(
-        "/map_server_node/mow_progress",
-        rclcpp::QoS(1).transient_local().reliable(),
-        [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
-        {
-          mow_progress_ = msg;
-        });
   }
   if (!follow_client_->wait_for_action_server(std::chrono::seconds(5)))
   {
@@ -198,45 +209,73 @@ double FollowStrip::distanceToSegmentStart(const std::shared_ptr<BTContext>& ctx
   }
 }
 
-bool FollowStrip::swathAlreadyMowed(std::size_t idx) const
+bool FollowStrip::poseMowed(double x, double y) const
 {
   const auto grid = mow_progress_;
-  if (!grid || grid->info.width == 0 || grid->info.height == 0 || grid->info.resolution <= 0.0 ||
-      idx >= swaths_.size())
-  {
-    return false;  // no coverage data → defer to the index-based completion model
-  }
-  const auto& poses = swaths_[idx].poses;
-  if (poses.empty())
+  if (!grid || grid->info.width == 0 || grid->info.height == 0 || grid->info.resolution <= 0.0)
   {
     return false;
   }
   // mow_progress is in map_frame, same as the swath poses — no TF needed.
-  const double ox = grid->info.origin.position.x;
-  const double oy = grid->info.origin.position.y;
-  const double res = grid->info.resolution;
-  const int w = static_cast<int>(grid->info.width);
-  const int h = static_cast<int>(grid->info.height);
-  // Sample up to ~40 poses (bounded cost — densified swaths can have thousands).
-  const std::size_t stride = std::max<std::size_t>(1, poses.size() / 40);
-  std::size_t sampled = 0;
-  std::size_t mowed = 0;
-  for (std::size_t i = 0; i < poses.size(); i += stride)
+  const int col = static_cast<int>((x - grid->info.origin.position.x) / grid->info.resolution);
+  const int row = static_cast<int>((y - grid->info.origin.position.y) / grid->info.resolution);
+  if (col < 0 || col >= static_cast<int>(grid->info.width) || row < 0 ||
+      row >= static_cast<int>(grid->info.height))
   {
-    const int col = static_cast<int>((poses[i].pose.position.x - ox) / res);
-    const int row = static_cast<int>((poses[i].pose.position.y - oy) / res);
-    if (col < 0 || col >= w || row < 0 || row >= h)
+    return false;  // outside the grid → treat as un-mowed
+  }
+  return grid->data[static_cast<std::size_t>(row) * grid->info.width + col] >= 100;
+}
+
+std::vector<nav_msgs::msg::Path> FollowStrip::splitUnmowed(const nav_msgs::msg::Path& path) const
+{
+  std::vector<nav_msgs::msg::Path> runs;
+  nav_msgs::msg::Path cur;
+  cur.header = path.header;
+  std::size_t bridged = 0;  // trailing mowed poses appended to bridge a short gap
+
+  auto close_run = [&]()
+  {
+    // Drop the trailing bridged-mowed tail, then keep the run if long enough.
+    if (bridged > 0 && cur.poses.size() >= bridged)
     {
+      cur.poses.resize(cur.poses.size() - bridged);
+    }
+    if (cur.poses.size() >= kMinRunPoses)
+    {
+      runs.push_back(std::move(cur));
+    }
+    cur = nav_msgs::msg::Path{};
+    cur.header = path.header;
+    bridged = 0;
+  };
+
+  for (const auto& ps : path.poses)
+  {
+    const bool mowed = poseMowed(ps.pose.position.x, ps.pose.position.y);
+    if (cur.poses.empty())
+    {
+      if (!mowed)
+      {
+        cur.poses.push_back(ps);  // start a run on the first un-mowed pose
+      }
+      continue;  // skip leading mowed poses
+    }
+    if (!mowed)
+    {
+      cur.poses.push_back(ps);
+      bridged = 0;
       continue;
     }
-    ++sampled;
-    if (grid->data[static_cast<std::size_t>(row) * static_cast<std::size_t>(w) + col] >= 100)
+    // Mowed pose inside a run: bridge a short gap (keep continuity), else cut.
+    cur.poses.push_back(ps);
+    if (++bridged > kGapMergePoses)
     {
-      ++mowed;
+      close_run();
     }
   }
-  return sampled > 0 &&
-         static_cast<double>(mowed) / static_cast<double>(sampled) >= kMowedSkipFraction;
+  close_run();
+  return runs;
 }
 
 bool FollowStrip::sendFollowGoal(const std::shared_ptr<BTContext>& ctx)
@@ -321,23 +360,11 @@ BT::NodeStatus FollowStrip::onRunning()
   auto advance = [&]() -> BT::NodeStatus
   {
     ++swath_idx_;
-    // Skip swaths already mowed in an earlier pass (index model) or already
-    // covered per mow_progress (so an obstacle re-plan doesn't re-mow them).
-    auto& done = ctx->area_completed_swaths[area_idx_];
-    while (swath_idx_ < swaths_.size())
+    // Skip any swaths already mowed in an earlier pass (resume).
+    const auto& done = ctx->area_completed_swaths[area_idx_];
+    while (swath_idx_ < swaths_.size() && done.count(swath_idx_) > 0)
     {
-      if (done.count(swath_idx_) > 0)
-      {
-        ++swath_idx_;
-        continue;
-      }
-      if (swathAlreadyMowed(swath_idx_))
-      {
-        done.insert(swath_idx_);
-        ++swath_idx_;
-        continue;
-      }
-      break;
+      ++swath_idx_;
     }
     if (swath_idx_ < swaths_.size())
     {

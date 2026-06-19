@@ -90,12 +90,14 @@ private:
   // Robot distance to the current segment's first pose (TF map→base_footprint);
   // returns a large value if TF is unavailable (forces the safe transit path).
   double distanceToSegmentStart(const std::shared_ptr<BTContext>& ctx) const;
-  // True if swaths_[idx] is already covered per the map_server mow_progress
-  // grid (>= kMowedSkipFraction of sampled poses over mowed cells). Lets a
-  // post-collision re-plan skip swaths that overlap the already-mowed region
-  // instead of re-mowing them. Returns false when no mow_progress is available
-  // (falls back to the index-based completion model).
-  bool swathAlreadyMowed(std::size_t idx) const;
+  // True if the map xy is over a mowed cell in the latest mow_progress grid.
+  bool poseMowed(double x, double y) const;
+  // Split a planned path into contiguous runs of UN-mowed poses (per
+  // mow_progress), bridging mowed gaps up to kGapMergePoses and dropping runs
+  // shorter than kMinRunPoses. Used (for cell_precise_areas only) so a
+  // post-collision re-plan drives just the un-mowed remainder — never re-mowing
+  // the band covered before the collision.
+  std::vector<nav_msgs::msg::Path> splitUnmowed(const nav_msgs::msg::Path& path) const;
 
   rclcpp_action::Client<Nav2FollowPath>::SharedPtr follow_client_;
   rclcpp_action::Client<Nav2Navigate>::SharedPtr nav_client_;
@@ -107,8 +109,8 @@ private:
   // receives the current segment.
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr coverage_plan_pub_;
   // Latest map_server mow_progress (0=unmowed, 100=mowed), latched. Used by
-  // swathAlreadyMowed to avoid re-mowing covered swaths after an obstacle
-  // re-plan (the index-based completion is reset then, since the plan changed).
+  // splitUnmowed (cell_precise_areas only) so a post-collision re-plan drives
+  // only un-mowed runs and never re-mows the band covered before the collision.
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr mow_progress_sub_;
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr mow_progress_;
   std::shared_future<FollowGoalHandle::SharedPtr> follow_future_;
@@ -133,10 +135,12 @@ private:
   // one op_width ≈ 0.16 m apart).
   static constexpr double kSegmentTransitGap = 0.6;
 
-  // A swath counts as already mowed when this fraction of its sampled poses sit
-  // over mowed cells; below it the swath has enough fresh ground to be worth
-  // driving (a partial overlap re-mows only the overlapped tail).
-  static constexpr double kMowedSkipFraction = 0.85;
+  // Cell-precise split (cell_precise_areas only). Bridge up to this many
+  // consecutive mowed poses inside an un-mowed run (absorbs mow_progress
+  // stamping gaps so the run isn't fragmented); densify step is ~0.05 m.
+  static constexpr std::size_t kGapMergePoses = 5;
+  // Drop un-mowed runs shorter than this (≈0.25 m) — not worth a separate goal.
+  static constexpr std::size_t kMinRunPoses = 5;
 
   // Blade spinup delay — wait before sending the FIRST segment goal
   static constexpr double kBladeSpinupDelaySec = 1.5;
