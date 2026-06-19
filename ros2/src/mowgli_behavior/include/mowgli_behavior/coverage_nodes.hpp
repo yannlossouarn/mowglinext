@@ -32,6 +32,7 @@
 #include "mowgli_interfaces/srv/mower_control.hpp"
 #include "nav2_msgs/action/follow_path.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
+#include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -89,6 +90,12 @@ private:
   // Robot distance to the current segment's first pose (TF map→base_footprint);
   // returns a large value if TF is unavailable (forces the safe transit path).
   double distanceToSegmentStart(const std::shared_ptr<BTContext>& ctx) const;
+  // True if swaths_[idx] is already covered per the map_server mow_progress
+  // grid (>= kMowedSkipFraction of sampled poses over mowed cells). Lets a
+  // post-collision re-plan skip swaths that overlap the already-mowed region
+  // instead of re-mowing them. Returns false when no mow_progress is available
+  // (falls back to the index-based completion model).
+  bool swathAlreadyMowed(std::size_t idx) const;
 
   rclcpp_action::Client<Nav2FollowPath>::SharedPtr follow_client_;
   rclcpp_action::Client<Nav2Navigate>::SharedPtr nav_client_;
@@ -99,6 +106,11 @@ private:
   // Latched (transient_local) so a late-subscribing goal checker still
   // receives the current segment.
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr coverage_plan_pub_;
+  // Latest map_server mow_progress (0=unmowed, 100=mowed), latched. Used by
+  // swathAlreadyMowed to avoid re-mowing covered swaths after an obstacle
+  // re-plan (the index-based completion is reset then, since the plan changed).
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr mow_progress_sub_;
+  nav_msgs::msg::OccupancyGrid::ConstSharedPtr mow_progress_;
   std::shared_future<FollowGoalHandle::SharedPtr> follow_future_;
   FollowGoalHandle::SharedPtr follow_handle_;
   // Inter-segment transit (NavigateToPose) state.
@@ -120,6 +132,11 @@ private:
   // Below it, RotationShim+MPPI close the gap themselves (adjacent swaths are
   // one op_width ≈ 0.16 m apart).
   static constexpr double kSegmentTransitGap = 0.6;
+
+  // A swath counts as already mowed when this fraction of its sampled poses sit
+  // over mowed cells; below it the swath has enough fresh ground to be worth
+  // driving (a partial overlap re-mows only the overlapped tail).
+  static constexpr double kMowedSkipFraction = 0.85;
 
   // Blade spinup delay — wait before sending the FIRST segment goal
   static constexpr double kBladeSpinupDelaySec = 1.5;

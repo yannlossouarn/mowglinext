@@ -241,9 +241,10 @@ BT::NodeStatus PromoteCollisionObstacle::tick()
     // halts the AreaLoop, which restarts and re-runs PlanCoverageArea — F2C now
     // re-plans WITH the obstacle hole, so the segment list changes and the old
     // completed-indices no longer map (they assume a deterministic, unchanged
-    // plan). Clearing makes FollowStrip follow the new obstacle-avoiding plan
-    // from the start; already-mowed cells are re-covered (mow_progress + the
-    // GetNextUnmowedArea no-progress guard still terminate the area cleanly).
+    // plan). Clearing avoids mis-skipping un-mowed swaths; FollowStrip then uses
+    // map_server mow_progress (cell truth) to skip swaths over the
+    // already-mowed region, so the new obstacle-avoiding plan covers only the
+    // genuinely un-mowed remainder — no re-mowing.
     ctx_->area_completed_swaths[static_cast<uint32_t>(area_idx)].clear();
   }
   RCLCPP_INFO(ctx_->node->get_logger(),
