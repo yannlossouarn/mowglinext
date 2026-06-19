@@ -237,6 +237,14 @@ BT::NodeStatus PromoteCollisionObstacle::tick()
   {
     std::lock_guard<std::mutex> lk(ctx_->context_mutex);
     ctx_->collision_pending = false;
+    // Invalidate this area's per-index swath completion. The collision guard
+    // halts the AreaLoop, which restarts and re-runs PlanCoverageArea — F2C now
+    // re-plans WITH the obstacle hole, so the segment list changes and the old
+    // completed-indices no longer map (they assume a deterministic, unchanged
+    // plan). Clearing makes FollowStrip follow the new obstacle-avoiding plan
+    // from the start; already-mowed cells are re-covered (mow_progress + the
+    // GetNextUnmowedArea no-progress guard still terminate the area cleanly).
+    ctx_->area_completed_swaths[static_cast<uint32_t>(area_idx)].clear();
   }
   RCLCPP_INFO(ctx_->node->get_logger(),
               "Promoted collision keepout (%.2f x %.2f m) to area %d at (%.2f, %.2f)",

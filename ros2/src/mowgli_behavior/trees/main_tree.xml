@@ -386,6 +386,33 @@
 
             <ReactiveSequence name="StripGuards">
 
+              <!-- Reactive collision guard (sensor-less obstacle handling).
+                   On a firmware IMPACT, DetectCollision latches the contact
+                   pose; we stop, back up 0.1 m for clearance, and promote a
+                   persistent keepout box at the contact point via map_server.
+                   Being a reactive guard, going RUNNING here HALTS the AreaLoop;
+                   when it completes the AreaLoop restarts and PlanCoverageArea
+                   re-plans the area WITH the new obstacle hole, so F2C emits
+                   segments that skip the obstacle area (the same re-plan path
+                   the rain/battery guards use). PromoteCollisionObstacle clears
+                   this area's swath completion so the new plan is followed
+                   fresh (old indices assumed an unchanged deterministic plan).
+                   Inhibited at runtime via the node's ~/collision_keepout_enabled
+                   topic (the tuning tool disables it for deliberate bumps). The
+                   box geometry is bound from the chassis form factor. -->
+              <Fallback name="CollisionGuard">
+                <Inverter><DetectCollision/></Inverter>
+                <Sequence name="CollisionRecover">
+                  <PublishHighLevelStatus state="2" state_name="COLLISION_KEEPOUT"/>
+                  <StopMoving/>
+                  <BackUp backup_dist="0.1" backup_speed="0.1"/>
+                  <PromoteCollisionObstacle
+                      chassis_width="{chassis_width}"
+                      chassis_length="{chassis_length}"
+                      chassis_center_x="{chassis_center_x}"/>
+                </Sequence>
+              </Fallback>
+
               <!-- Reactive rain check.
                    IsNewRain returns FAILURE outright when rain_mode == 0
                    (operator disabled rain handling); it also debounces by
