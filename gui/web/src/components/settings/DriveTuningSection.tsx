@@ -4,8 +4,11 @@ import {
     Button,
     Card,
     Descriptions,
+    Divider,
+    Segmented,
     Select,
     Space,
+    Steps,
     Tag,
     Typography,
 } from "antd";
@@ -32,6 +35,18 @@ const SUB_URI = "/api/mowglinext/subscribe/driveTuningStatus";
 const TELEM_SUB_URI = "/api/mowglinext/subscribe/driveTelemetry";
 
 type Status = Record<string, unknown>;
+
+// One step of the guided protocol, published by the node on `get_protocol`
+// (see PROTOCOL in ros2/scripts/drive_tuning_node.py).
+type ProtocolStep = {
+    id: string;
+    title: string;
+    params: string[];
+    maneuver: string;
+    clearance: string;
+    guidance: string;
+    optional?: boolean;
+};
 
 // /hardware_bridge/drive_telemetry Float32MultiArray layout (hardware_bridge_node.cpp).
 type Telem = {
@@ -93,17 +108,24 @@ const Combo: React.FC<{ combo?: Record<string, unknown> }> = ({ combo }) => {
 };
 
 export const DriveTuningSection: React.FC = () => {
+    const [mode, setMode] = useState<"guided" | "advanced">("guided");
     const [maneuver, setManeuver] = useState<string>("yaw_hunt");
+    const [protocol, setProtocol] = useState<ProtocolStep[]>([]);
+    const [current, setCurrent] = useState(0);
     const [status, setStatus] = useState<Status | null>(null);
     const [connected, setConnected] = useState(false);
     const cmdReady = useRef(false);
 
     const onStatus = useCallback((raw: string) => {
         const s = parseStatus(raw);
-        if (s) {
-            setConnected(true);
-            setStatus(s);
+        if (!s) return;
+        // The node answers `get_protocol` with a {protocol:[...]} message.
+        if (Array.isArray((s as { protocol?: unknown }).protocol)) {
+            setProtocol((s as { protocol: ProtocolStep[] }).protocol);
+            return;
         }
+        setConnected(true);
+        setStatus(s);
     }, []);
 
     const [telem, setTelem] = useState<Telem | null>(null);
@@ -145,9 +167,22 @@ export const DriveTuningSection: React.FC = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // Pull the protocol once the command channel is up; retry until it arrives.
+    useEffect(() => {
+        if (protocol.length > 0) return;
+        const id = setInterval(() => {
+            cmdStream.sendJsonMessage({ data: JSON.stringify({ action: "get_protocol" }) });
+        }, 1500);
+        return () => clearInterval(id);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [protocol.length]);
+
     const send = useCallback(
-        (action: string) => {
-            const command = action === "stop" ? { action } : { action, maneuver };
+        (action: string, step?: string) => {
+            let command: Record<string, unknown>;
+            if (action === "stop") command = { action };
+            else if (step) command = { action, step };
+            else command = { action, maneuver };
             cmdStream.sendJsonMessage({ data: JSON.stringify(command) });
         },
         [cmdStream, maneuver],
@@ -170,6 +205,11 @@ export const DriveTuningSection: React.FC = () => {
 
     const activeFlags = telem ? SLIP_FLAGS.filter((f) => (telem.flags & f.mask) !== 0) : [];
 
+    // In guided mode the active maneuver is the current step's; advanced mode
+    // uses the dropdown selection. Metrics/labels key off this.
+    const step = mode === "guided" ? protocol[current] : undefined;
+    const activeManeuver = step?.maneuver ?? maneuver;
+
     return (
         <div>
             <Alert
@@ -180,49 +220,152 @@ export const DriveTuningSection: React.FC = () => {
                 description="Runs real maneuvers (pivots, swaths, transits) to score and optimize the live drive params. Keep the area clear, the blade off, and the robot off the dock. Requires the drive_tuning_node to be running (launch with drive_tuning:=true, or run scripts/drive_tuning_node.py)."
             />
 
-            <Card size="small" style={{ marginBottom: 16 }}>
-                <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                    <div>
-                        <Text strong style={{ fontSize: 14 }}>
-                            <ExperimentOutlined style={{ marginRight: 6 }} />
-                            Maneuver
+            <Segmented
+                block
+                style={{ marginBottom: 16 }}
+                value={mode}
+                onChange={(v) => setMode(v as "guided" | "advanced")}
+                options={[
+                    { label: "Guided protocol", value: "guided" },
+                    { label: "Advanced (single maneuver)", value: "advanced" },
+                ]}
+            />
+
+            {mode === "guided" ? (
+                <Card size="small" style={{ marginBottom: 16 }} title="Guided drive tuning">
+                    {protocol.length === 0 ? (
+                        <Text type="secondary">
+                            Waiting for the protocol from <code>/drive_tuning_node</code> — start the
+                            node if this persists.
                         </Text>
-                        <Paragraph type="secondary" style={{ margin: "4px 0 0" }}>
-                            Run a single maneuver to score the current params, or optimize to
-                            coordinate-descend the firmware/drive knobs (deadband, hold gain,
-                            angular-rate gains) toward the lowest score for this maneuver.
-                        </Paragraph>
-                    </div>
-                    <Space wrap>
-                        <Select
-                            value={maneuver}
-                            onChange={setManeuver}
-                            options={MANEUVERS}
-                            style={{ minWidth: 320 }}
-                            disabled={busy}
-                        />
-                        <Button
-                            type="default"
-                            icon={<PlayCircleOutlined />}
-                            disabled={busy}
-                            onClick={() => send("run")}
-                        >
-                            Run once
-                        </Button>
-                        <Button
-                            type="primary"
-                            icon={<ThunderboltOutlined />}
-                            disabled={busy}
-                            onClick={() => send("optimize")}
-                        >
-                            Optimize
-                        </Button>
-                        <Button danger icon={<StopOutlined />} disabled={!busy} onClick={() => send("stop")}>
-                            Stop
-                        </Button>
+                    ) : (
+                        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                            <Paragraph type="secondary" style={{ margin: 0 }}>
+                                Tune the drive in order — each step builds on the ones above it. Read
+                                the placement note, position the robot, then Optimize. Move on when
+                                the score stops improving.
+                            </Paragraph>
+                            <Steps
+                                current={current}
+                                onChange={setCurrent}
+                                direction="vertical"
+                                size="small"
+                                items={protocol.map((s) => ({
+                                    title: s.title,
+                                    description: s.clearance,
+                                }))}
+                            />
+                            {step && (
+                                <Card size="small" type="inner" title={step.title}>
+                                    <Space direction="vertical" size={10} style={{ width: "100%" }}>
+                                        <Paragraph style={{ margin: 0 }}>{step.guidance}</Paragraph>
+                                        <Alert
+                                            type="info"
+                                            showIcon
+                                            message={`Place the robot: ${step.clearance}`}
+                                        />
+                                        <Space size={[4, 4]} wrap>
+                                            <Text type="secondary">Tunes:</Text>
+                                            {step.params.map((p) => (
+                                                <Tag key={p}>{p}</Tag>
+                                            ))}
+                                            {step.optional && <Tag color="default">optional</Tag>}
+                                        </Space>
+                                        <Space wrap>
+                                            <Button
+                                                icon={<PlayCircleOutlined />}
+                                                disabled={busy}
+                                                onClick={() => send("run_step", step.id)}
+                                            >
+                                                Test once
+                                            </Button>
+                                            <Button
+                                                type="primary"
+                                                icon={<ThunderboltOutlined />}
+                                                disabled={busy}
+                                                onClick={() => send("optimize_step", step.id)}
+                                            >
+                                                Optimize this step
+                                            </Button>
+                                            <Button
+                                                danger
+                                                icon={<StopOutlined />}
+                                                disabled={!busy}
+                                                onClick={() => send("stop")}
+                                            >
+                                                Stop
+                                            </Button>
+                                        </Space>
+                                        <Divider style={{ margin: "4px 0" }} />
+                                        <Space>
+                                            <Button
+                                                disabled={current === 0 || busy}
+                                                onClick={() => setCurrent((c) => Math.max(0, c - 1))}
+                                            >
+                                                ← Previous
+                                            </Button>
+                                            <Button
+                                                disabled={current >= protocol.length - 1 || busy}
+                                                onClick={() =>
+                                                    setCurrent((c) =>
+                                                        Math.min(protocol.length - 1, c + 1),
+                                                    )
+                                                }
+                                            >
+                                                Next step →
+                                            </Button>
+                                        </Space>
+                                    </Space>
+                                </Card>
+                            )}
+                        </Space>
+                    )}
+                </Card>
+            ) : (
+                <Card size="small" style={{ marginBottom: 16 }}>
+                    <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                        <div>
+                            <Text strong style={{ fontSize: 14 }}>
+                                <ExperimentOutlined style={{ marginRight: 6 }} />
+                                Maneuver
+                            </Text>
+                            <Paragraph type="secondary" style={{ margin: "4px 0 0" }}>
+                                Run a single maneuver to score the current params, or optimize to
+                                coordinate-descend the firmware/drive knobs (deadband, viscous, PI,
+                                hold, angular-rate gains) toward the lowest score for this maneuver.
+                            </Paragraph>
+                        </div>
+                        <Space wrap>
+                            <Select
+                                value={maneuver}
+                                onChange={setManeuver}
+                                options={MANEUVERS}
+                                style={{ minWidth: 320 }}
+                                disabled={busy}
+                            />
+                            <Button
+                                type="default"
+                                icon={<PlayCircleOutlined />}
+                                disabled={busy}
+                                onClick={() => send("run")}
+                            >
+                                Run once
+                            </Button>
+                            <Button
+                                type="primary"
+                                icon={<ThunderboltOutlined />}
+                                disabled={busy}
+                                onClick={() => send("optimize")}
+                            >
+                                Optimize
+                            </Button>
+                            <Button danger icon={<StopOutlined />} disabled={!busy} onClick={() => send("stop")}>
+                                Stop
+                            </Button>
+                        </Space>
                     </Space>
-                </Space>
-            </Card>
+                </Card>
+            )}
 
             <Card
                 size="small"
@@ -318,7 +461,7 @@ export const DriveTuningSection: React.FC = () => {
                         )}
 
                         <Descriptions size="small" column={{ xs: 1, sm: 2 }} title="Last metrics">
-                            {maneuver === "yaw_hunt" && (
+                            {activeManeuver === "yaw_hunt" && (
                                 <>
                                     <Descriptions.Item label="yaw peak (rad)">{num(metrics?.yaw_peak)}</Descriptions.Item>
                                     <Descriptions.Item label="yaw final (rad)">{num(metrics?.yaw_final)}</Descriptions.Item>
@@ -326,13 +469,13 @@ export const DriveTuningSection: React.FC = () => {
                                     <Descriptions.Item label="undershoot (rad)">{num(metrics?.undershoot)}</Descriptions.Item>
                                 </>
                             )}
-                            {maneuver === "transit_pose" && (
+                            {activeManeuver === "transit_pose" && (
                                 <>
                                     <Descriptions.Item label="xy error (m)">{num(metrics?.pose_xy_err)}</Descriptions.Item>
                                     <Descriptions.Item label="yaw error (rad)">{num(metrics?.pose_yaw_err)}</Descriptions.Item>
                                 </>
                             )}
-                            {(maneuver === "outline" || maneuver === "swath") && (
+                            {(activeManeuver === "outline" || activeManeuver === "swath") && (
                                 <>
                                     <Descriptions.Item label="cross-track RMS (m)">{num(metrics?.ct_rms)}</Descriptions.Item>
                                     <Descriptions.Item label="cross-track peak (m)">{num(metrics?.ct_peak)}</Descriptions.Item>

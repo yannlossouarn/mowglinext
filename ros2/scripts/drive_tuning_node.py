@@ -82,10 +82,82 @@ HL_DRIVES = {2, 3, 4}  # AUTONOMOUS / RECORDING / MANUAL_MOWING accept cmd_vel
 # /hardware_bridge and are pushed to the firmware via PKT_ID_SET_DRIVE_PID.
 PARAM_SPECS = {
     "wheel_pid_deadband_pwm": ("double", 0.0, 120.0, 8.0),
+    "wheel_pid_pwm_per_mps": ("double", 50.0, 800.0, 25.0),
+    "wheel_pid_kp": ("double", 0.0, 200.0, 10.0),
+    "wheel_pid_ki": ("double", 0.0, 20000.0, 1000.0),
     "wheel_hold_kp": ("double", 0.0, 30.0, 2.0),
     "angular_rate_kp": ("double", 0.0, 2.0, 0.1),
     "angular_rate_ki": ("double", 0.0, 8.0, 0.5),
 }
+
+# Guided multi-step tuning protocol — ordered by dependency: each step assumes
+# the ones above it are already set (breakaway -> viscous -> PI trim -> hold ->
+# angular loop). Each step optimizes a small param subset with the maneuver that
+# best exercises it, and carries plain-language guidance for non-technical
+# operators. Only params that exist in firmware today (no dither/pulse yet).
+PROTOCOL = [
+    {
+        "id": "breakaway",
+        "title": "1 · Breakaway (deadband)",
+        "params": ["wheel_pid_deadband_pwm"],
+        "maneuver": "transit_pose",
+        "clearance": "~1.5 m clear straight ahead",
+        "guidance": (
+            "Foundation step. Place the robot with ~1.5 m of clear space straight "
+            "ahead, blade OFF, off the dock. Finds the minimum PWM that reliably "
+            "breaks the wheels away from rest. The robot drives a short distance "
+            "forward to a precise pose."
+        ),
+    },
+    {
+        "id": "viscous",
+        "title": "2 · Speed scale (viscous)",
+        "params": ["wheel_pid_pwm_per_mps"],
+        "maneuver": "transit_pose",
+        "clearance": "~2.5 m clear straight ahead",
+        "guidance": (
+            "With breakaway set, scales PWM so the commanded speed matches the "
+            "actual speed. Keep ~2.5 m clear straight ahead; the robot drives "
+            "forward and stops on a precise pose."
+        ),
+    },
+    {
+        "id": "pid_trim",
+        "title": "3 · Speed PI trim (optional)",
+        "params": ["wheel_pid_kp", "wheel_pid_ki"],
+        "maneuver": "transit_pose",
+        "clearance": "~2.5 m clear straight ahead",
+        "optional": True,
+        "guidance": (
+            "Only if closed-loop PI is enabled (wheel_pi_enabled). Trims residual "
+            "speed error on top of breakaway + viscous. Skip when running "
+            "open-loop feedforward."
+        ),
+    },
+    {
+        "id": "hold",
+        "title": "4 · Standstill hold",
+        "params": ["wheel_hold_kp"],
+        "maneuver": "yaw_hunt",
+        "clearance": "~1 m clear radius",
+        "guidance": (
+            "Needs ~1 m clear all around for an in-place pivot. Tunes how firmly "
+            "the robot holds position after a turn, killing back-creep. The robot "
+            "pivots then settles."
+        ),
+    },
+    {
+        "id": "angular",
+        "title": "5 · Turn rate (angular loop)",
+        "params": ["angular_rate_kp", "angular_rate_ki"],
+        "maneuver": "yaw_hunt",
+        "clearance": "~1 m clear radius",
+        "guidance": (
+            "Same ~1 m clear radius. Tunes how accurately the robot reaches a "
+            "commanded heading with small in-place pivots."
+        ),
+    },
+]
 
 
 def yq(yaw):
@@ -535,17 +607,19 @@ class DriveTuning(Node):
         return m
 
     # ---- coordinate / finite-difference descent -----------------------------
-    def optimize(self, maneuver):
+    def optimize(self, maneuver, param_names=None):
         max_iters = int(self.get_parameter("optimize_max_iters").value)
+        # param_names lets a protocol step optimize only its own subset; the rest
+        # of the combo is read + reapplied unchanged. Default = sweep everything.
+        names = list(param_names) if param_names else list(PARAM_SPECS.keys())
         combo = self.get_combo()
-        steps = {n: PARAM_SPECS[n][3] for n in PARAM_SPECS}
+        steps = {n: PARAM_SPECS[n][3] for n in names}
         self.apply_params(combo)
         base = self.run_maneuver(maneuver)
         if "error" in base:
             return base
         best, best_score = dict(combo), base["score"]
         history = [{"combo": dict(combo), "metrics": base, "score": best_score}]
-        names = list(PARAM_SPECS.keys())
         idx = 0
         for it in range(max_iters):
             if self._stop:
@@ -606,26 +680,44 @@ class DriveTuning(Node):
         if action == "stop":
             self.cancel()
             return
+        if action == "get_protocol":
+            # One-off: hand the ordered step list + guidance to the GUI stepper.
+            self.pub_status.publish(String(data=json.dumps({"protocol": PROTOCOL})))
+            return
         if self._busy:
             self.get_logger().warn("busy — ignoring command")
             return
         for k, v in cmd.items():  # allow per-command parameter overrides
-            if k not in ("action", "maneuver") and self.has_parameter(k):
+            if k not in ("action", "maneuver", "step") and self.has_parameter(k):
                 try:
                     self.set_parameters([rclpy.parameter.Parameter(k, value=v)])
                 except Exception:  # noqa: BLE001
                     pass
-        maneuver = cmd.get("maneuver", self.get_parameter("maneuver").value)
-        threading.Thread(target=self._campaign, args=(action, maneuver),
+        # Step-scoped actions resolve their maneuver + param subset from PROTOCOL.
+        params = None
+        if action in ("run_step", "optimize_step"):
+            step = self._find_step(cmd.get("step"))
+            if step is None:
+                self.get_logger().warn(f"unknown protocol step: {cmd.get('step')!r}")
+                return
+            maneuver = step["maneuver"]
+            params = step["params"]
+            action = "optimize" if action == "optimize_step" else "run"
+        else:
+            maneuver = cmd.get("maneuver", self.get_parameter("maneuver").value)
+        threading.Thread(target=self._campaign, args=(action, maneuver, params),
                          daemon=True).start()
 
-    def _campaign(self, action, maneuver):
+    def _find_step(self, step_id):
+        return next((s for s in PROTOCOL if s["id"] == step_id), None)
+
+    def _campaign(self, action, maneuver, params=None):
         self._busy = True
         self._stop = False
         try:
             if action == "optimize":
-                self._set_phase(f"optimizing {maneuver}")
-                result = self.optimize(maneuver)
+                self._set_phase(f"optimizing {maneuver}", params=params)
+                result = self.optimize(maneuver, params)
             else:
                 self._set_phase(f"running {maneuver}")
                 result = self.run_maneuver(maneuver)
