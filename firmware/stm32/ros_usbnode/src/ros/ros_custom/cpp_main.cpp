@@ -361,7 +361,9 @@ static void on_set_drive_pid(const uint8_t *data, size_t len)
     if (!std::isfinite(pkt->kp) || !std::isfinite(pkt->ki) || !std::isfinite(pkt->kd) ||
         !std::isfinite(pkt->integral_limit) || !std::isfinite(pkt->pwm_per_mps) ||
         !std::isfinite(pkt->deadband_pwm) || !std::isfinite(pkt->hold_kp)) {
-        debug_printf("set_drive_pid rejected: non-finite field\r\n");
+        /* Reject silently: debug_printf reaches the blocking MASTER USART and
+         * must never run in this USB-RX IRQ context (a missed TX-complete would
+         * hang the busy-wait and WWDG-reset the board). */
         return;
     }
 
@@ -397,10 +399,9 @@ static void on_set_drive_pid(const uint8_t *data, size_t len)
     g_hold_enabled = hold;
     g_hold_kp = hkp;
     __enable_irq();
-
-    debug_printf(
-        "set_drive_pid: kp=%.2f ki=%.2f kd=%.2f ilim=%.1f ff=%.1f db=%.1f pi=%u hold=%u hkp=%.2f\r\n",
-        kp, ki, kd, ilim, ff, db, (unsigned)use_pi, (unsigned)hold, hkp);
+    /* No debug_printf here: this handler runs in USB-RX IRQ context and
+     * debug_printf blocks on the MASTER USART (the bug that WWDG-reset the
+     * board). The host already logs the gains it sent; the firmware re-clamps. */
 }
 
 static void on_set_detector_params(const uint8_t *data, size_t len)
@@ -419,7 +420,8 @@ static void on_set_detector_params(const uint8_t *data, size_t len)
         !std::isfinite(pkt->stall_meas_mps) || !std::isfinite(pkt->impact_thresh_mps2) ||
         !std::isfinite(pkt->bog_cmd_mps) || !std::isfinite(pkt->bog_ratio) ||
         !std::isfinite(pkt->jam_load_pwm) || !std::isfinite(pkt->blade_bog_ratio)) {
-        debug_printf("set_detector_params rejected: non-finite field\r\n");
+        /* Reject silently — see on_set_drive_pid: no blocking debug_printf in
+         * USB-RX IRQ context. */
         return;
     }
 
@@ -445,10 +447,7 @@ static void on_set_detector_params(const uint8_t *data, size_t len)
     g_det_jam_load = jam;
     g_det_blade_bog_ratio = bbrat;
     __enable_irq();
-
-    debug_printf("set_detector_params: yaw=%.2f stall_cmd=%.2f stall_meas=%.2f imp=%.1f "
-                 "bog_cmd=%.2f bog_ratio=%.2f jam=%.0f blade_bog=%.2f\r\n",
-                 yaw, scmd, smeas, imp, bcmd, brat, jam, bbrat);
+    /* No debug_printf here: runs in USB-RX IRQ context (see on_set_drive_pid). */
 }
 
 static void on_hl_state(const uint8_t *data, size_t len)
