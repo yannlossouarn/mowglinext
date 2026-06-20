@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Alert, App, Button, Card, Collapse, Space, Tag, Typography } from "antd";
 import { PlayCircleOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
+import { useTranslation } from "react-i18next";
 import { ContentType } from "../../api/Api.ts";
 import { useApi } from "../../hooks/useApi.ts";
 
@@ -52,14 +53,14 @@ type Props = {
     showSaveButtons?: boolean;
 };
 
-const GNSS_ACTION_LABELS: Record<GnssActionName, string> = {
-    plan: "Plan profile apply",
-    apply: "Apply profile to receiver",
-    "factory-reset-apply": "Factory reset + apply profile",
-    restart: "Restart GPS",
+const GNSS_ACTION_LABEL_KEYS: Record<GnssActionName, string> = {
+    plan: "settingsGnssReceiver.actionPlan",
+    apply: "settingsGnssReceiver.actionApply",
+    "factory-reset-apply": "settingsGnssReceiver.actionFactoryReset",
+    restart: "settingsGnssReceiver.actionRestart",
 };
 
-const describeApiError = (error: unknown): string => {
+const describeApiError = (error: unknown, unknownErrorText: string): string => {
     if (error && typeof error === "object") {
         const apiError = (error as any).error?.error;
         if (typeof apiError === "string" && apiError.trim()) {
@@ -72,7 +73,7 @@ const describeApiError = (error: unknown): string => {
             return (error as any).statusText;
         }
     }
-    return "Unknown GNSS API error";
+    return unknownErrorText;
 };
 
 const responseAlertType = (response: GnssActionResponse | null, errorMessage: string | null): "success" | "warning" | "error" | "info" => {
@@ -111,6 +112,7 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
     showSaveButtons = false,
 }) => {
     const guiApi = useApi();
+    const { t } = useTranslation();
     const { notification, modal } = App.useApp();
     const [pendingAction, setPendingAction] = useState<GnssActionName | null>(null);
     const [lastResponse, setLastResponse] = useState<GnssActionResponse | null>(null);
@@ -120,7 +122,7 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
         if (transportError) {
             return {
                 type: "error" as const,
-                message: "GNSS backend request failed",
+                message: t("settingsGnssReceiver.backendRequestFailed"),
                 description: transportError,
             };
         }
@@ -130,23 +132,23 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
         if (lastResponse.partial_failure) {
             return {
                 type: "warning" as const,
-                message: lastResponse.message || "GNSS action finished with partial failure",
-                description: "Review warnings, command output, and restart status below.",
+                message: lastResponse.message || t("settingsGnssReceiver.summaryPartialFailure"),
+                description: t("settingsGnssReceiver.summaryPartialFailureDesc"),
             };
         }
         if (lastResponse.success === false) {
             return {
                 type: "error" as const,
-                message: lastResponse.message || "GNSS action failed",
-                description: "Review command output and warnings below.",
+                message: lastResponse.message || t("settingsGnssReceiver.summaryFailed"),
+                description: t("settingsGnssReceiver.summaryFailedDesc"),
             };
         }
         return {
             type: "success" as const,
-            message: lastResponse.message || "GNSS action completed successfully",
-            description: "Command output and backend warnings are shown below.",
+            message: lastResponse.message || t("settingsGnssReceiver.summarySuccess"),
+            description: t("settingsGnssReceiver.summarySuccessDesc"),
         };
-    }, [lastResponse, transportError]);
+    }, [lastResponse, transportError, t]);
 
     const runAction = async (action: GnssActionName, body?: Record<string, any>) => {
         setPendingAction(action);
@@ -172,26 +174,28 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
             const data = response.data ?? {};
             setLastResponse(data);
 
+            const actionLabel = t(GNSS_ACTION_LABEL_KEYS[action]);
+
             if (data.partial_failure) {
                 notification.warning({
-                    message: data.message || `${GNSS_ACTION_LABELS[action]} completed with partial failure`,
-                    description: "Review the backend warnings and restart result in the GNSS action panel.",
+                    message: data.message || t("settingsGnssReceiver.notifyPartialFailure", { action: actionLabel }),
+                    description: t("settingsGnssReceiver.notifyPartialFailureDesc"),
                 });
             } else if (data.success === false) {
                 notification.error({
-                    message: data.message || `${GNSS_ACTION_LABELS[action]} failed`,
-                    description: "Review the GNSS action panel for stdout/stderr and warnings.",
+                    message: data.message || t("settingsGnssReceiver.notifyFailed", { action: actionLabel }),
+                    description: t("settingsGnssReceiver.notifyFailedDesc"),
                 });
             } else {
                 notification.success({
-                    message: data.message || `${GNSS_ACTION_LABELS[action]} completed`,
+                    message: data.message || t("settingsGnssReceiver.notifyCompleted", { action: actionLabel }),
                 });
             }
         } catch (error) {
-            const description = describeApiError(error);
+            const description = describeApiError(error, t("settingsGnssReceiver.unknownApiError"));
             setTransportError(description);
             notification.error({
-                message: `${GNSS_ACTION_LABELS[action]} failed`,
+                message: t("settingsGnssReceiver.notifyFailed", { action: t(GNSS_ACTION_LABEL_KEYS[action]) }),
                 description,
             });
         } finally {
@@ -201,54 +205,52 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
 
     const confirmApply = () => {
         modal.confirm({
-            title: "Apply GNSS profile to receiver?",
+            title: t("settingsGnssReceiver.confirmApplyTitle"),
             content: (
                 <Space direction="vertical" size={8}>
                     <Text>
-                        The GPS sidecar will be stopped, the receiver profile will be applied in a one-shot GNSS container,
-                        and the GPS sidecar will be restarted only if the apply succeeds.
+                        {t("settingsGnssReceiver.confirmApplyBody")}
                     </Text>
                     <Text type="warning">
-                        Do not disconnect power or USB/serial wiring while the receiver profile is being applied.
+                        {t("settingsGnssReceiver.confirmApplyWarning")}
                     </Text>
                 </Space>
             ),
-            okText: "Apply profile",
-            cancelText: "Cancel",
+            okText: t("settingsGnssReceiver.confirmApplyOk"),
+            cancelText: t("settingsGnssReceiver.cancel"),
             onOk: () => runAction("apply", { confirm: true }),
         });
     };
 
     const confirmFactoryReset = () => {
         modal.confirm({
-            title: "Factory reset receiver and re-apply profile?",
+            title: t("settingsGnssReceiver.confirmFactoryResetTitle"),
             content: (
                 <Space direction="vertical" size={8}>
                     <Text strong type="danger">
-                        Factory reset clears receiver settings before rebuilding the selected profile.
+                        {t("settingsGnssReceiver.confirmFactoryResetDanger")}
                     </Text>
                     <Text>
-                        The backend will stop the GPS sidecar, run the persistent factory-reset flow, then re-apply the
-                        selected saved profile and restart GPS only if that flow succeeds.
+                        {t("settingsGnssReceiver.confirmFactoryResetBody")}
                     </Text>
                     <Text type="warning">
-                        Use this only when you intentionally want to rebuild receiver configuration from a clean state.
+                        {t("settingsGnssReceiver.confirmFactoryResetWarning")}
                     </Text>
                 </Space>
             ),
-            okText: "Factory reset and apply",
+            okText: t("settingsGnssReceiver.confirmFactoryResetOk"),
             okType: "danger",
-            cancelText: "Cancel",
+            cancelText: t("settingsGnssReceiver.cancel"),
             maskClosable: false,
             onOk: () => runAction("factory-reset-apply", { confirm_factory_reset: true }),
         });
     };
 
-    const loadingActionLabel = pendingAction ? GNSS_ACTION_LABELS[pendingAction] : "";
+    const loadingActionLabel = pendingAction ? t(GNSS_ACTION_LABEL_KEYS[pendingAction]) : "";
     const actionDisabled = Boolean(pendingAction) || saving || gpsRestarting;
 
     return (
-        <Card size="small" title="Receiver Actions" style={{ marginBottom: 16 }}>
+        <Card size="small" title={t("settingsGnssReceiver.cardTitle")} style={{ marginBottom: 16 }}>
             <Space wrap size={[8, 8]}>
                 {showSaveButtons && onSave && (
                     <Button
@@ -258,7 +260,7 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
                         loading={saving && !gpsRestarting && !pendingAction}
                         disabled={actionDisabled || !isDirty}
                     >
-                        Save settings
+                        {t("settingsGnssReceiver.saveSettings")}
                     </Button>
                 )}
                 <Button
@@ -267,14 +269,14 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
                     loading={pendingAction === "plan"}
                     disabled={actionDisabled}
                 >
-                    Plan profile apply
+                    {t("settingsGnssReceiver.actionPlan")}
                 </Button>
                 <Button
                     onClick={confirmApply}
                     loading={pendingAction === "apply"}
                     disabled={actionDisabled}
                 >
-                    Apply profile to receiver
+                    {t("settingsGnssReceiver.actionApply")}
                 </Button>
                 {showSaveButtons && onSaveAndRestartGps && (
                     <Button
@@ -283,7 +285,7 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
                         loading={gpsRestarting && !pendingAction}
                         disabled={Boolean(pendingAction) || saving || gpsRestarting}
                     >
-                        Save + restart GPS
+                        {t("settingsGnssReceiver.saveAndRestartGps")}
                     </Button>
                 )}
                 <Button
@@ -292,7 +294,7 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
                     loading={pendingAction === "restart"}
                     disabled={actionDisabled}
                 >
-                    Restart GPS
+                    {t("settingsGnssReceiver.actionRestart")}
                 </Button>
                 <Button
                     danger
@@ -300,7 +302,7 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
                     loading={pendingAction === "factory-reset-apply"}
                     disabled={actionDisabled}
                 >
-                    Factory reset + apply profile
+                    {t("settingsGnssReceiver.actionFactoryReset")}
                 </Button>
             </Space>
 
@@ -309,11 +311,11 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
                 showIcon
                 style={{ marginTop: 12 }}
                 message={isDirty
-                    ? "Unsaved GNSS edits will be saved before receiver actions run"
-                    : "Receiver actions use the currently saved GNSS configuration"}
+                    ? t("settingsGnssReceiver.dirtyAlertMessage")
+                    : t("settingsGnssReceiver.savedAlertMessage")}
                 description={isDirty
-                    ? "The GUI saves the current receiver-related form values first, then calls the GNSS backend API. Plan does not stop GPS; apply and factory-reset flows release the serial port before touching the receiver."
-                    : "Plan previews the saved receiver profile without stopping GPS. Apply and factory-reset flows stop mowgli-gps first so the serial device is released safely."}
+                    ? t("settingsGnssReceiver.dirtyAlertDescription")
+                    : t("settingsGnssReceiver.savedAlertDescription")}
             />
 
             {pendingAction && (
@@ -321,8 +323,8 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
                     type="info"
                     showIcon
                     style={{ marginTop: 12 }}
-                    message={`${loadingActionLabel} in progress`}
-                    description="Waiting for the GNSS backend API to return command output, warnings, and restart status."
+                    message={t("settingsGnssReceiver.actionInProgress", { action: loadingActionLabel })}
+                    description={t("settingsGnssReceiver.actionInProgressDesc")}
                 />
             )}
 
@@ -339,48 +341,48 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
             {(lastResponse || transportError) && (
                 <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 12 }}>
                     {lastResponse && (
-                        <Card size="small" type="inner" title="Backend Result">
+                        <Card size="small" type="inner" title={t("settingsGnssReceiver.backendResult")}>
                             <Space wrap size={[8, 8]} style={{ marginBottom: 12 }}>
                                 <Tag color={responseAlertType(lastResponse, null) === "success" ? "success" : responseAlertType(lastResponse, null) === "warning" ? "warning" : "error"}>
                                     {lastResponse.partial_failure
-                                        ? "Partial failure"
+                                        ? t("settingsGnssReceiver.tagPartialFailure")
                                         : lastResponse.success
-                                            ? "Success"
-                                            : "Failed"}
+                                            ? t("settingsGnssReceiver.tagSuccess")
+                                            : t("settingsGnssReceiver.tagFailed")}
                                 </Tag>
                                 {lastResponse.restart_attempted && (
                                     <Tag color={lastResponse.restart_succeeded ? "success" : "error"}>
-                                        {lastResponse.restart_succeeded ? "GPS restarted" : "GPS restart failed"}
+                                        {lastResponse.restart_succeeded ? t("settingsGnssReceiver.tagGpsRestarted") : t("settingsGnssReceiver.tagGpsRestartFailed")}
                                     </Tag>
                                 )}
                                 {lastResponse.runtime_baud_updated && (
-                                    <Tag color="processing">Runtime baud updated</Tag>
+                                    <Tag color="processing">{t("settingsGnssReceiver.tagRuntimeBaudUpdated")}</Tag>
                                 )}
                                 {lastResponse.runtime_baud_differs_from_config && (
-                                    <Tag color="warning">Baud mismatch</Tag>
+                                    <Tag color="warning">{t("settingsGnssReceiver.tagBaudMismatch")}</Tag>
                                 )}
                             </Space>
 
                             <Space direction="vertical" size={4} style={{ width: "100%" }}>
                                 {lastResponse.receiver_family && (
-                                    <Text><Text strong>Receiver family:</Text> {lastResponse.receiver_family}</Text>
+                                    <Text><Text strong>{t("settingsGnssReceiver.fieldReceiverFamily")}</Text> {lastResponse.receiver_family}</Text>
                                 )}
                                 {lastResponse.profile && (
-                                    <Text><Text strong>Profile:</Text> {lastResponse.profile}</Text>
+                                    <Text><Text strong>{t("settingsGnssReceiver.fieldProfile")}</Text> {lastResponse.profile}</Text>
                                 )}
                                 {lastResponse.signal_profile && (
-                                    <Text><Text strong>Signal profile:</Text> {lastResponse.signal_profile}</Text>
+                                    <Text><Text strong>{t("settingsGnssReceiver.fieldSignalProfile")}</Text> {lastResponse.signal_profile}</Text>
                                 )}
                                 {lastResponse.serial_device && (
-                                    <Text><Text strong>Serial device:</Text> {lastResponse.serial_device}</Text>
+                                    <Text><Text strong>{t("settingsGnssReceiver.fieldSerialDevice")}</Text> {lastResponse.serial_device}</Text>
                                 )}
                                 {(lastResponse.runtime_baud || lastResponse.config_baud) && (
                                     <Text>
-                                        <Text strong>Baud:</Text> runtime {lastResponse.runtime_baud ?? "unknown"} / configured {lastResponse.config_baud ?? "unknown"}
+                                        <Text strong>{t("settingsGnssReceiver.fieldBaud")}</Text> {t("settingsGnssReceiver.baudRuntimeConfigured", { runtime: lastResponse.runtime_baud ?? t("settingsGnssReceiver.unknownValue"), configured: lastResponse.config_baud ?? t("settingsGnssReceiver.unknownValue") })}
                                     </Text>
                                 )}
                                 {lastResponse.restart_error && (
-                                    <Text type="danger"><Text strong>Restart error:</Text> {lastResponse.restart_error}</Text>
+                                    <Text type="danger"><Text strong>{t("settingsGnssReceiver.fieldRestartError")}</Text> {lastResponse.restart_error}</Text>
                                 )}
                             </Space>
 
@@ -389,7 +391,7 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
                                     type="warning"
                                     showIcon
                                     style={{ marginTop: 12 }}
-                                    message="Backend warnings"
+                                    message={t("settingsGnssReceiver.backendWarnings")}
                                     description={(
                                         <ul style={{ margin: 0, paddingLeft: 18 }}>
                                             {lastResponse.warnings.map((warning) => (
@@ -409,16 +411,16 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
                                 key: `${execution.tool ?? "command"}-${index}`,
                                 label: (
                                     <Space wrap size={[8, 8]}>
-                                        <Text strong>{execution.tool ?? `Command ${index + 1}`}</Text>
+                                        <Text strong>{execution.tool ?? t("settingsGnssReceiver.commandIndex", { index: index + 1 })}</Text>
                                         <Tag color={execution.success ? "success" : "error"}>
-                                            exit {execution.exit_code ?? "?"}
+                                            {t("settingsGnssReceiver.exitCode", { code: execution.exit_code ?? "?" })}
                                         </Tag>
                                     </Space>
                                 ),
                                 children: (
                                     <Space direction="vertical" size={8} style={{ width: "100%" }}>
                                         <div>
-                                            <Text strong>Command summary</Text>
+                                            <Text strong>{t("settingsGnssReceiver.commandSummary")}</Text>
                                             <Paragraph
                                                 code
                                                 style={{
@@ -454,7 +456,7 @@ export const GnssReceiverActionsCard: React.FC<Props> = ({
                     )}
 
                     {transportError && (
-                        <Card size="small" type="inner" title="Transport Error">
+                        <Card size="small" type="inner" title={t("settingsGnssReceiver.transportError")}>
                             <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>
                                 {transportError}
                             </pre>

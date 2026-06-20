@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useApi } from "./useApi.ts";
 import { App } from "antd";
 import { dirtyKeysRequireGpsRestart, restartGps } from "../utils/containers.ts";
 import { useContainerRestart } from "./useContainerRestart.ts";
 import { getQuaternionFromHeading } from "../utils/map.tsx";
+import { ContentType } from "../api/Api.ts";
 
 export type SettingsSection =
     | "hardware"
+    | "drive_motor"
     | "ntrip"
     | "positioning"
     | "sensors"
@@ -30,9 +33,9 @@ export type SectionMeta = {
 const SECTION_DEFINITIONS: SectionMeta[] = [
     {
         id: "hardware",
-        label: "Hardware",
+        label: "settingsSections.hardware.label",
         icon: "tool",
-        description: "Robot model, wheels, chassis, and blade dimensions",
+        description: "settingsSections.hardware.description",
         keys: [
             "mower_model", "wheel_radius", "wheel_track", "wheel_width",
             "wheel_x_offset", "chassis_center_x", "chassis_length", "chassis_width",
@@ -41,10 +44,20 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
         ],
     },
     {
+        id: "drive_motor",
+        label: "settingsSections.drive_motor.label",
+        icon: "dashboard",
+        description: "settingsSections.drive_motor.description",
+        keys: [
+            "wheel_pid_kp", "wheel_pid_ki", "wheel_pid_kd",
+            "wheel_pid_integral_limit", "wheel_pid_pwm_per_mps",
+        ],
+    },
+    {
         id: "ntrip",
-        label: "NTRIP Corrections",
+        label: "settingsSections.ntrip.label",
         icon: "wifi",
-        description: "RTK correction network and base station — set this before GPS",
+        description: "settingsSections.ntrip.description",
         keys: [
             "ntrip_enabled", "ntrip_host", "ntrip_port",
             "ntrip_user", "ntrip_password", "ntrip_mountpoint",
@@ -52,9 +65,9 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
     },
     {
         id: "positioning",
-        label: "GPS & Positioning",
+        label: "settingsSections.positioning.label",
         icon: "global",
-        description: "Universal GNSS receiver and map datum",
+        description: "settingsSections.positioning.description",
         keys: [
             "datum_lat", "datum_lon", "datum_alt",
             "gnss_receiver_family", "gnss_serial_device", "gnss_serial_baud",
@@ -67,9 +80,9 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
     },
     {
         id: "sensors",
-        label: "Sensors",
+        label: "settingsSections.sensors.label",
         icon: "aim",
-        description: "LiDAR, IMU, and GPS antenna placement on the robot",
+        description: "settingsSections.sensors.description",
         keys: [
             "lidar_enabled", "lidar_x", "lidar_y", "lidar_z", "lidar_yaw",
             "imu_x", "imu_y", "imu_z", "imu_yaw", "imu_pitch", "imu_roll",
@@ -79,9 +92,9 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
     },
     {
         id: "localization",
-        label: "Localization",
+        label: "settingsSections.localization.label",
         icon: "node-index",
-        description: "Map-frame fusion strategy and optional LiDAR factors",
+        description: "settingsSections.localization.description",
         keys: [
             "use_scan_matching", "use_loop_closure",
             "use_magnetometer",
@@ -89,9 +102,9 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
     },
     {
         id: "mowing",
-        label: "Mowing",
+        label: "settingsSections.mowing.label",
         icon: "scissor",
-        description: "Speed, swath/headland, angle, and outline settings",
+        description: "settingsSections.mowing.description",
         keys: [
             // NOTE: path_spacing intentionally omitted — it is a dead knob. F2C
             // swath spacing = tool_width (coverage_server.operation_width); a
@@ -105,9 +118,9 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
     },
     {
         id: "docking",
-        label: "Docking",
+        label: "settingsSections.docking.label",
         icon: "home",
-        description: "Undock distance, approach, retry settings",
+        description: "settingsSections.docking.description",
         keys: [
             "undock_distance", "undock_speed", "dock_approach_distance",
             "dock_max_retries", "dock_use_charger_detection",
@@ -116,9 +129,9 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
     },
     {
         id: "battery",
-        label: "Battery",
+        label: "settingsSections.battery.label",
         icon: "thunderbolt",
-        description: "Voltage and percentage thresholds for charging",
+        description: "settingsSections.battery.description",
         keys: [
             "battery_full_voltage", "battery_empty_voltage", "battery_critical_voltage",
             "battery_full_percent", "battery_low_percent", "battery_critical_percent",
@@ -127,9 +140,9 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
     },
     {
         id: "safety",
-        label: "Safety",
+        label: "settingsSections.safety.label",
         icon: "safety",
-        description: "Emergency stops, temperature limits, obstacle avoidance",
+        description: "settingsSections.safety.description",
         keys: [
             "motor_temp_high_c", "motor_temp_low_c",
             "max_obstacle_avoidance_distance",
@@ -138,9 +151,9 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
     },
     {
         id: "navigation",
-        label: "Navigation",
+        label: "settingsSections.navigation.label",
         icon: "compass",
-        description: "Goal tolerances and progress timeout",
+        description: "settingsSections.navigation.description",
         keys: [
             "xy_goal_tolerance", "yaw_goal_tolerance", "coverage_xy_tolerance",
             "progress_timeout_sec",
@@ -148,21 +161,22 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
     },
     {
         id: "rain",
-        label: "Rain",
+        label: "settingsSections.rain.label",
         icon: "cloud",
-        description: "Rain detection behavior and delay",
+        description: "settingsSections.rain.description",
         keys: ["rain_mode", "rain_delay_minutes", "rain_debounce_sec"],
     },
     {
         id: "advanced",
-        label: "Advanced",
+        label: "settingsSections.advanced.label",
         icon: "code",
-        description: "Raw parameters and custom key-value pairs",
+        description: "settingsSections.advanced.description",
         keys: [],
     },
 ];
 
 export const useSettingsManager = () => {
+    const { t } = useTranslation();
     const guiApi = useApi();
     const { notification } = App.useApp();
     const [savedValues, setSavedValues] = useState<Record<string, any>>({});
@@ -172,9 +186,9 @@ export const useSettingsManager = () => {
     const [restartRequired, setRestartRequired] = useState(false);
     // GPS restart skips the rosbridge readiness probe (ROS2 is unaffected).
     const gpsRestart = useContainerRestart({
-        pendingLabel: "Redémarrage GPS…",
-        successMessage: "GPS redémarré — patientez ~10–30 s pour le RTK Fix",
-        errorMessage: "Échec du redémarrage GPS",
+        pendingLabel: t("settingsManager.gpsRestartPending"),
+        successMessage: t("settingsManager.gpsRestartSuccess"),
+        errorMessage: t("settingsManager.gpsRestartError"),
         skipReadinessProbe: true,
     });
     const [searchQuery, setSearchQuery] = useState("");
@@ -193,7 +207,7 @@ export const useSettingsManager = () => {
                 initialLoadDone.current = true;
             } catch (e: any) {
                 notification.error({
-                    message: "Failed to load settings",
+                    message: t("settingsSections.toasts.loadFailed"),
                     description: e.message,
                 });
             } finally {
@@ -260,10 +274,15 @@ export const useSettingsManager = () => {
                 dirtyKeys.has("dock_pose_x") ||
                 dirtyKeys.has("dock_pose_y") ||
                 dirtyKeys.has("dock_pose_yaw");
+            const driveKeys = [
+                "wheel_pid_kp", "wheel_pid_ki", "wheel_pid_kd",
+                "wheel_pid_integral_limit", "wheel_pid_pwm_per_mps",
+            ];
+            const driveDirty = driveKeys.some((k) => dirtyKeys.has(k));
             const hasDirtyChanges = dirtyKeys.size > 0;
             if (!hasDirtyChanges && !shouldRestartGps) {
                 notification.info({
-                    message: "No changes to save",
+                    message: t("settingsSections.toasts.noChanges"),
                 });
                 return;
             }
@@ -284,14 +303,14 @@ export const useSettingsManager = () => {
                 setSavedValues({ ...localValues });
                 setRestartRequired(true);
                 notification.success({
-                    message: "Settings saved",
+                    message: t("settingsSections.toasts.saved"),
                     description: shouldRestartGps
-                        ? "Restarting GPS to apply GNSS changes. Restart ROS2 to apply other saved changes."
-                        : "Restart ROS2 to apply changes.",
+                        ? t("settingsSections.toasts.savedGpsRestartDescription")
+                        : t("settingsSections.toasts.savedDescription"),
                 });
             } else if (shouldRestartGps) {
                 notification.info({
-                    message: "Restarting GPS with current settings",
+                    message: t("settingsSections.toasts.restartingGps"),
                 });
             }
             // Auto-restart the GPS container when GPS/NTRIP fields changed —
@@ -327,21 +346,48 @@ export const useSettingsManager = () => {
                     });
                 } catch (e: any) {
                     notification.warning({
-                        message: "Settings saved, but map_server runtime refresh failed",
+                        message: t("settingsSections.toasts.dockRefreshFailed"),
                         description: e?.message ??
-                            "Restart ROS2 (or call /map_server_node/set_docking_point manually) to pick up the new dock pose.",
+                            t("settingsSections.toasts.dockRefreshFailedDescription"),
                     });
+                }
+            }
+            // Push drive-motor PID gains to the running hardware_bridge node so
+            // they take effect live (no restart). yamlCreate above persisted
+            // them to mowgli_robot.yaml for the next boot; this sets the live
+            // ROS params, whose on-set callback re-sends them to the STM32
+            // firmware (which re-validates and clamps every value).
+            if (hasDirtyChanges && driveDirty) {
+                const parameters = driveKeys
+                    .filter((k) => dirtyKeys.has(k) && k in localValues)
+                    .map((k) => ({ name: `hardware_bridge.${k}`, value: Number(localValues[k]) }));
+                if (parameters.length > 0) {
+                    try {
+                        await guiApi.request({
+                            path: "/params",
+                            method: "POST",
+                            type: ContentType.Json,
+                            format: "json",
+                            body: { parameters },
+                        });
+                    } catch (e: any) {
+                        notification.warning({
+                            message: t("settingsSections.toasts.drivePidUpdateFailed"),
+                            description: e?.message ??
+                                t("settingsSections.toasts.drivePidUpdateFailedDescription"),
+                        });
+                    }
                 }
             }
         } catch (e: any) {
             notification.error({
-                message: "Failed to save settings",
+                message: t("settingsSections.toasts.saveFailed"),
                 description: e.message,
             });
         } finally {
             setSaving(false);
         }
-    }, [localValues, dirtyKeys, guiApi, notification, gpsRestart]);
+    }, [localValues, dirtyKeys, guiApi, notification, gpsRestart, t]);
 
     const savePartialValues = useCallback(async (
         partialValues: Record<string, any>,
@@ -380,7 +426,7 @@ export const useSettingsManager = () => {
 
             if (!options?.silentSuccess) {
                 notification.success({
-                    message: options?.successMessage ?? "Settings saved",
+                    message: options?.successMessage ?? t("settingsSections.toasts.saved"),
                     description: options?.successDescription,
                 });
             }
@@ -388,14 +434,14 @@ export const useSettingsManager = () => {
             return true;
         } catch (e: any) {
             notification.error({
-                message: options?.errorMessage ?? "Failed to save settings",
+                message: options?.errorMessage ?? t("settingsSections.toasts.saveFailed"),
                 description: e.message,
             });
             return false;
         } finally {
             setSaving(false);
         }
-    }, [guiApi, notification, savedValues]);
+    }, [guiApi, notification, savedValues, t]);
 
     const save = useCallback(async () => {
         await persistSettings();

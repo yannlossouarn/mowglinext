@@ -6,6 +6,7 @@ import {App, ConfigProvider, theme} from "antd";
 import {Spinner} from "./components/Spinner.tsx";
 import {ThemeProvider, useThemeMode} from "./theme/ThemeContext.tsx";
 import {NotificationCenterProvider} from "./hooks/useNotificationCenter.tsx";
+import "./i18n";
 
 // Lazy-load each page so the first paint only ships the shell + the route
 // the user actually opens. Everything else streams in on demand.

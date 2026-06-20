@@ -45,6 +45,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -226,6 +227,12 @@ def generate_launch_description() -> LaunchDescription:
             # references in main_tree.xml. See issue #191.
             {"undock_speed": float(robot_params.get("undock_speed", 0.15))},
             {"undock_distance": float(robot_params.get("undock_distance", 1.0))},
+            # idle_nav2_suspend: PAUSE the Nav2 lifecycle stack while parked on
+            # the dock to cut idle CPU/thermal load (costmaps stop looping).
+            # Default off — a deliberate per-site opt-in. RESUME is guaranteed
+            # before motion by the root Nav2ResumeGuard + Nav2ReadyPoll.
+            {"idle_nav2_suspend":
+                bool(robot_params.get("idle_nav2_suspend", False))},
             # transit_speed / mowing_speed flow into SetNavMode, which sets
             # them on the live controllers (FollowPath.desired_linear_vel for
             # the RPP transit controller, FollowCoveragePath.vx_max for the
@@ -378,7 +385,12 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         parameters=[
             monitoring_params,
-            {"use_sim_time": use_sim_time},
+            {
+                "use_sim_time": use_sim_time,
+                # Follow the same authoritative LiDAR flag as the Nav stack so the
+                # health check reports "disabled" instead of a false "no scan" error.
+                "lidar_enabled": ParameterValue(use_lidar, value_type=bool),
+            },
         ],
     )
 

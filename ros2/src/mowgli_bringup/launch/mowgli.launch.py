@@ -203,6 +203,16 @@ def generate_launch_description() -> LaunchDescription:
             # YAML and the URDF (also from the firmware's TICKS_PER_M).
             {"wheel_track": float(robot_params.get("wheel_track", 0.325))},
             {"ticks_per_meter": float(robot_params.get("ticks_per_meter", 300.0))},
+            # Drive-motor wheel-velocity PID + feedforward, pushed to the STM32
+            # firmware so the GUI can retune the per-wheel loop without
+            # reflashing. Defaults mirror the firmware compile-time fallback.
+            {"wheel_pid_kp": float(robot_params.get("wheel_pid_kp", 30.0))},
+            {"wheel_pid_ki": float(robot_params.get("wheel_pid_ki", 5000.0))},
+            {"wheel_pid_kd": float(robot_params.get("wheel_pid_kd", 0.0))},
+            {"wheel_pid_integral_limit": float(robot_params.get(
+                "wheel_pid_integral_limit", 100.0))},
+            {"wheel_pid_pwm_per_mps": float(robot_params.get(
+                "wheel_pid_pwm_per_mps", 300.0))},
             # IMU calibration tuning (operator-tunable via the GUI).
             {"imu_cal_samples": int(robot_params.get("imu_cal_samples", 200))},
             {"imu_cal_persist_path": str(robot_params.get(

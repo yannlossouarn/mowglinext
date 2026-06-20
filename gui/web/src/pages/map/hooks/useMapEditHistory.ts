@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {App} from "antd";
+import {useTranslation} from "react-i18next";
 import type {MowingFeature} from "../../../types/map.ts";
 
 interface UseMapEditHistoryOptions {
@@ -11,6 +12,7 @@ interface UseMapEditHistoryOptions {
 
 export function useMapEditHistory({features, setFeatures, editMap, setEditMap}: UseMapEditHistoryOptions) {
     const {modal} = App.useApp();
+    const {t} = useTranslation();
     const [editHistory, setEditHistory] = useState<Record<string, MowingFeature>[]>([]);
     const [historyIndex, setHistoryIndex] = useState(-1);
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -33,11 +35,11 @@ export function useMapEditHistory({features, setFeatures, editMap, setEditMap}: 
             setEditMap(true);
         } else if (hasUnsavedChanges) {
             modal.confirm({
-                title: 'Discard unsaved changes?',
-                content: 'You have unsaved map changes. If you cancel now, all changes will be lost.',
-                okText: 'Discard',
+                title: t('mapEditHistory.discardTitle'),
+                content: t('mapEditHistory.discardContent'),
+                okText: t('mapEditHistory.discardOk'),
                 okType: 'danger',
-                cancelText: 'Keep editing',
+                cancelText: t('mapEditHistory.keepEditing'),
                 onOk: exitEditMode,
             });
         } else {

@@ -1,8 +1,8 @@
 export const GNSS_RECEIVER_FAMILY_OPTIONS = [
-    { value: "auto", label: "Auto" },
-    { value: "ublox", label: "u-blox" },
-    { value: "unicore", label: "Unicore" },
-    { value: "nmea", label: "NMEA" },
+    { value: "auto", label: "gnssConfig.receiverFamily.auto.label" },
+    { value: "ublox", label: "gnssConfig.receiverFamily.ublox.label" },
+    { value: "unicore", label: "gnssConfig.receiverFamily.unicore.label" },
+    { value: "nmea", label: "gnssConfig.receiverFamily.nmea.label" },
 ] as const;
 
 export const GNSS_BAUD_OPTIONS = [
@@ -13,50 +13,45 @@ export const GNSS_BAUD_OPTIONS = [
 ] as const;
 
 export const GNSS_PROFILE_OPTIONS = [
-    { value: "runtime_only", label: "Runtime only" },
-    { value: "rover_high_precision", label: "Rover high precision" },
-    { value: "rover_high_precision_debug", label: "Rover high precision + debug" },
-    { value: "factory_reset", label: "Factory reset" },
+    { value: "runtime_only", label: "gnssConfig.profile.runtime_only.label" },
+    { value: "rover_high_precision", label: "gnssConfig.profile.rover_high_precision.label" },
+    { value: "rover_high_precision_debug", label: "gnssConfig.profile.rover_high_precision_debug.label" },
+    { value: "factory_reset", label: "gnssConfig.profile.factory_reset.label" },
 ] as const;
 
 export const GNSS_SIGNAL_PROFILE_OPTIONS = [
     {
         value: "balanced",
-        label: "Balanced",
-        description:
-            "Recommended default profile. Uses a balanced mix of available GNSS constellations and signal bands.",
+        label: "gnssConfig.signalProfile.balanced.label",
+        description: "gnssConfig.signalProfile.balanced.description",
     },
     {
         value: "high_precision",
-        label: "Maximum Accuracy",
-        description:
-            "Prioritizes multi-band and high-precision signals for the best positioning performance.",
+        label: "gnssConfig.signalProfile.high_precision.label",
+        description: "gnssConfig.signalProfile.high_precision.description",
     },
     {
         value: "all_signals",
-        label: "Maximum Compatibility",
-        description:
-            "Uses the widest set of commonly supported signals for maximum receiver and regional compatibility.",
+        label: "gnssConfig.signalProfile.all_signals.label",
+        description: "gnssConfig.signalProfile.all_signals.description",
     },
     {
         value: "minimal",
-        label: "Low Bandwidth",
-        description:
-            "Reduces signal and observation load when bandwidth, processing power or correction transport capacity is limited.",
+        label: "gnssConfig.signalProfile.minimal.label",
+        description: "gnssConfig.signalProfile.minimal.description",
     },
     {
         value: "custom",
-        label: "Custom",
-        description:
-            "Reserved for future user-provided profile files or raw receiver command sets when backend support is available.",
+        label: "gnssConfig.signalProfile.custom.label",
+        description: "gnssConfig.signalProfile.custom.description",
     },
 ] as const;
 
 export const GNSS_SIGNAL_PROFILE_HELP_TEXT =
-    "Signal profiles are vendor-neutral. Different receiver families can map the same profile to different signal and constellation choices.";
+    "gnssConfig.signalProfileHelpText";
 
 export const GNSS_SIGNAL_PROFILE_CUSTOM_HELP_TEXT =
-    "Custom will later support user-provided profile files or raw receiver command sets from Expert/Developer mode. Upload and raw-command backend support are not wired yet.";
+    "gnssConfig.signalProfileCustomHelpText";
 
 export const GNSS_PROFILE_RATE_OPTIONS = [
     { value: 1, label: "1 Hz" },
@@ -160,66 +155,57 @@ export type GnssReceiverAdvancedDefinition = {
 
 export const GNSS_ADVANCED_SETTINGS_BY_FAMILY: Record<string, GnssReceiverAdvancedDefinition | undefined> = {
     unicore: {
-        title: "Vendor-Specific Settings",
-        description:
-            "Use these only when the generic GNSS abstractions are not enough. " +
-            "UM982 signal-group tuning stays here instead of leaking into the main user workflow.",
+        title: "gnssConfig.unicore.title",
+        description: "gnssConfig.unicore.description",
         fields: [
             {
                 kind: "presetText",
                 key: "gnss_signal_group",
-                label: "Signal Group Preset",
-                rawLabel: "Raw Signal Group",
-                tooltip:
-                    "Choose a Unicore signal-group preset, then fine-tune the raw value only if needed.",
+                label: "gnssConfig.unicore.signalGroup.label",
+                rawLabel: "gnssConfig.unicore.signalGroup.rawLabel",
+                tooltip: "gnssConfig.unicore.signalGroup.tooltip",
                 options: [
-                    { value: "", label: "Default / Current" },
+                    { value: "", label: "gnssConfig.unicore.signalGroup.option.default.label" },
                     {
                         value: "3 6",
-                        label: "UM982 recommended",
-                        description: "Maps to CONFIG SIGNALGROUP 3 6.",
+                        label: "gnssConfig.unicore.signalGroup.option.um982.label",
+                        description: "gnssConfig.unicore.signalGroup.option.um982.description",
                     },
                     {
                         value: "2",
-                        label: "All bands (UM980 / UM981)",
-                        description: "Maps to CONFIG SIGNALGROUP 2.",
+                        label: "gnssConfig.unicore.signalGroup.option.allBands.label",
+                        description: "gnssConfig.unicore.signalGroup.option.allBands.description",
                     },
                     {
                         value: "3",
-                        label: "PPP optimized",
-                        description: "Maps to CONFIG SIGNALGROUP 3.",
+                        label: "gnssConfig.unicore.signalGroup.option.ppp.label",
+                        description: "gnssConfig.unicore.signalGroup.option.ppp.description",
                     },
                 ],
-                customOptionLabel: "Custom",
-                customPlaceholder: "e.g. 3 6",
-                helpText:
-                    "Normal settings are vendor-neutral. Expert settings are receiver-family specific. " +
-                    "For UM982, \"UM982 recommended\" maps to CONFIG SIGNALGROUP 3 6.",
+                customOptionLabel: "gnssConfig.unicore.signalGroup.customOptionLabel",
+                customPlaceholder: "gnssConfig.unicore.signalGroup.customPlaceholder",
+                helpText: "gnssConfig.unicore.signalGroup.helpText",
             },
             {
                 kind: "text",
                 key: "gnss_unicore_pvt_algorithm",
-                label: "PVT Algorithm",
-                tooltip:
-                    "Optional Unicore-specific PVT algorithm override that the future backend translator can map to vendor commands.",
-                placeholder: "e.g. MULTI",
-                helpText:
-                    "Leave blank to keep the receiver default/current value. This field is saved now, " +
-                    "but backend apply translation is still TODO.",
+                label: "gnssConfig.unicore.pvtAlgorithm.label",
+                tooltip: "gnssConfig.unicore.pvtAlgorithm.tooltip",
+                placeholder: "gnssConfig.unicore.pvtAlgorithm.placeholder",
+                helpText: "gnssConfig.unicore.pvtAlgorithm.helpText",
             },
             {
                 kind: "text",
                 key: "gnss_unicore_rtk_reliability",
-                label: "RTK Reliability",
-                tooltip:
-                    "Optional Unicore-specific RTK reliability tuning passed through only in Expert mode.",
-                placeholder: "e.g. HIGH",
+                label: "gnssConfig.unicore.rtkReliability.label",
+                tooltip: "gnssConfig.unicore.rtkReliability.tooltip",
+                placeholder: "gnssConfig.unicore.rtkReliability.placeholder",
             },
             {
                 kind: "number",
                 key: "gnss_unicore_rtk_timeout_s",
-                label: "RTK Timeout",
-                tooltip: "Optional receiver-family-specific RTK timeout override.",
+                label: "gnssConfig.unicore.rtkTimeout.label",
+                tooltip: "gnssConfig.unicore.rtkTimeout.tooltip",
                 min: 0,
                 step: 1,
                 addonAfter: "s",
@@ -227,8 +213,8 @@ export const GNSS_ADVANCED_SETTINGS_BY_FAMILY: Record<string, GnssReceiverAdvanc
             {
                 kind: "number",
                 key: "gnss_unicore_dgps_timeout_s",
-                label: "DGPS Timeout",
-                tooltip: "Optional receiver-family-specific DGPS timeout override.",
+                label: "gnssConfig.unicore.dgpsTimeout.label",
+                tooltip: "gnssConfig.unicore.dgpsTimeout.tooltip",
                 min: 0,
                 step: 1,
                 addonAfter: "s",
@@ -322,10 +308,10 @@ const findOptionLabel = (
 };
 
 export const gnssProfileLabel = (value: unknown): string =>
-    findOptionLabel(normalizeGnssProfile(value), GNSS_PROFILE_OPTIONS, "Runtime only");
+    findOptionLabel(normalizeGnssProfile(value), GNSS_PROFILE_OPTIONS, "gnssConfig.profile.runtime_only.label");
 
 export const gnssSignalProfileLabel = (value: unknown): string =>
-    findOptionLabel(normalizeGnssSignalProfile(value), GNSS_SIGNAL_PROFILE_OPTIONS, "Balanced");
+    findOptionLabel(normalizeGnssSignalProfile(value), GNSS_SIGNAL_PROFILE_OPTIONS, "gnssConfig.signalProfile.balanced.label");
 
 export const gnssSignalProfileDescription = (value: unknown): string => {
     const normalized = normalizeGnssSignalProfile(value);

@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {Alert, Button, Card, Collapse, Input, InputNumber, Select, Space, Spin, Switch, Tag, Typography} from "antd";
 import {WifiOutlined, ReloadOutlined, EnvironmentOutlined} from "@ant-design/icons";
+import {useTranslation} from "react-i18next";
 import {useApi} from "../../hooks/useApi.ts";
 import {useIsMobile} from "../../hooks/useIsMobile.ts";
 import {useThemeMode} from "../../theme/ThemeContext.tsx";
@@ -28,6 +29,7 @@ interface Props {
 // the operator normally never types a host or a password.
 export const NtripSection: React.FC<Props> = ({values, onChange}) => {
   const guiApi = useApi();
+  const {t} = useTranslation();
   const {colors} = useThemeMode();
   const isMobile = useIsMobile();
 
@@ -69,12 +71,12 @@ export const NtripSection: React.FC<Props> = ({values, onChange}) => {
     try {
       setStations(await fetchFor([p]));
     } catch {
-      setError(`Could not load stations from ${p.name}. Check the caster is reachable.`);
+      setError(t("settingsNtrip.loadProviderError", {provider: p.name}));
       setStations([]);
     } finally {
       setLoading(false);
     }
-  }, [fetchFor]);
+  }, [fetchFor, t]);
 
   const loadAllFree = useCallback(async () => {
     setLoading(true);
@@ -82,11 +84,11 @@ export const NtripSection: React.FC<Props> = ({values, onChange}) => {
     try {
       setStations(await fetchFor(PUBLIC_SOURCETABLE_PROVIDERS));
     } catch {
-      setError("Could not load the free networks.");
+      setError(t("settingsNtrip.loadFreeNetworksError"));
     } finally {
       setLoading(false);
     }
-  }, [fetchFor]);
+  }, [fetchFor, t]);
 
   const selectProvider = (p: NtripProvider) => {
     setProviderId(p.id);
@@ -126,17 +128,16 @@ export const NtripSection: React.FC<Props> = ({values, onChange}) => {
   return (
     <Card size="small" style={{marginBottom: 16}}>
       <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8}}>
-        <Text strong style={{fontSize: 14}}><WifiOutlined style={{marginRight: 6}}/>NTRIP RTK Corrections</Text>
+        <Text strong style={{fontSize: 14}}><WifiOutlined style={{marginRight: 6}}/>{t("settingsNtrip.title")}</Text>
         <Switch checked={ntripEnabled} onChange={(v) => onChange("ntrip_enabled", v)}/>
       </div>
 
       {!ntripEnabled ? (
-        <Alert type="info" showIcon message="Without NTRIP, GPS accuracy is ~2–5 m — not enough for autonomous mowing." />
+        <Alert type="info" showIcon message={t("settingsNtrip.disabledWarning")} />
       ) : (
         <>
           <Paragraph type="secondary" style={{marginTop: 0, marginBottom: 12}}>
-            Pick a correction network, then choose the nearest base station on the map. Credentials for the free
-            networks are filled in for you.
+            {t("settingsNtrip.intro")}
           </Paragraph>
 
           {/* Provider picker */}
@@ -152,43 +153,43 @@ export const NtripSection: React.FC<Props> = ({values, onChange}) => {
                 }}>
                   <div style={{display: "flex", alignItems: "center", gap: 6}}>
                     <span style={{width: 10, height: 10, borderRadius: 5, background: p.color}}/>
-                    <Text strong style={{fontSize: 13}}>{p.name}</Text>
+                    <Text strong style={{fontSize: 13}}>{t(p.name)}</Text>
                   </div>
                   <div style={{fontSize: 11, color: colors.textMuted}}>{p.region}</div>
                 </button>
               );
             })}
             <Button size="small" onClick={loadAllFree} icon={<EnvironmentOutlined/>} style={{alignSelf: "center"}}>
-              Show all free networks
+              {t("settingsNtrip.showAllFreeNetworks")}
             </Button>
           </div>
 
           {provider?.note && (
-            <Paragraph type="secondary" style={{fontSize: 12, marginTop: -4}}>{provider.note}</Paragraph>
+            <Paragraph type="secondary" style={{fontSize: 12, marginTop: -4}}>{t(provider.note)}</Paragraph>
           )}
 
           {/* Manual caster fields for custom / paid providers */}
           {needsManualCaster && (
             <Space wrap style={{marginBottom: 12}}>
-              <Input addonBefore="Host" style={{width: 240}} value={values.ntrip_host ?? ""}
+              <Input addonBefore={t("settingsNtrip.host")} style={{width: 240}} value={values.ntrip_host ?? ""}
                      onChange={(e) => onChange("ntrip_host", e.target.value)} placeholder="caster.example.com"/>
-              <InputNumber addonBefore="Port" value={values.ntrip_port ?? 2101}
+              <InputNumber addonBefore={t("settingsNtrip.port")} value={values.ntrip_port ?? 2101}
                            onChange={(v) => onChange("ntrip_port", v)}/>
               {provider?.requiresOwnCreds && (
                 <>
-                  <Input addonBefore="User" value={values.ntrip_user ?? ""}
+                  <Input addonBefore={t("settingsNtrip.user")} value={values.ntrip_user ?? ""}
                          onChange={(e) => onChange("ntrip_user", e.target.value)}/>
-                  <Input.Password addonBefore="Pass" value={values.ntrip_password ?? ""}
+                  <Input.Password addonBefore={t("settingsNtrip.pass")} value={values.ntrip_password ?? ""}
                                   onChange={(e) => onChange("ntrip_password", e.target.value)}/>
                 </>
               )}
               <Button icon={<ReloadOutlined/>} onClick={() => provider && loadProvider(provider)}
-                      disabled={!values.ntrip_host}>Load stations</Button>
+                      disabled={!values.ntrip_host}>{t("settingsNtrip.loadStations")}</Button>
             </Space>
           )}
 
           {provider?.userIsEmail && (
-            <Input addonBefore="Your email (RTK2go username)" style={{maxWidth: 380, marginBottom: 12}}
+            <Input addonBefore={t("settingsNtrip.emailAddon")} style={{maxWidth: 380, marginBottom: 12}}
                    value={values.ntrip_user ?? ""} onChange={(e) => onChange("ntrip_user", e.target.value)}
                    placeholder="you@example.com"/>
           )}
@@ -201,13 +202,13 @@ export const NtripSection: React.FC<Props> = ({values, onChange}) => {
           ) : stations.length > 0 ? (
             <>
               <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8}}>
-                <Text type="secondary" style={{fontSize: 12}}>{stations.length} base stations — click the nearest one</Text>
-                {values.ntrip_mountpoint && <Tag color="success">Selected: {values.ntrip_mountpoint}</Tag>}
+                <Text type="secondary" style={{fontSize: 12}}>{t("settingsNtrip.baseStationsCount", {count: stations.length})}</Text>
+                {values.ntrip_mountpoint && <Tag color="success">{t("settingsNtrip.selected", {mountpoint: values.ntrip_mountpoint})}</Tag>}
               </div>
               <NtripStationMap stations={stations} selectedMountpoint={values.ntrip_mountpoint}
                                selectedProviderId={providerId} center={center} onSelect={selectStation}
                                height={isMobile ? 280 : 360}/>
-              <Select showSearch placeholder="…or search a station by name"
+              <Select showSearch placeholder={t("settingsNtrip.searchStationPlaceholder")}
                       style={{width: "100%", marginTop: 8}} value={values.ntrip_mountpoint || undefined}
                       options={stations.map((s) => ({value: s.mountpoint, label: `${s.mountpoint} · ${s.providerName}${s.country ? ` (${s.country})` : ""}`}))}
                       onChange={(mp) => { const s = stations.find((x) => x.mountpoint === mp); if (s) selectStation(s); }}
@@ -218,14 +219,14 @@ export const NtripSection: React.FC<Props> = ({values, onChange}) => {
           {/* Advanced raw fields */}
           <Collapse ghost style={{marginTop: 8}} items={[{
             key: "raw",
-            label: <Text type="secondary" style={{fontSize: 12}}>Advanced: raw NTRIP fields</Text>,
+            label: <Text type="secondary" style={{fontSize: 12}}>{t("settingsNtrip.advancedRawFields")}</Text>,
             children: (
               <Space wrap>
-                <Input addonBefore="Host" value={values.ntrip_host ?? ""} onChange={(e) => onChange("ntrip_host", e.target.value)}/>
-                <InputNumber addonBefore="Port" value={values.ntrip_port ?? 2101} onChange={(v) => onChange("ntrip_port", v)}/>
-                <Input addonBefore="Mountpoint" value={values.ntrip_mountpoint ?? ""} onChange={(e) => onChange("ntrip_mountpoint", e.target.value)}/>
-                <Input addonBefore="User" value={values.ntrip_user ?? ""} onChange={(e) => onChange("ntrip_user", e.target.value)}/>
-                <Input.Password addonBefore="Pass" value={values.ntrip_password ?? ""} onChange={(e) => onChange("ntrip_password", e.target.value)}/>
+                <Input addonBefore={t("settingsNtrip.host")} value={values.ntrip_host ?? ""} onChange={(e) => onChange("ntrip_host", e.target.value)}/>
+                <InputNumber addonBefore={t("settingsNtrip.port")} value={values.ntrip_port ?? 2101} onChange={(v) => onChange("ntrip_port", v)}/>
+                <Input addonBefore={t("settingsNtrip.mountpoint")} value={values.ntrip_mountpoint ?? ""} onChange={(e) => onChange("ntrip_mountpoint", e.target.value)}/>
+                <Input addonBefore={t("settingsNtrip.user")} value={values.ntrip_user ?? ""} onChange={(e) => onChange("ntrip_user", e.target.value)}/>
+                <Input.Password addonBefore={t("settingsNtrip.pass")} value={values.ntrip_password ?? ""} onChange={(e) => onChange("ntrip_password", e.target.value)}/>
               </Space>
             ),
           }]}/>

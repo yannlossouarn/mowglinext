@@ -1,3 +1,4 @@
+import {useTranslation} from "react-i18next";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 
 /**
@@ -15,7 +16,8 @@ interface BTStateGraphProps {
 
 interface Node {
   key: string;
-  label: string;
+  /** i18n key (under the btStateGraph namespace) for the display label. */
+  labelKey: string;
   x: number;
   y: number;
   group: 'cycle' | 'fault' | 'manual';
@@ -29,23 +31,23 @@ interface Edge {
 
 const NODES: Node[] = [
   // main cycle (left to right)
-  {key: 'IDLE_DOCKED',   label: 'Docked',     x: 60,  y: 70, group: 'cycle'},
-  {key: 'UNDOCKING',     label: 'Undock',     x: 170, y: 70, group: 'cycle'},
-  {key: 'TRANSIT',       label: 'Transit',    x: 280, y: 70, group: 'cycle'},
-  {key: 'MOWING',        label: 'Mow',        x: 390, y: 70, group: 'cycle'},
-  {key: 'RETURNING_HOME', label: 'Return',    x: 500, y: 70, group: 'cycle'},
-  {key: 'DOCKING',       label: 'Dock',       x: 610, y: 70, group: 'cycle'},
-  {key: 'CHARGING',      label: 'Charge',     x: 720, y: 70, group: 'cycle'},
+  {key: 'IDLE_DOCKED',   labelKey: 'nodeDocked',   x: 60,  y: 70, group: 'cycle'},
+  {key: 'UNDOCKING',     labelKey: 'nodeUndock',   x: 170, y: 70, group: 'cycle'},
+  {key: 'TRANSIT',       labelKey: 'nodeTransit',  x: 280, y: 70, group: 'cycle'},
+  {key: 'MOWING',        labelKey: 'nodeMow',      x: 390, y: 70, group: 'cycle'},
+  {key: 'RETURNING_HOME', labelKey: 'nodeReturn',  x: 500, y: 70, group: 'cycle'},
+  {key: 'DOCKING',       labelKey: 'nodeDock',     x: 610, y: 70, group: 'cycle'},
+  {key: 'CHARGING',      labelKey: 'nodeCharge',   x: 720, y: 70, group: 'cycle'},
 
   // fault row (below)
-  {key: 'RAIN_DETECTED_DOCKING',     label: 'Rain → dock', x: 280, y: 140, group: 'fault'},
-  {key: 'LOW_BATTERY_DOCKING',       label: 'Low batt',    x: 390, y: 140, group: 'fault'},
-  {key: 'BOUNDARY_RECOVERY',         label: 'Recovery',    x: 500, y: 140, group: 'fault'},
-  {key: 'EMERGENCY',                 label: 'E-stop',      x: 610, y: 140, group: 'fault'},
+  {key: 'RAIN_DETECTED_DOCKING',     labelKey: 'nodeRainDock', x: 280, y: 140, group: 'fault'},
+  {key: 'LOW_BATTERY_DOCKING',       labelKey: 'nodeLowBatt',  x: 390, y: 140, group: 'fault'},
+  {key: 'BOUNDARY_RECOVERY',         labelKey: 'nodeRecovery', x: 500, y: 140, group: 'fault'},
+  {key: 'EMERGENCY',                 labelKey: 'nodeEstop',    x: 610, y: 140, group: 'fault'},
 
   // manual row (above)
-  {key: 'MANUAL_MOWING',  label: 'Manual',    x: 390, y: 20,  group: 'manual'},
-  {key: 'RECORDING',      label: 'Recording', x: 280, y: 20,  group: 'manual'},
+  {key: 'MANUAL_MOWING',  labelKey: 'nodeManual',    x: 390, y: 20,  group: 'manual'},
+  {key: 'RECORDING',      labelKey: 'nodeRecording', x: 280, y: 20,  group: 'manual'},
 ];
 
 const EDGES: Edge[] = [
@@ -102,6 +104,7 @@ const NODE_H = 28;
 const CYCLE_ORDER = ['IDLE_DOCKED', 'UNDOCKING', 'TRANSIT', 'MOWING', 'RETURNING_HOME', 'DOCKING', 'CHARGING'];
 
 export function BTStateGraph({current}: BTStateGraphProps) {
+  const {t} = useTranslation();
   const {colors} = useThemeMode();
   const activeKey = nodeFor(current);
   const activeCycleIdx = activeKey ? CYCLE_ORDER.indexOf(activeKey) : -1;
@@ -147,7 +150,7 @@ export function BTStateGraph({current}: BTStateGraphProps) {
           fontSize: 11, color: colors.textMuted, letterSpacing: '0.08em',
           textTransform: 'uppercase' as const,
         }}>
-          Behavior tree state
+          {t('btStateGraph.heading')}
         </div>
         {current && (
           <div style={{
@@ -273,7 +276,7 @@ export function BTStateGraph({current}: BTStateGraphProps) {
                 fontWeight={isActive ? 700 : past ? 600 : 500}
                 fill={isActive ? accent : past ? colors.text : colors.textSecondary}
               >
-                {n.label}
+                {t(`btStateGraph.${n.labelKey}`)}
               </text>
             </g>
           );
@@ -285,15 +288,15 @@ export function BTStateGraph({current}: BTStateGraphProps) {
       }}>
         <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
           <span style={{width: 10, height: 3, background: colors.accent, borderRadius: 2}}/>
-          Cycle
+          {t('btStateGraph.legendCycle')}
         </div>
         <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
           <span style={{width: 10, height: 3, background: colors.sky, borderRadius: 2}}/>
-          Operator
+          {t('btStateGraph.legendOperator')}
         </div>
         <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
           <span style={{width: 10, height: 3, background: colors.amber, borderRadius: 2}}/>
-          Fault / recovery
+          {t('btStateGraph.legendFaultRecovery')}
         </div>
       </div>
     </div>

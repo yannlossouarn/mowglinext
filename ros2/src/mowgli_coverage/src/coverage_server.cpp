@@ -41,6 +41,10 @@ nav2_util::CallbackReturn CoverageServer::on_configure(
   // plans with `ros2 param set` (no node restart).
   declare_parameter<double>("chassis_safety_inset", 0.0);
   declare_parameter<double>("min_swath_length", 0.15);
+  // Hard floor on every turn-around / fillet arc in the continuous path: the
+  // robot's minimum MPPI-trackable turning radius (mowgli_robot.yaml). Read live
+  // in planCoverage so it can be field-tuned between plans.
+  declare_parameter<double>("min_turning_radius", 0.15);
 
   // Action server result timeout. Keep this >= the BT client's per-plan wait
   // (PlanCoverageArea, 12 s): if the server expires the result first the
@@ -430,9 +434,13 @@ void CoverageServer::planCoverage()
     {
       outer.emplace_back(p.x, p.y);
     }
-    constexpr double kConnectorTurnRadius = 0.30;  // forward turn-around arc radius (m)
+    constexpr double kConnectorTurnRadius = 0.30;  // nominal turn-around arc radius (m)
     constexpr double kConnectorStep = 0.03;  // connector densify step (m)
-    const auto continuous = buildContinuousPath(plan, outer, kConnectorTurnRadius, kConnectorStep);
+    // Floor on every turn-around / fillet arc — never plan a loop tighter than
+    // the robot can track (read live so it's field-tunable per plan).
+    const double min_turning_radius = get_parameter("min_turning_radius").as_double();
+    const auto continuous =
+        buildContinuousPath(plan, outer, kConnectorTurnRadius, min_turning_radius, kConnectorStep);
 
     result->full_path.header = header;
     double total = 0.0;

@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GnssReceiverActionsCard } from "./GnssReceiverActionsCard.tsx";
+import en from "../../i18n/locales/en.json";
 
 const requestMock = vi.fn();
 
@@ -65,7 +66,7 @@ describe("GnssReceiverActionsCard", () => {
         const user = userEvent.setup();
         renderCard({ onPersistBeforeAction: persistMock });
 
-        await user.click(screen.getByRole("button", { name: /Plan profile apply/i }));
+        await user.click(screen.getByRole("button", { name: new RegExp(en.settingsGnssReceiver.actionPlan, "i") }));
 
         await waitFor(() => {
             expect(requestMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -76,10 +77,10 @@ describe("GnssReceiverActionsCard", () => {
         expect(persistMock).toHaveBeenCalledTimes(1);
         const successMessages = await screen.findAllByText("GNSS profile plan succeeded");
         expect(successMessages.length).toBeGreaterThan(0);
-        expect(screen.getByText("Backend warnings")).toBeInTheDocument();
+        expect(screen.getByText(en.settingsGnssReceiver.backendWarnings)).toBeInTheDocument();
 
         await user.click(screen.getByText("gnss_config_plan"));
-        expect(await screen.findByText("Command summary")).toBeInTheDocument();
+        expect(await screen.findByText(en.settingsGnssReceiver.commandSummary)).toBeInTheDocument();
         expect(screen.getByText("stdout")).toBeInTheDocument();
     });
 
@@ -105,8 +106,8 @@ describe("GnssReceiverActionsCard", () => {
         const user = userEvent.setup();
         renderCard({ onPersistBeforeAction: persistMock });
 
-        await user.click(screen.getByRole("button", { name: "Apply profile to receiver" }));
-        await user.click(await screen.findByRole("button", { name: "Apply profile" }));
+        await user.click(screen.getByRole("button", { name: en.settingsGnssReceiver.actionApply }));
+        await user.click(await screen.findByRole("button", { name: en.settingsGnssReceiver.confirmApplyOk }));
 
         await waitFor(() => {
             expect(requestMock).toHaveBeenCalledWith(expect.objectContaining({

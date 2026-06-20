@@ -1,4 +1,5 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
+import {useTranslation} from "react-i18next";
 import {Segmented, Input, InputNumber, Switch, Collapse, Spin, Empty, Tag, Alert, Button, App, Tooltip} from "antd";
 import {SearchOutlined, WarningOutlined, InfoCircleOutlined} from "@ant-design/icons";
 import {useApi} from "../hooks/useApi.ts";
@@ -19,12 +20,13 @@ interface ParamsResponse {
   parameters: RosParameter[];
 }
 
-// Profile labels in French. The catalog keys stay basic/middle/expert; only the
-// display strings are localized here.
-const TIER_LABEL_FR: Record<ParamTier, string> = {
-  basic: "Débutant",
-  middle: "Avancé",
-  expert: "Expert",
+// Profile labels. The catalog keys stay basic/middle/expert; only the display
+// strings are localized here. We store i18n KEY strings and resolve them with
+// t() at render time (see AppShell.tsx for the same pattern).
+const TIER_LABEL_KEY: Record<ParamTier, string> = {
+  basic: "parametersPage.tierBasic",
+  middle: "parametersPage.tierMiddle",
+  expert: "parametersPage.tierExpert",
 };
 
 // Parameters that affect physical motion or safety. Editing these live can move
@@ -43,6 +45,7 @@ function ParamRow({
   disabled: boolean;
   isMobile: boolean;
 }) {
+  const {t} = useTranslation();
   const {colors} = useThemeMode();
   const {modal} = App.useApp();
   const meta = paramMeta(param.name);
@@ -66,26 +69,25 @@ function ParamRow({
   const guardedCommit = useCallback((next: unknown) => {
     if (!danger) { commit(next); return; }
     modal.confirm({
-      title: "Appliquer ce réglage de sécurité ?",
+      title: t("parametersPage.confirmSafetyTitle"),
       icon: <WarningOutlined style={{color: colors.danger}}/>,
       content: (
         <div>
           <p>
-            <strong>{meta.label}</strong> influence le mouvement ou la sécurité du robot.
-            La nouvelle valeur s'applique <strong>immédiatement</strong> sur le robot en marche.
+            <strong>{t(meta.label)}</strong> {t("parametersPage.confirmSafetyBody")}
           </p>
           <p style={{marginBottom: 0, color: colors.textMuted}}>
-            Nouvelle valeur : <strong>{String(next)}</strong>{meta.unit ? ` ${meta.unit}` : ""}
+            {t("parametersPage.confirmNewValue")} <strong>{String(next)}</strong>{meta.unit ? ` ${meta.unit}` : ""}
           </p>
         </div>
       ),
-      okText: "Appliquer",
+      okText: t("parametersPage.apply"),
       okButtonProps: {danger: true},
-      cancelText: "Annuler",
+      cancelText: t("parametersPage.cancel"),
       onOk: () => commit(next),
       onCancel: () => setValue(param.value), // revert the visual edit
     });
-  }, [danger, commit, modal, colors, meta, param.value]);
+  }, [danger, commit, modal, colors, meta, param.value, t]);
 
   const controlWidth = isMobile ? "100%" : undefined;
 
@@ -106,7 +108,7 @@ function ParamRow({
       // Vectors are read-only here: editing them safely needs a per-element UI
       // (a single text field would let a malformed array reach a live param).
       return (
-        <Tooltip title="Les tableaux sont en lecture seule : modifier un vecteur en sécurité nécessite une interface par élément, pas encore disponible ici.">
+        <Tooltip title={t("parametersPage.arrayReadOnlyTooltip")}>
           <span style={{
             display: "inline-flex", flexWrap: "wrap", gap: 4,
             maxWidth: isMobile ? "100%" : 320,
@@ -139,15 +141,15 @@ function ParamRow({
       <div style={{minWidth: 0}}>
         <Tooltip title={param.name}>
           <div style={{fontWeight: 600, fontSize: 13}}>
-            {meta.label}
+            {t(meta.label)}
             {danger && (
               <Tag color="error" icon={<WarningOutlined/>} style={{marginLeft: 8}}>
-                Sécurité
+                {t("parametersPage.safetyTag")}
               </Tag>
             )}
           </div>
         </Tooltip>
-        <div style={{fontSize: 11, color: colors.textMuted, marginTop: 2}}>{meta.description}</div>
+        <div style={{fontSize: 11, color: colors.textMuted, marginTop: 2}}>{t(meta.description)}</div>
       </div>
       <div style={{flexShrink: 0, width: isMobile ? "100%" : undefined}}>{control}</div>
     </div>
@@ -155,6 +157,7 @@ function ParamRow({
 }
 
 export const ParametersPage = () => {
+  const {t} = useTranslation();
   const guiApi = useApi();
   const {notification} = App.useApp();
   const {colors} = useThemeMode();
@@ -179,11 +182,11 @@ export const ParametersPage = () => {
       const res = await guiApi.request<ParamsResponse>({path: "/params", method: "GET", format: "json"});
       setParams((res.data?.parameters ?? []).slice().sort((a, b) => a.name.localeCompare(b.name)));
     } catch (e) {
-      setError("Impossible de charger les paramètres — le robot est-il connecté ?");
+      setError(t("parametersPage.loadError"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => { fetchParams(); }, [fetchParams]);
 
@@ -195,12 +198,12 @@ export const ParametersPage = () => {
         body: {parameters: [{name, value}]},
       });
       setParams((prev) => prev.map((p) => (p.name === name ? {...p, value} : p)));
-      notification.success({message: `${name} mis à jour`, duration: 2});
+      notification.success({message: t("parametersPage.updateSuccess", {name}), duration: 2});
     } catch {
-      notification.error({message: `Échec de la mise à jour de ${name}`});
+      notification.error({message: t("parametersPage.updateFailure", {name})});
       throw new Error("commit failed");
     }
-  }, [notification]);
+  }, [notification, t]);
 
   // Filter by the selected profile (cumulative) and the search box, then group.
   const groups = useMemo(() => {
@@ -210,13 +213,13 @@ export const ParametersPage = () => {
     for (const p of params) {
       const meta = paramMeta(p.name);
       if (TIER_RANK[meta.tier] > maxRank) continue;
-      if (q && !p.name.toLowerCase().includes(q) && !meta.label.toLowerCase().includes(q)) continue;
+      if (q && !p.name.toLowerCase().includes(q) && !t(meta.label).toLowerCase().includes(q)) continue;
       const list = byGroup.get(meta.group) ?? [];
       list.push(p);
       byGroup.set(meta.group, list);
     }
     return Array.from(byGroup.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [params, tier, search]);
+  }, [params, tier, search, t]);
 
   const shownCount = groups.reduce((n, [, list]) => n + list.length, 0);
 
@@ -226,8 +229,8 @@ export const ParametersPage = () => {
       <Alert
         type="warning"
         showIcon
-        message="Ces réglages s'appliquent en direct et ne sont pas sauvegardés dans le YAML"
-        description="Les modifications prennent effet immédiatement sur le robot en marche et sont perdues au prochain redémarrage de ROS2. Pour des valeurs persistantes, utilisez la page Réglages."
+        message={t("parametersPage.liveWarningTitle")}
+        description={t("parametersPage.liveWarningDescription")}
       />
 
       <div style={{display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between"}}>
@@ -235,15 +238,18 @@ export const ParametersPage = () => {
           <Segmented
             value={tier}
             onChange={(v) => setTier(v as ParamTier)}
-            options={TIER_ORDER.map((t) => ({label: TIER_LABEL_FR[t] ?? TIER_LABEL[t], value: t}))}
+            options={TIER_ORDER.map((tierKey) => ({
+              label: TIER_LABEL_KEY[tierKey] ? t(TIER_LABEL_KEY[tierKey]) : t(TIER_LABEL[tierKey]),
+              value: tierKey,
+            }))}
           />
           <span style={{marginLeft: 12, fontSize: 12, color: colors.textMuted}}>
-            {shownCount} paramètre{shownCount !== 1 ? "s" : ""} · application en direct
+            {t("parametersPage.shownCount", {count: shownCount})}
           </span>
         </div>
         <Input
           prefix={<SearchOutlined/>}
-          placeholder="Rechercher un paramètre…"
+          placeholder={t("parametersPage.searchPlaceholder")}
           allowClear
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -258,17 +264,14 @@ export const ParametersPage = () => {
           type="error"
           showIcon
           icon={<WarningOutlined/>}
-          message={`Mode ${TIER_LABEL_FR[tier]} — réservé aux utilisateurs avertis`}
+          message={t("parametersPage.tierGuardTitle", {tier: t(TIER_LABEL_KEY[tier])})}
           description={
             <div>
               <p style={{marginTop: 0}}>
-                Ces paramètres bas-niveau pilotent l'estimation de pose, les gains moteur, les
-                seuils de sécurité et plus encore. Une mauvaise valeur peut faire bouger le robot
-                de façon inattendue ou dégrader la localisation. Les contrôles restent verrouillés
-                tant que vous n'avez pas confirmé.
+                {t("parametersPage.tierGuardDescription")}
               </p>
               <Button danger type="primary" onClick={() => setAcknowledged(true)}>
-                J'ai compris les risques
+                {t("parametersPage.understandRisks")}
               </Button>
             </div>
           }
@@ -280,13 +283,13 @@ export const ParametersPage = () => {
       {loading ? (
         <div style={{display: "flex", justifyContent: "center", padding: 48}}><Spin/></div>
       ) : groups.length === 0 ? (
-        <Empty description={search ? "Aucun paramètre ne correspond à votre recherche" : "Aucun paramètre dans ce profil"}/>
+        <Empty description={search ? t("parametersPage.emptySearch") : t("parametersPage.emptyProfile")}/>
       ) : (
         <Collapse
           defaultActiveKey={groups.map(([g]) => g)}
           items={groups.map(([group, list]) => ({
             key: group,
-            label: <span style={{fontWeight: 600}}>{group} <Tag style={{marginLeft: 6}}>{list.length}</Tag></span>,
+            label: <span style={{fontWeight: 600}}>{t(`paramGroups.${group}`)} <Tag style={{marginLeft: 6}}>{list.length}</Tag></span>,
             children: (
               <div style={{opacity: editsEnabled ? 1 : 0.55}}>
                 {list.map((p) => (

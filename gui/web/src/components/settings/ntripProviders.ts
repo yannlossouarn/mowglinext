@@ -28,7 +28,7 @@ export const NTRIP_PROVIDERS: NtripProvider[] = [
     requiresOwnCreds: false,
     color: "#7CFFB2",
     region: "France / Europe",
-    note: "Free community RTK network. Public login — just pick the nearest base.",
+    note: "ntripProviders.centipedeNote",
   },
   {
     id: "rtk2go",
@@ -40,7 +40,7 @@ export const NTRIP_PROVIDERS: NtripProvider[] = [
     requiresOwnCreds: false,
     color: "#5AB8FF",
     region: "Worldwide",
-    note: "Free community casters worldwide. Use your email as the username.",
+    note: "ntripProviders.rtk2goNote",
   },
   {
     id: "sapos",
@@ -50,17 +50,17 @@ export const NTRIP_PROVIDERS: NtripProvider[] = [
     requiresOwnCreds: true,
     color: "#F3A85C",
     region: "Germany",
-    note: "Paid national service — enter your state's caster host and credentials.",
+    note: "ntripProviders.saposNote",
   },
   {
     id: "custom",
-    name: "Custom caster",
+    name: "ntripProviders.customName",
     host: "",
     port: 2101,
     requiresOwnCreds: false,
     color: "#C9A8FF",
     region: "Any",
-    note: "Enter any NTRIP caster host, port and (optional) login.",
+    note: "ntripProviders.customNote",
   },
 ];
 

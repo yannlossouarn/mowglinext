@@ -84,6 +84,12 @@ TEST(ProtocolSizes, RebootPacketSize)
   EXPECT_EQ(sizeof(LlReboot), 4u);  // type(1) + magic(1) + crc(2)
 }
 
+TEST(ProtocolSizes, SetDrivePidPacketSize)
+{
+  // type(1) + kp/ki/kd/integral_limit/pwm_per_mps(5*4=20) + crc(2) = 23.
+  EXPECT_EQ(sizeof(LlSetDrivePid), 23u);
+}
+
 // ---------------------------------------------------------------------------
 // Packet ID consistency (ll_datatypes.hpp enum matches mowgli_protocol.h)
 // ---------------------------------------------------------------------------
@@ -101,6 +107,7 @@ TEST(ProtocolIds, PacketIdValues)
   EXPECT_EQ(PACKET_ID_LL_CMD_VEL, 0x50);
   EXPECT_EQ(PACKET_ID_LL_CMD_BLADE, 0x51);
   EXPECT_EQ(PACKET_ID_LL_REBOOT, 0x52);
+  EXPECT_EQ(PACKET_ID_LL_SET_DRIVE_PID, 0x53);
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +287,19 @@ TEST(ProtocolRoundtrip, CmdVelPacket)
   pkt.type = PACKET_ID_LL_CMD_VEL;
   pkt.linear_x = 0.35f;
   pkt.angular_z = -0.15f;
+
+  roundtrip_struct(pkt);
+}
+
+TEST(ProtocolRoundtrip, SetDrivePidPacket)
+{
+  LlSetDrivePid pkt{};
+  pkt.type = PACKET_ID_LL_SET_DRIVE_PID;
+  pkt.kp = 30.0f;
+  pkt.ki = 5000.0f;
+  pkt.kd = 0.0f;
+  pkt.integral_limit = 100.0f;
+  pkt.pwm_per_mps = 300.0f;
 
   roundtrip_struct(pkt);
 }

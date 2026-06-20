@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Alert, App, Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Switch, Typography } from "antd";
 import { GlobalOutlined, SettingOutlined } from "@ant-design/icons";
+import { useTranslation } from "react-i18next";
 import { useApi } from "../../hooks/useApi.ts";
 import { useDiagnostics } from "../../hooks/useDiagnostics.ts";
 import { useGnssStatus } from "../../hooks/useGnssStatus.ts";
@@ -44,6 +45,7 @@ export const PositioningSection: React.FC<Props> = ({
     onSaveAndRestartGps,
     onPersistGnssSettings,
 }) => {
+    const { t } = useTranslation();
     const guiApi = useApi();
     const { notification } = App.useApp();
     const [datumLoading, setDatumLoading] = useState(false);
@@ -69,10 +71,10 @@ export const PositioningSection: React.FC<Props> = ({
             if (parts.length === 2) {
                 onChange("datum_lat", parseFloat(parts[0]));
                 onChange("datum_lon", parseFloat(parts[1]));
-                notification.success({ message: "Datum set from current GPS position" });
+                notification.success({ message: t("settingsPositioning.datumSetFromGps") });
             }
         } catch (e: any) {
-            notification.error({ message: "Failed to get GPS position", description: e.message });
+            notification.error({ message: t("settingsPositioning.datumGpsFailed"), description: e.message });
         } finally {
             setDatumLoading(false);
         }
@@ -102,16 +104,16 @@ export const PositioningSection: React.FC<Props> = ({
                     <div>
                         <Text strong style={{ fontSize: 14 }}>
                             <GlobalOutlined style={{ marginRight: 6 }} />
-                            Map Origin (Datum)
+                            {t("settingsPositioning.mapOriginTitle")}
                         </Text>
                         <Paragraph type="secondary" style={{ margin: "4px 0 0" }}>
-                            The GPS coordinate used as origin for the local map. Place it near your docking station.
+                            {t("settingsPositioning.mapOriginDescription")}
                         </Paragraph>
                     </div>
                     <Form layout="vertical" size="small">
                         <Row gutter={[16, 0]}>
                             <Col xs={12} sm={8}>
-                                <Form.Item label="Latitude">
+                                <Form.Item label={t("settingsPositioning.latitude")}>
                                     <InputNumber
                                         value={values.datum_lat}
                                         onChange={(value) => onChange("datum_lat", value)}
@@ -122,7 +124,7 @@ export const PositioningSection: React.FC<Props> = ({
                                 </Form.Item>
                             </Col>
                             <Col xs={12} sm={8}>
-                                <Form.Item label="Longitude">
+                                <Form.Item label={t("settingsPositioning.longitude")}>
                                     <InputNumber
                                         value={values.datum_lon}
                                         onChange={(value) => onChange("datum_lon", value)}
@@ -140,7 +142,7 @@ export const PositioningSection: React.FC<Props> = ({
                                     onClick={setDatumFromGps}
                                     style={{ fontSize: 12, padding: 0 }}
                                 >
-                                    Use current GPS position (requires RTK fix)
+                                    {t("settingsPositioning.useCurrentGpsPosition")}
                                 </Button>
                             </Col>
                         </Row>
@@ -152,30 +154,30 @@ export const PositioningSection: React.FC<Props> = ({
                 showIcon
                 type={statusType}
                 style={{ marginBottom: 16 }}
-                message={`Detected receiver: ${detectedReceiver}`}
-                description={`Live Universal GNSS status: ${gpsStatus.label}. The main UI stays vendor-neutral; expert mode exposes receiver-family-specific tuning only when needed.`}
+                message={t("settingsPositioning.detectedReceiver", { receiver: detectedReceiver })}
+                description={t("settingsPositioning.liveGnssStatus", { status: gpsStatus.label })}
             />
 
             <Card
                 size="small"
-                title="GNSS Profiles"
+                title={t("settingsPositioning.gnssProfilesTitle")}
                 extra={(
                     <Space size="small">
-                        <Text type="secondary" style={{ fontSize: 12 }}>Expert mode</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>{t("settingsPositioning.expertMode")}</Text>
                         <Switch size="small" checked={expertMode} onChange={setExpertMode} />
                     </Space>
                 )}
                 style={{ marginBottom: 16 }}
             >
                 <Paragraph type="secondary" style={{ marginTop: 0 }}>
-                    Normal settings are vendor-neutral. Expert settings are receiver-family specific and stay hidden until you explicitly enable them.
+                    {t("settingsPositioning.gnssProfilesDescription")}
                 </Paragraph>
                 <Form layout="vertical" size="small">
                     <Row gutter={[16, 0]}>
                         <Col xs={24} sm={14}>
                             <Form.Item
-                                label="Signal Profile"
-                                tooltip="High-level constellation and signal preset. This is all most users need to touch."
+                                label={t("settingsPositioning.signalProfileLabel")}
+                                tooltip={t("settingsPositioning.signalProfileTooltip")}
                                 extra={<GnssSignalProfileHelp selectedProfile={selectedSignalProfile} />}
                             >
                                 <Select
@@ -183,8 +185,8 @@ export const PositioningSection: React.FC<Props> = ({
                                     onChange={(value) => onChange("gnss_signal_profile", value)}
                                     options={GNSS_SIGNAL_PROFILE_OPTIONS.map((option) => ({
                                         value: option.value,
-                                        label: option.label,
-                                        description: option.description,
+                                        label: t(option.label),
+                                        description: t(option.description),
                                     }))}
                                     optionRender={(option) => (
                                         <div>
@@ -199,8 +201,8 @@ export const PositioningSection: React.FC<Props> = ({
                         </Col>
                         <Col xs={24} sm={10}>
                             <Form.Item
-                                label="Baud"
-                                tooltip="Serial speed between the robot and the GPS receiver. Saved to the receiver flash so both sides always match — you only set it once."
+                                label={t("settingsPositioning.baudLabel")}
+                                tooltip={t("settingsPositioning.baudTooltip")}
                             >
                                 <Select
                                     value={values.gnss_serial_baud ?? 921600}
@@ -220,14 +222,13 @@ export const PositioningSection: React.FC<Props> = ({
                 type="info"
                 showIcon
                 style={{ marginBottom: 16 }}
-                message="Saved to the GPS receiver flash"
+                message={t("settingsPositioning.savedToFlashTitle")}
                 description={
                     <span>
-                        Baud and signal profile are firmware-side settings: on save they are written to the
-                        GPS receiver's flash and the receiver briefly reconnects.{" "}
-                        <Text strong>460800</Text> is the safe baud for USB serial links;{" "}
-                        <Text strong>921600</Text> needs a robust UART or adapter.{" "}
-                        {selectedSignalProfile === "custom" && GNSS_SIGNAL_PROFILE_CUSTOM_HELP_TEXT}
+                        {t("settingsPositioning.savedToFlashIntro")}{" "}
+                        <Text strong>460800</Text> {t("settingsPositioning.savedToFlashSafeBaud")}{" "}
+                        <Text strong>921600</Text> {t("settingsPositioning.savedToFlashFastBaud")}{" "}
+                        {selectedSignalProfile === "custom" && t(GNSS_SIGNAL_PROFILE_CUSTOM_HELP_TEXT)}
                     </span>
                 }
             />
@@ -244,27 +245,26 @@ export const PositioningSection: React.FC<Props> = ({
 
             {expertMode && (
                 <>
-                    <Card size="small" title={<Space><SettingOutlined /> Expert GNSS Settings</Space>} style={{ marginBottom: 16 }}>
+                    <Card size="small" title={<Space><SettingOutlined /> {t("settingsPositioning.expertGnssTitle")}</Space>} style={{ marginBottom: 16 }}>
                         <Paragraph type="secondary" style={{ marginTop: 0 }}>
-                            Receiver-family selection, raw serial wiring, and vendor-specific overrides live here.
-                            Keep these at their defaults unless you know the receiver-side implications.
+                            {t("settingsPositioning.expertGnssDescription")}
                         </Paragraph>
                         <Form layout="vertical" size="small">
                             <Row gutter={[16, 0]}>
                                 <Col xs={24} sm={12}>
-                                    <Form.Item label="Receiver Profile" tooltip="Low-level receiver command set. Backend translation to receiver-specific commands is still being wired — leave on the default unless you know you need it.">
+                                    <Form.Item label={t("settingsPositioning.receiverProfileLabel")} tooltip={t("settingsPositioning.receiverProfileTooltip")}>
                                         <Select
                                             value={normalizeGnssProfile(values.gnss_profile)}
                                             onChange={(value) => onChange("gnss_profile", value)}
                                             options={GNSS_PROFILE_OPTIONS.map((option) => ({
                                                 value: option.value,
-                                                label: option.label,
+                                                label: t(option.label),
                                             }))}
                                         />
                                     </Form.Item>
                                 </Col>
                                 <Col xs={24} sm={12}>
-                                    <Form.Item label="Position Rate">
+                                    <Form.Item label={t("settingsPositioning.positionRateLabel")}>
                                         <Select
                                             value={values.gnss_profile_rate_hz ?? 5}
                                             onChange={(value) => onChange("gnss_profile_rate_hz", value)}
@@ -278,19 +278,19 @@ export const PositioningSection: React.FC<Props> = ({
                             </Row>
                             <Row gutter={[16, 0]}>
                                 <Col xs={24} sm={10}>
-                                    <Form.Item label="Receiver Family">
+                                    <Form.Item label={t("settingsPositioning.receiverFamilyLabel")}>
                                         <Select
                                             value={values.gnss_receiver_family ?? "auto"}
                                             onChange={(value) => onChange("gnss_receiver_family", value)}
                                             options={GNSS_RECEIVER_FAMILY_OPTIONS.map((option) => ({
                                                 value: option.value,
-                                                label: option.label,
+                                                label: t(option.label),
                                             }))}
                                         />
                                     </Form.Item>
                                 </Col>
                                 <Col xs={24} sm={14}>
-                                    <Form.Item label="Serial Device">
+                                    <Form.Item label={t("settingsPositioning.serialDeviceLabel")}>
                                         <Input
                                             value={values.gnss_serial_device ?? "/dev/ttyAMA4"}
                                             onChange={(event) => onChange("gnss_serial_device", event.target.value)}
@@ -301,7 +301,7 @@ export const PositioningSection: React.FC<Props> = ({
                             </Row>
                             <Row gutter={[16, 0]}>
                                 <Col xs={12} sm={6}>
-                                    <Form.Item label="RTK Wait After Undock">
+                                    <Form.Item label={t("settingsPositioning.rtkWaitAfterUndockLabel")}>
                                         <InputNumber
                                             value={values.gps_wait_after_undock_sec}
                                             onChange={(value) => onChange("gps_wait_after_undock_sec", value)}
@@ -313,7 +313,7 @@ export const PositioningSection: React.FC<Props> = ({
                                     </Form.Item>
                                 </Col>
                                 <Col xs={12} sm={6}>
-                                    <Form.Item label="GPS Timeout">
+                                    <Form.Item label={t("settingsPositioning.gpsTimeoutLabel")}>
                                         <InputNumber
                                             value={values.gps_timeout_sec}
                                             onChange={(value) => onChange("gps_timeout_sec", value)}
@@ -329,8 +329,8 @@ export const PositioningSection: React.FC<Props> = ({
                         <Alert
                             type="info"
                             showIcon
-                            message="Expert-mode scope"
-                            description="Signal-group presets, raw signal-group values, PVT algorithm, RTK reliability, RTK timeout, and DGPS timeout are stored here for future backend translation. Raw command textarea, dry-run plan, and reset/apply tooling still need a dedicated API."
+                            message={t("settingsPositioning.expertScopeTitle")}
+                            description={t("settingsPositioning.expertScopeDescription")}
                         />
                     </Card>
 

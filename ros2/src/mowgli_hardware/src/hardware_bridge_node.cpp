@@ -148,6 +148,16 @@ private:
     // ticks_per_meter matches the firmware-side scaling).
     wheel_track_ = declare_parameter<double>("wheel_track", 0.325);
     ticks_per_meter_ = declare_parameter<double>("ticks_per_meter", 300.0);
+    // Drive-motor wheel-velocity PID gains + feedforward. Pushed to the STM32
+    // firmware (PACKET_ID_LL_SET_DRIVE_PID) so the GUI can retune the per-wheel
+    // loop without reflashing. Defaults mirror the firmware compile-time
+    // fallback (cpp_main.cpp WHEEL_PI_* / board.h PWM_PER_MPS). Live-tunable via
+    // the set-parameters callback below; the firmware re-clamps every value.
+    wheel_pid_kp_ = declare_parameter<double>("wheel_pid_kp", 30.0);
+    wheel_pid_ki_ = declare_parameter<double>("wheel_pid_ki", 5000.0);
+    wheel_pid_kd_ = declare_parameter<double>("wheel_pid_kd", 0.0);
+    wheel_pid_integral_limit_ = declare_parameter<double>("wheel_pid_integral_limit", 100.0);
+    wheel_pid_pwm_per_mps_ = declare_parameter<double>("wheel_pid_pwm_per_mps", 300.0);
     // Sub-deadband forward-velocity clamp threshold (see min_linear_vel_).
     // Default 0.05 (was a hardcoded 0.15) — the PX4 PID firmware can track
     // slow setpoints now. Live-tunable via the callback below.
@@ -157,13 +167,52 @@ private:
         {
           rcl_interfaces::msg::SetParametersResult result;
           result.successful = true;
+          bool drive_pid_changed = false;
           for (const auto& p : params)
           {
-            if (p.get_name() == "min_linear_vel" &&
-                p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE)
+            if (p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE)
+            {
+              continue;
+            }
+            const std::string& name = p.get_name();
+            if (name == "min_linear_vel")
             {
               min_linear_vel_ = p.as_double();
             }
+            else if (name == "wheel_pid_kp")
+            {
+              wheel_pid_kp_ = p.as_double();
+              drive_pid_changed = true;
+            }
+            else if (name == "wheel_pid_ki")
+            {
+              wheel_pid_ki_ = p.as_double();
+              drive_pid_changed = true;
+            }
+            else if (name == "wheel_pid_kd")
+            {
+              wheel_pid_kd_ = p.as_double();
+              drive_pid_changed = true;
+            }
+            else if (name == "wheel_pid_integral_limit")
+            {
+              wheel_pid_integral_limit_ = p.as_double();
+              drive_pid_changed = true;
+            }
+            else if (name == "wheel_pid_pwm_per_mps")
+            {
+              wheel_pid_pwm_per_mps_ = p.as_double();
+              drive_pid_changed = true;
+            }
+          }
+          // Push the new gains to the firmware immediately (live apply, no
+          // restart), and arm a couple of heartbeat resends in case this packet
+          // is lost. The firmware re-clamps every value, so this callback does
+          // not reject out-of-range inputs here.
+          if (drive_pid_changed)
+          {
+            send_drive_pid();
+            pid_resend_count_ = std::max(pid_resend_count_, 2);
           }
           return result;
         });
@@ -374,6 +423,17 @@ private:
                                              --startup_release_count_;
                                            }
                                            send_heartbeat();
+                                           // Re-push the drive PID on the first
+                                           // few heartbeats after each
+                                           // (re)connect so the firmware (which
+                                           // has no config persistence) gets the
+                                           // host's gains even if one packet is
+                                           // lost during USB re-enumeration.
+                                           if (pid_resend_count_ > 0 && serial_->is_open())
+                                           {
+                                             send_drive_pid();
+                                             --pid_resend_count_;
+                                           }
                                          });
 
     // High-level state.
@@ -402,6 +462,10 @@ private:
         return;  // Still not open; will retry next tick.
       }
       last_serial_rx_time_ = now();
+      // The firmware just re-enumerated (flash / reboot / replug) and is back on
+      // its compile-time default gains — re-arm the drive-PID push so the host's
+      // values are restored over the next few heartbeats.
+      pid_resend_count_ = 5;
       RCLCPP_INFO(get_logger(), "Serial port re-opened successfully.");
     }
 
@@ -1431,6 +1495,40 @@ private:
     send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt), sizeof(LlReboot) - sizeof(uint16_t));
   }
 
+  // Push the drive-motor PID gains + feedforward to the firmware. The board has
+  // no config persistence, so the bridge is the source of truth and re-sends
+  // these on every (re)connect (pid_resend_count_) and whenever a parameter
+  // changes. The firmware validates/clamps every field on receipt.
+  void send_drive_pid()
+  {
+    // Defensive: the set-parameters callback can fire during declare_parameters
+    // (before open_serial_port() constructs serial_), and send_raw_packet would
+    // dereference a null serial_. The current declaration order avoids it, but
+    // guard so a future reorder / added wheel_pid_* param can't crash the node.
+    if (!serial_)
+    {
+      return;
+    }
+    LlSetDrivePid pkt{};
+    pkt.type = PACKET_ID_LL_SET_DRIVE_PID;
+    pkt.kp = static_cast<float>(wheel_pid_kp_);
+    pkt.ki = static_cast<float>(wheel_pid_ki_);
+    pkt.kd = static_cast<float>(wheel_pid_kd_);
+    pkt.integral_limit = static_cast<float>(wheel_pid_integral_limit_);
+    pkt.pwm_per_mps = static_cast<float>(wheel_pid_pwm_per_mps_);
+    if (send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt),
+                        sizeof(LlSetDrivePid) - sizeof(uint16_t)))
+    {
+      RCLCPP_INFO(get_logger(),
+                  "Sent drive PID: kp=%.2f ki=%.2f kd=%.2f integral_limit=%.1f pwm_per_mps=%.1f",
+                  wheel_pid_kp_,
+                  wheel_pid_ki_,
+                  wheel_pid_kd_,
+                  wheel_pid_integral_limit_,
+                  wheel_pid_pwm_per_mps_);
+    }
+  }
+
   void on_reboot_board(const std::shared_ptr<std_srvs::srv::Trigger::Request>,
                        std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
@@ -1660,6 +1758,18 @@ private:
   double dock_yaw_{0.0};
   double wheel_track_{0.325};
   double ticks_per_meter_{300.0};
+  // Drive-motor wheel-velocity PID gains + feedforward, pushed to the STM32
+  // (PACKET_ID_LL_SET_DRIVE_PID). Defaults mirror the firmware compile-time
+  // fallback. The board has no persistence, so the bridge re-sends on every
+  // (re)connect; pid_resend_count_ > 0 makes send_drive_pid() fire on the next
+  // N heartbeat ticks (seeded so the first packet survives USB re-enumeration /
+  // firmware boot even if one is dropped).
+  double wheel_pid_kp_{30.0};
+  double wheel_pid_ki_{5000.0};
+  double wheel_pid_kd_{0.0};
+  double wheel_pid_integral_limit_{100.0};
+  double wheel_pid_pwm_per_mps_{300.0};
+  int pid_resend_count_{5};
   // Host-side sub-deadband forward-velocity clamp (on_cmd_vel): any |vx| below
   // this is zeroed before reaching the firmware. Lowered from the legacy 0.15
   // (hand-rolled wheel-PI breakaway) to 0.05 now the vendored PX4 PID can track

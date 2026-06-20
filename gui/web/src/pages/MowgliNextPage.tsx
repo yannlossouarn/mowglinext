@@ -1,6 +1,8 @@
 import {App} from "antd";
 import {motion} from "framer-motion";
 import {useNavigate} from "react-router-dom";
+import {useTranslation} from "react-i18next";
+import type {TFunction} from "i18next";
 import {Sparkles, ChevronRight, Wifi, Droplets, Thermometer} from "lucide-react";
 
 import {useIsMobile} from "../hooks/useIsMobile";
@@ -95,6 +97,7 @@ function useMowerData() {
 }
 
 export const MowgliNextPage = () => {
+  const {t} = useTranslation();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
   const {modal} = App.useApp();
@@ -166,28 +169,28 @@ export const MowgliNextPage = () => {
     : 0;
 
   const headline = data.isMoving && remainingMin > 0
-    ? <>Encore <span style={{
+    ? <>{t('mowgliNextPage.headlineUntilHomePrefix')}<span style={{
         background: 'var(--grad-primary, linear-gradient(135deg, #7CFFB2, #2BAA66))',
         WebkitBackgroundClip: 'text', backgroundClip: 'text',
         WebkitTextFillColor: 'transparent', color: 'transparent',
-      }}>{remainingMin} min</span> avant la maison.</>
+      }}>{t('mowgliNextPage.headlineMinutes', {value: remainingMin})}</span>{t('mowgliNextPage.headlineUntilHomeSuffix')}</>
     : data.state === "CHARGING"
-      ? <>En charge · <span style={{
+      ? <>{t('mowgliNextPage.headlineChargingPrefix')}<span style={{
           background: 'var(--grad-primary, linear-gradient(135deg, #7CFFB2, #2BAA66))',
           WebkitBackgroundClip: 'text', backgroundClip: 'text',
           WebkitTextFillColor: 'transparent', color: 'transparent',
-        }}>{Math.round(data.battery)} %</span></>
+        }}>{t('mowgliNextPage.headlinePercent', {value: Math.round(data.battery)})}</span></>
       : data.emergency
-        ? <span style={{color: 'var(--rose, #FF6B7A)'}}>Arrêt d'urgence</span>
-        : <>Mowgli est <em style={{fontStyle: 'italic', color: 'var(--lime, #7CFFB2)'}}>au repos</em>.</>;
+        ? <span style={{color: 'var(--rose, #FF6B7A)'}}>{t('mowgliNextPage.emergencyStop')}</span>
+        : <>{t('mowgliNextPage.headlineIdlePrefix')}<em style={{fontStyle: 'italic', color: 'var(--lime, #7CFFB2)'}}>{t('mowgliNextPage.headlineIdleEmphasis')}</em>{t('mowgliNextPage.headlineIdleSuffix')}</>;
 
   const subline = data.isMoving
-    ? `Avance à ${data.gpsLabel.toLowerCase()} · ${data.currentArea ?? "zone active"}`
+    ? t('mowgliNextPage.sublineMoving', {gps: data.gpsLabel.toLowerCase(), area: data.currentArea ?? t('mowgliNextPage.activeZone')})
     : data.charging
-      ? `Sur la dock, ${data.current.toFixed(1)} A en entrée.`
+      ? t('mowgliNextPage.sublineCharging', {current: data.current.toFixed(1)})
       : data.emergency
-        ? "Sécurise la zone puis relance avec le bouton vert."
-        : "Tape Play pour démarrer une tonte ou laisse le planning gérer.";
+        ? t('mowgliNextPage.sublineEmergency')
+        : t('mowgliNextPage.sublineIdle');
 
   // The hero "stop" affordance latches the firmware EMERGENCY — this is the
   // real e-stop, not a soft pause. Gate it behind an explicit confirm so a
@@ -195,11 +198,11 @@ export const MowgliNextPage = () => {
   const fireEmergency = mowerAction("emergency", {Emergency: 1});
   const confirmEmergency = () => {
     modal.confirm({
-      title: "Arrêt d'urgence",
-      content: "Cela déclenche l'arrêt d'urgence matériel (lames + déplacement). À réarmer manuellement ensuite. Continuer ?",
-      okText: "Arrêt d'urgence",
+      title: t('mowgliNextPage.emergencyStop'),
+      content: t('mowgliNextPage.emergencyConfirmBody'),
+      okText: t('mowgliNextPage.emergencyStop'),
       okType: "danger",
-      cancelText: "Annuler",
+      cancelText: t('mowgliNextPage.cancel'),
       onOk: () => fireEmergency(),
     });
   };
@@ -235,20 +238,20 @@ export const MowgliNextPage = () => {
               fontSize: 11, color: 'rgba(236,255,244,0.42)',
               letterSpacing: '0.06em', textTransform: 'uppercase', fontWeight: 600,
             }}>
-              {greetingFor()}
+              {greetingFor(t)}
             </div>
             <div className="mn-display" style={{
               fontSize: isMobile ? 26 : 34,
               color: 'var(--ink, #ECFFF4)', fontWeight: 400,
               letterSpacing: '-0.02em', lineHeight: 1.05, marginTop: 4,
             }}>
-              {data.isMoving ? "Mowgli est en tonte" : data.charging ? "Mowgli charge" : "Bon retour"}
+              {data.isMoving ? t('mowgliNextPage.mowgliMowing') : data.charging ? t('mowgliNextPage.mowgliCharging') : t('mowgliNextPage.welcomeBack')}
             </div>
           </div>
           <StatusOrb
             tone={data.emergency ? "alert" : data.isMoving ? "live" : data.charging ? "charging" : "resting"}
             size={10}
-            label={data.isMoving ? "En tonte" : data.charging ? "En charge" : data.emergency ? "Alerte" : "Au repos"}
+            label={data.isMoving ? t('mowgliNextPage.orbMowing') : data.charging ? t('mowgliNextPage.orbCharging') : data.emergency ? t('mowgliNextPage.orbAlert') : t('mowgliNextPage.orbIdle')}
           />
         </motion.header>
 
@@ -314,6 +317,7 @@ interface HeroCardProps {
 function HeroCard({
   data, phase, actions, headline, subline, coveragePct, todayMowedM2, totalArea, large,
 }: HeroCardProps) {
+  const {t} = useTranslation();
   return (
     <GlassCard variant="glow" padding={0}>
       <div style={{
@@ -329,7 +333,7 @@ function HeroCard({
               fontSize: 11, color: 'var(--lime, #7CFFB2)', fontWeight: 700,
               letterSpacing: '0.12em', textTransform: 'uppercase',
             }}>
-              {data.currentArea ? `Mowgli · ${data.currentArea}` : 'Mowgli · sans zone'}
+              {data.currentArea ? t('mowgliNextPage.mowgliWithZone', {area: data.currentArea}) : t('mowgliNextPage.mowgliNoZone')}
             </div>
             <h1 className="mn-display" style={{
               fontSize: large ? 38 : 30,
@@ -363,7 +367,7 @@ function HeroCard({
               letterSpacing: '0.1em', textTransform: 'uppercase',
               fontWeight: 600, marginTop: 2,
             }}>
-              batterie
+              {t('mowgliNextPage.battery')}
             </div>
           </BatteryRing>
         </div>
@@ -384,7 +388,7 @@ function HeroCard({
                   fontSize: 11, color: 'rgba(236,255,244,0.42)',
                   letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600,
                 }}>
-                  Couverture aujourd'hui · {pct} %
+                  {t('mowgliNextPage.coverageToday', {pct})}
                 </span>
                 <span style={{fontSize: 12, color: 'rgba(236,255,244,0.66)', fontWeight: 600, fontFamily: '"Space Grotesk", monospace'}}>
                   {mowedM2.toFixed(0)}<span style={{color: 'rgba(236,255,244,0.42)'}}> / {totalM2.toFixed(0)} m²</span>
@@ -412,6 +416,7 @@ interface LiveMapCardProps {
 }
 
 function LiveMapCard({polygon, robot, coverage, height = 220, onViewMap}: LiveMapCardProps) {
+  const {t} = useTranslation();
   // LiveMapMini expects 0..1 normalised; we pass an empty/default if no
   // recorded area yet.
   return (
@@ -425,13 +430,13 @@ function LiveMapCard({polygon, robot, coverage, height = 220, onViewMap}: LiveMa
             fontSize: 11, color: 'rgba(236,255,244,0.42)',
             letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600,
           }}>
-            Carte vivante
+            {t('mowgliNextPage.liveMap')}
           </div>
           <div className="mn-display" style={{
             fontSize: 18, fontWeight: 400, marginTop: 2,
             color: 'var(--ink, #ECFFF4)', letterSpacing: '-0.01em',
           }}>
-            Trajectoire en direct
+            {t('mowgliNextPage.livePath')}
           </div>
         </div>
         <button onClick={onViewMap} style={{
@@ -439,7 +444,7 @@ function LiveMapCard({polygon, robot, coverage, height = 220, onViewMap}: LiveMa
           background: 'transparent', border: 'none',
           fontSize: 12, fontWeight: 600, color: 'var(--lime, #7CFFB2)', cursor: 'pointer',
         }}>
-          Voir la carte
+          {t('mowgliNextPage.viewMap')}
           <ChevronRight size={14} strokeWidth={2.4}/>
         </button>
       </div>
@@ -454,19 +459,20 @@ function LiveMapCard({polygon, robot, coverage, height = 220, onViewMap}: LiveMa
 }
 
 function TilesRow({data}: {data: ReturnType<typeof useMowerData>}) {
+  const {t} = useTranslation();
   return (
     <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10}}>
       <StatTile label="GPS" value={`${Math.round(data.gps)}`} unit="%"
                 hint={data.gpsLabel} accent="cyan" icon={<Wifi size={14}/>}/>
-      <StatTile label="Lames" value={data.rpm > 0 ? Math.round(data.rpm).toString() : 'off'}
+      <StatTile label={t('mowgliNextPage.blades')} value={data.rpm > 0 ? Math.round(data.rpm).toString() : 'off'}
                 unit={data.rpm > 0 ? 'rpm' : ''} hint={`${data.current.toFixed(1)} A`}
                 accent="amber" icon={<Sparkles size={14}/>}/>
-      <StatTile label="Moteur" value={data.motorTemp.toFixed(0)} unit="°c"
+      <StatTile label={t('mowgliNextPage.motor')} value={data.motorTemp.toFixed(0)} unit="°c"
                 hint={`ESC ${data.escTemp.toFixed(0)} °C`}
                 accent={data.motorTemp > 55 ? "amber" : "lime"}
                 icon={<Thermometer size={14}/>}/>
-      <StatTile label="Pluie" value={data.rain ? 'détectée' : 'au sec'} unit=""
-                hint={data.rain ? 'tonte mise en pause' : 'bonnes conditions'}
+      <StatTile label={t('mowgliNextPage.rain')} value={data.rain ? t('mowgliNextPage.rainDetected') : t('mowgliNextPage.dry')} unit=""
+                hint={data.rain ? t('mowgliNextPage.mowingPaused') : t('mowgliNextPage.goodConditions')}
                 accent={data.rain ? "amber" : "lime"}
                 icon={<Droplets size={14}/>}/>
     </div>
@@ -528,15 +534,16 @@ function StatTile({label, value, unit, hint, accent, icon}: StatTileProps) {
 }
 
 function HealthCard({data}: {data: ReturnType<typeof useMowerData>}) {
+  const {t} = useTranslation();
   const weather = useWeather();
   const rows = [
-    {k: 'Signal GPS',         ok: data.gps > 0,           note: data.gpsLabel},
-    {k: data.rain ? 'Pluie détectée' : 'Pas de pluie',
-                              ok: !data.rain,             note: data.rain ? 'tonte en pause' : 'conditions OK'},
-    {k: data.emergency ? 'Alerte active' : 'Aucune alerte',
-                              ok: !data.emergency,        note: data.emergency ? 'à réarmer' : 'tout clair'},
-    {k: `Moteur ${data.motorTemp.toFixed(0)} °C`,
-                              ok: data.motorTemp < 55,    note: data.motorTemp >= 55 ? 'tourne chaud' : 'nominal'},
+    {k: t('mowgliNextPage.gpsSignal'),         ok: data.gps > 0,           note: data.gpsLabel},
+    {k: data.rain ? t('mowgliNextPage.rainDetectedRow') : t('mowgliNextPage.noRain'),
+                              ok: !data.rain,             note: data.rain ? t('mowgliNextPage.mowingPausedShort') : t('mowgliNextPage.conditionsOk')},
+    {k: data.emergency ? t('mowgliNextPage.alertActive') : t('mowgliNextPage.noAlerts'),
+                              ok: !data.emergency,        note: data.emergency ? t('mowgliNextPage.toRearm') : t('mowgliNextPage.allClear')},
+    {k: t('mowgliNextPage.motorTemp', {temp: data.motorTemp.toFixed(0)}),
+                              ok: data.motorTemp < 55,    note: data.motorTemp >= 55 ? t('mowgliNextPage.runningHot') : t('mowgliNextPage.nominal')},
   ];
   return (
     <GlassCard padding={20}>
@@ -548,7 +555,7 @@ function HealthCard({data}: {data: ReturnType<typeof useMowerData>}) {
           fontSize: 11, color: 'rgba(236,255,244,0.42)',
           letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600,
         }}>
-          Bilan santé
+          {t('mowgliNextPage.healthCheck')}
         </div>
         {weather?.available && (
           <WeatherChip condition={weather.condition} tempC={weather.temp_c} rainSoon={weather.is_raining}/>
@@ -578,12 +585,12 @@ function HealthCard({data}: {data: ReturnType<typeof useMowerData>}) {
 // Utilities
 // ─────────────────────────────────────────────────────────────────────
 
-function greetingFor() {
+function greetingFor(t: TFunction) {
   const h = new Date().getHours();
-  if (h < 6)  return 'Bonne nuit';
-  if (h < 12) return 'Bonjour';
-  if (h < 18) return 'Bel après-midi';
-  return 'Bonsoir';
+  if (h < 6)  return t('mowgliNextPage.greetingNight');
+  if (h < 12) return t('mowgliNextPage.greetingMorning');
+  if (h < 18) return t('mowgliNextPage.greetingAfternoon');
+  return t('mowgliNextPage.greetingEvening');
 }
 
 function normaliseToUnit(pts: {x: number; y: number}[]): {x: number; y: number}[] {

@@ -125,6 +125,13 @@ static int32_t prev_right_ticks_signed_pi = 0;
 static float prev_left_target_mps  = 0.0f;
 static float prev_right_target_mps = 0.0f;
 
+/* Open-loop feedforward velocity->PWM scale. Runtime-tunable copy of the
+ * board.h PWM_PER_MPS default so the ROS 2 host can retune the drive loop via
+ * PKT_ID_SET_DRIVE_PID without a reflash. Seeded with the compile-time default,
+ * which therefore remains the power-on fallback (this board has no config
+ * persistence; the bridge re-sends the gains on every reconnect). */
+static volatile float g_pwm_per_mps = (float)PWM_PER_MPS;
+
 /* ---------------------------------------------------------------------------
  * Blade motor control state
  * ---------------------------------------------------------------------------*/
@@ -234,6 +241,52 @@ static void on_cmd_vel(const uint8_t *data, size_t len)
      * deadband on sub-deadband commands. */
     left_target_mps  = left_mps;
     right_target_mps = right_mps;
+}
+
+static void on_set_drive_pid(const uint8_t *data, size_t len)
+{
+    if (len < sizeof(pkt_set_drive_pid_t) - 2u) {
+        return;
+    }
+
+    const pkt_set_drive_pid_t *pkt = (const pkt_set_drive_pid_t *)data;
+
+    /* Drive behaviour is safety-relevant: reject the whole packet if any field
+     * is non-finite, then clamp each field to a safe range before applying so a
+     * bad host value can never make the wheel loop diverge. Both wheels share
+     * the gains; the output limit stays fixed at 255 PWM (motor controller max).
+     * pid_constrain() comes from pid.hpp. */
+    if (!std::isfinite(pkt->kp) || !std::isfinite(pkt->ki) || !std::isfinite(pkt->kd) ||
+        !std::isfinite(pkt->integral_limit) || !std::isfinite(pkt->pwm_per_mps)) {
+        debug_printf("set_drive_pid rejected: non-finite field\r\n");
+        return;
+    }
+
+    const float kp   = pid_constrain(pkt->kp,             0.0f,   200.0f);
+    const float ki   = pid_constrain(pkt->ki,             0.0f, 20000.0f);
+    const float kd   = pid_constrain(pkt->kd,             0.0f,   500.0f);
+    const float ilim = pid_constrain(pkt->integral_limit, 0.0f,   255.0f);
+    const float ff   = pid_constrain(pkt->pwm_per_mps,   50.0f,   600.0f);
+
+    /* Apply atomically w.r.t. motors_handler(), which reads these objects in the
+     * main loop at 50 Hz: this handler runs in USB RX interrupt context, and a
+     * half-applied update (e.g. new gains but the old integral limit) could let
+     * the ki integrator wind up unbounded for one cycle. Same __disable_irq
+     * guard motors_handler uses for its setpoint snapshot. setOutputLimit is
+     * re-asserted here so the ±255 clamp never silently depends on init_ROS
+     * having run first (the PX4 PID default-inits _limit_output to 0). */
+    __disable_irq();
+    left_wheel_pid.setGains(kp, ki, kd);
+    left_wheel_pid.setIntegralLimit(ilim);
+    left_wheel_pid.setOutputLimit(255.0f);
+    right_wheel_pid.setGains(kp, ki, kd);
+    right_wheel_pid.setIntegralLimit(ilim);
+    right_wheel_pid.setOutputLimit(255.0f);
+    g_pwm_per_mps = ff;
+    __enable_irq();
+
+    debug_printf("set_drive_pid: kp=%.2f ki=%.2f kd=%.2f ilim=%.1f ff=%.1f\r\n",
+                 kp, ki, kd, ilim, ff);
 }
 
 static void on_hl_state(const uint8_t *data, size_t len)
@@ -502,8 +555,8 @@ extern "C" void motors_handler()
 
         /* Open-loop feedforward (deadband-bridge, preserves the above-deadband
          * mapping) + closed-loop PI trim. Sign carried through. */
-        const float l_pwm_f = l_target * PWM_PER_MPS + l_trim;
-        const float r_pwm_f = r_target * PWM_PER_MPS + r_trim;
+        const float l_pwm_f = l_target * g_pwm_per_mps + l_trim;
+        const float r_pwm_f = r_target * g_pwm_per_mps + r_trim;
 
         /* When the target is exactly zero AND we're not braking from a
          * larger speed, force PWM to zero outright — avoids the residual
@@ -518,8 +571,8 @@ extern "C" void motors_handler()
         /* Open-loop fallback for bring-up / regression A/B. Replicates the
          * pre-PI mapping exactly: PWM = target × PWM_PER_MPS, no encoder
          * feedback, no integrator. */
-        left_pwm_signed  = (int16_t)(l_target * PWM_PER_MPS);
-        right_pwm_signed = (int16_t)(r_target * PWM_PER_MPS);
+        left_pwm_signed  = (int16_t)(l_target * g_pwm_per_mps);
+        right_pwm_signed = (int16_t)(r_target * g_pwm_per_mps);
 #endif
 
         if (hard_stop) {
@@ -774,6 +827,7 @@ extern "C" void init_ROS()
     mowgli_comms_register_handler(PKT_ID_HL_STATE,  on_hl_state);
     mowgli_comms_register_handler(PKT_ID_CMD_BLADE, on_cmd_blade);
     mowgli_comms_register_handler(PKT_ID_REBOOT,    on_reboot);
+    mowgli_comms_register_handler(PKT_ID_SET_DRIVE_PID, on_set_drive_pid);
 
     // Initialise timers
     NBT_init(&led_nbt,     LED_NBT_TIME_MS);

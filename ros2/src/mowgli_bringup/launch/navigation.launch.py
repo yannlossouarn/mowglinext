@@ -338,10 +338,14 @@ def generate_launch_description() -> LaunchDescription:
     # section; injected into coverage_server's parameters at launch
     # so changes via mowgli_robot.yaml take effect on next bringup.
     headland_width = 0.35
-    # NOTE: the coverage planner no longer plans turns (the diff-drive pivots
-    # in place between explicit segments), so there is no min_turning_radius
-    # knob for coverage anymore. The mowgli_robot.yaml key of that name, if
-    # present, is simply ignored here.
+    # min_turning_radius: the robot's minimum MPPI-trackable turning radius. The
+    # continuous coverage path (coverage_server → buildContinuousPath) connects
+    # rings + swaths with forward turn-around arcs and rounds cusps with fillets;
+    # this is the HARD FLOOR on every such arc. Shrinking a turn below it to fit
+    # in-bounds produced loops too tight for MPPI (wz≈vx/r), so the robot
+    # looped/hesitated at corners — the bug this knob prevents. Injected into
+    # coverage_server.min_turning_radius; operator-tunable via mowgli_robot.yaml.
+    min_turning_radius = 0.15
     progress_timeout_sec = 300.0
     # num_headland_passes: 0 = auto (ceil(headland_width / tool_width)),
     # >0 forces exactly that many concentric perimeter rings.
@@ -454,6 +458,8 @@ def generate_launch_description() -> LaunchDescription:
         num_headland_passes = int(rt_rp.get(
             "num_headland_passes", num_headland_passes))
         swath_overlap = float(rt_rp.get("swath_overlap", swath_overlap))
+        min_turning_radius = float(rt_rp.get(
+            "min_turning_radius", min_turning_radius))
         # Operator override wins; otherwise fall back to chassis_width/2
         # (cw was already read above from the same runtime config).
         if "chassis_safety_inset" in rt_rp:
@@ -641,6 +647,10 @@ def generate_launch_description() -> LaunchDescription:
         cov_params["default_headland_width"] = headland_width
         cov_params["num_headland_passes"] = num_headland_passes
         cov_params["chassis_safety_inset"] = chassis_safety_inset
+        # Hard floor on the continuous path's turn-around / fillet arcs so no
+        # turn is ever tighter than the robot can track (clamp to the tuned
+        # [0.10, 0.50] band; sub-0.10 loops are untrackable, >0.50 bulges OOB).
+        cov_params["min_turning_radius"] = min(0.50, max(0.10, min_turning_radius))
 
         tmp = tempfile.NamedTemporaryFile(
             mode="w", prefix="mowgli_nav2_", suffix=".yaml", delete=False)

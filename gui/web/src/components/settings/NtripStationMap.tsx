@@ -1,6 +1,7 @@
 import {useCallback, useMemo, useState} from "react";
 import Map, {Source, Layer, Popup, Marker, NavigationControl} from "react-map-gl/mapbox";
 import type {MapMouseEvent} from "react-map-gl/mapbox";
+import {useTranslation} from "react-i18next";
 import {MAPBOX_TOKEN} from "./ntripProviders.ts";
 
 export interface MapStation {
@@ -28,6 +29,7 @@ interface Props {
 // so it scales to the 1000+ markers a full caster sourcetable returns) and
 // resolves a click back to the station the operator picked.
 export function NtripStationMap({stations, selectedMountpoint, selectedProviderId, center, onSelect, height = 360}: Props) {
+  const {t} = useTranslation();
   const [hover, setHover] = useState<{ lon: number; lat: number; text: string } | null>(null);
   const [cursor, setCursor] = useState<"auto" | "pointer">("auto");
 
@@ -117,7 +119,7 @@ export function NtripStationMap({stations, selectedMountpoint, selectedProviderI
         {center && (
           <Marker longitude={center.lon} latitude={center.lat}>
             <div
-              title="Your robot"
+              title={t("settingsNtripStationMap.yourRobot")}
               style={{
                 width: 14, height: 14, borderRadius: 7, background: "#fff",
                 border: "2px solid #02110D", boxShadow: "0 0 0 3px rgba(124,255,178,0.6)",

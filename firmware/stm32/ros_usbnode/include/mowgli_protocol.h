@@ -88,6 +88,12 @@ extern "C" {
 #define PKT_ID_REBOOT      0x52u
 #define PKT_REBOOT_MAGIC   0xB0u
 
+/** Drive-motor PID/feedforward gains (Host -> Firmware). Lets the ROS 2 host
+ *  retune the per-wheel velocity loop at runtime without reflashing. The
+ *  firmware validates and clamps every field; its compile-time defaults remain
+ *  the power-on fallback. */
+#define PKT_ID_SET_DRIVE_PID 0x53u
+
 /* ---------------------------------------------------------------------------
  * status_bitmask bit definitions  (pkt_status_t::status_bitmask)
  * ---------------------------------------------------------------------------*/
@@ -304,6 +310,25 @@ typedef struct {
 } pkt_reboot_t;
 
 /**
+ * @brief Drive-motor PID gains packet — Host -> Firmware (PKT_ID_SET_DRIVE_PID = 0x53).
+ *
+ * Retunes the per-wheel velocity loop (both wheels share the same gains). The
+ * firmware rejects the packet if any field is non-finite and clamps each field
+ * to a safe range before applying; the output limit stays fixed at 255 PWM.
+ *
+ * Wire size: 23 bytes (must match sizeof(LlSetDrivePid) in ll_datatypes.hpp).
+ */
+typedef struct {
+    uint8_t  type;            /**< PKT_ID_SET_DRIVE_PID */
+    float    kp;              /**< Proportional gain [PWM per m/s] */
+    float    ki;              /**< Integral gain [PWM per (m/s·s)] */
+    float    kd;              /**< Derivative gain [PWM per (m/s²)] */
+    float    integral_limit;  /**< Anti-windup clamp on the integral term [PWM] */
+    float    pwm_per_mps;     /**< Open-loop feedforward velocity->PWM scale */
+    uint16_t crc;             /**< CRC-16 CCITT over preceding bytes */
+} pkt_set_drive_pid_t;
+
+/**
  * @brief Blade motor status packet — Firmware -> Host (PKT_ID_BLADE_STATUS = 0x05).
  *
  * Sent periodically (~4 Hz) with blade motor telemetry.
@@ -368,6 +393,7 @@ _Static_assert(sizeof(pkt_odometry_t)  == 17u, "pkt_odometry_t layout unexpected
 _Static_assert(sizeof(pkt_heartbeat_t) ==  5u, "pkt_heartbeat_t layout unexpected");
 _Static_assert(sizeof(pkt_hl_state_t)  ==  5u, "pkt_hl_state_t layout unexpected");
 _Static_assert(sizeof(pkt_cmd_vel_t)   == 11u, "pkt_cmd_vel_t layout unexpected");
+_Static_assert(sizeof(pkt_set_drive_pid_t) == 23u, "pkt_set_drive_pid_t layout unexpected");
 #endif
 
 #ifdef __cplusplus

@@ -1,5 +1,6 @@
 import {motion} from "framer-motion";
 import {Play, Square, Home, AlertTriangle} from "lucide-react";
+import {useTranslation} from "react-i18next";
 import {pressFeedback, springSnap} from "../motion";
 
 /**
@@ -22,6 +23,7 @@ interface ActionClusterProps {
 }
 
 export function ActionCluster({phase, onStart, onPause, onHome, onStop}: ActionClusterProps) {
+  const {t} = useTranslation();
   const primaryPlaying = phase === "playing";
 
   return (
@@ -30,7 +32,7 @@ export function ActionCluster({phase, onStart, onPause, onHome, onStop}: ActionC
     }}>
       {/* secondary: stop */}
       <SecondaryButton
-        ariaLabel="Stop d'urgence"
+        ariaLabel={t('actionCluster.emergencyStop')}
         onClick={onStop}
         tone="danger"
       >
@@ -41,7 +43,7 @@ export function ActionCluster({phase, onStart, onPause, onHome, onStop}: ActionC
       <motion.button
         {...pressFeedback}
         onClick={primaryPlaying ? onPause : onStart}
-        aria-label={primaryPlaying ? "Arrêter et rentrer à la base" : "Démarrer la tonte"}
+        aria-label={primaryPlaying ? t('actionCluster.stopAndReturn') : t('actionCluster.startMowing')}
         style={{
           position: "relative",
           width: 84, height: 84, borderRadius: "50%",
@@ -82,7 +84,7 @@ export function ActionCluster({phase, onStart, onPause, onHome, onStop}: ActionC
 
       {/* secondary: home */}
       <SecondaryButton
-        ariaLabel="Retour à la base"
+        ariaLabel={t('actionCluster.returnToBase')}
         onClick={onHome}
         tone={phase === "returning" ? "active" : "default"}
       >

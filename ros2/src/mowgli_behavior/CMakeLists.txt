@@ -155,6 +155,37 @@ if(BUILD_TESTING)
     tf2_geometry_msgs
   )
 
+  # ---- test_set_nav2_lifecycle ----
+  # Exercises the SetNav2Lifecycle action node's idle-suspend gating
+  # (disabled = no-op, PAUSE refused off-dock, idempotent transitions) and,
+  # with a fake manage_nodes service, the actual PAUSE/RESUME transition.
+  ament_add_gtest(test_set_nav2_lifecycle
+    test/test_set_nav2_lifecycle.cpp
+    src/navigation_nodes.cpp
+  )
+
+  target_include_directories(test_set_nav2_lifecycle PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+
+  ament_target_dependencies(test_set_nav2_lifecycle
+    rclcpp
+    rclcpp_action
+    behaviortree_cpp
+    mowgli_interfaces
+    nav2_msgs
+    nav_msgs
+    geometry_msgs
+    std_msgs
+    std_srvs
+    tf2
+    tf2_ros
+    tf2_geometry_msgs
+    rcl_interfaces
+    action_msgs
+  )
+
 endif()
 
 ament_package()

@@ -1,6 +1,7 @@
 import {Joystick} from "react-joystick-component";
 import {IJoystickUpdateEvent} from "react-joystick-component/build/lib/Joystick";
 import {CheckOutlined, CloseOutlined, HomeOutlined} from "@ant-design/icons";
+import {useTranslation} from "react-i18next";
 import AsyncButton from "../../../components/AsyncButton.tsx";
 import {useThemeMode} from "../../../theme/ThemeContext.tsx";
 import {limeAlpha} from "../../../theme/colors.ts";
@@ -21,6 +22,7 @@ export const JoystickOverlay = ({
     onMove, onStop, onFinishRecording, onCancelRecording, onHome,
 }: JoystickOverlayProps) => {
     const {colors} = useThemeMode();
+    const {t} = useTranslation();
     if (!visible) return null;
 
     const size = mobile ? 132 : 110;
@@ -86,7 +88,7 @@ export const JoystickOverlay = ({
                         onAsyncClick={onFinishRecording!}
                         style={actionButtonStyle}
                     >
-                        Finish
+                        {t('mapJoystick.finish')}
                     </AsyncButton>
                     <AsyncButton
                         danger
@@ -94,14 +96,14 @@ export const JoystickOverlay = ({
                         onAsyncClick={onCancelRecording!}
                         style={actionButtonStyle}
                     >
-                        Cancel
+                        {t('mapJoystick.cancel')}
                     </AsyncButton>
                     <AsyncButton
                         icon={<HomeOutlined/>}
                         onAsyncClick={onHome!}
                         style={actionButtonStyle}
                     >
-                        Home
+                        {t('mapJoystick.home')}
                     </AsyncButton>
                 </div>
             )}

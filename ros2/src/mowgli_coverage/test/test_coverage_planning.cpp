@@ -178,6 +178,46 @@ double pathLength(const std::vector<std::pair<double, double>>& pts)
   return len;
 }
 
+// Longest run of consecutive over-curved steps — the signature of an arc/loop
+// tighter than `min_radius`. On a densified arc of radius r at step `step`, each
+// step turns by ≈ step/r, so a step is "over-curved" when its turn angle exceeds
+// step/min_radius. A lone sharp polygon corner (a pivot vertex the rings inherit)
+// is ONE over-curved step; a sub-min_radius loop is MANY consecutive ones. Used
+// to assert buildContinuousPath never emits a turn-around / fillet tighter than
+// the robot can track. Returns the max consecutive count (0 = none).
+std::size_t maxTightArcRun(const std::vector<std::pair<double, double>>& pts,
+                           double step,
+                           double min_radius)
+{
+  // 10% slack so discretization noise at a clean min_radius arc doesn't trip it.
+  const double max_step_turn = step / (min_radius * 0.9);
+  std::size_t worst = 0, run = 0;
+  for (std::size_t i = 1; i + 1 < pts.size(); ++i)
+  {
+    const double ax = pts[i].first - pts[i - 1].first;
+    const double ay = pts[i].second - pts[i - 1].second;
+    const double bx = pts[i + 1].first - pts[i].first;
+    const double by = pts[i + 1].second - pts[i].second;
+    const double na = std::hypot(ax, ay), nb = std::hypot(bx, by);
+    if (na < 1e-9 || nb < 1e-9)
+    {
+      run = 0;
+      continue;
+    }
+    double c = (ax * bx + ay * by) / (na * nb);
+    c = std::max(-1.0, std::min(1.0, c));
+    if (std::acos(c) > max_step_turn)
+    {
+      worst = std::max(worst, ++run);
+    }
+    else
+    {
+      run = 0;
+    }
+  }
+  return worst;
+}
+
 }  // namespace
 
 // 3x3 m square: at least one headland ring + several straight swaths spanning
@@ -532,6 +572,7 @@ TEST(CoverageContinuousPath, RecordedArea1NoCuspInBounds)
   constexpr double kInset = 0.15;
   constexpr double kMinSwath = 0.15;
   constexpr double kTurnRadius = 0.30;
+  constexpr double kMinTurnRadius = 0.15;  // robot's min MPPI-trackable radius
   constexpr double kStep = 0.03;
 
   const auto cell = makeRecordedArea1();
@@ -540,7 +581,7 @@ TEST(CoverageContinuousPath, RecordedArea1NoCuspInBounds)
   ASSERT_FALSE(plan.swaths.empty()) << "no swaths on the real area";
 
   const auto& boundary = recordedArea1Pts();
-  const auto path = buildContinuousPath(plan, boundary, kTurnRadius, kStep);
+  const auto path = buildContinuousPath(plan, boundary, kTurnRadius, kMinTurnRadius, kStep);
 
   ASSERT_GE(path.size(), 100u) << "continuous path is implausibly short";
 
@@ -564,11 +605,31 @@ TEST(CoverageContinuousPath, RecordedArea1NoCuspInBounds)
                                   : std::string("none"))
             << "  out_of_bounds=" << oob << "/" << path.size() << "\n"
             << std::flush;
+  (void)inv;  // inversion index is informational; see the two invariants below.
 
-  // (1) NO >90° turn anywhere → no cusp → no MPPI bimodal dither.
-  EXPECT_EQ(inv, path.size()) << "path inverts at index " << inv << " (cusp → MPPI dither)";
+  // (1) NO near-180° REVERSAL cusp. The continuous path exists so MPPI never
+  // hits a sharp reversal (its bimodal dither). Forward turn-around connectors
+  // remove every swath U-turn; what can remain are pivot-able ~90° corners the
+  // rings inherit from a rectangular boundary, which a diff-drive turns through
+  // fine. So we bound the WORST turn well below a reversal (120°) rather than
+  // forbidding every >90° corner — the old strict check only passed because
+  // sub-min_turning_radius fillets (the bug below) masked those right angles.
+  const double worst_turn = maxTurnDeg(path);
+  EXPECT_LT(worst_turn, 120.0) << "path has a " << worst_turn
+                               << "° turn — a near-reversal cusp MPPI will dither at";
   // (2) Every point inside the recorded boundary.
   EXPECT_EQ(oob, 0u) << oob << "/" << path.size() << " continuous-path points are out of bounds";
+  // (3) NO sustained arc tighter than the robot's min turning radius. A turn
+  // shrunk below kMinTurnRadius to fit in-bounds is untrackable (wz≈vx/r), so
+  // the robot loops/hesitates — the exact failure this floor prevents. A lone
+  // sharp ring corner is ONE over-curved step (allowed — it's a pivot); a
+  // too-tight loop is many consecutive over-curved steps.
+  const std::size_t tight_run = maxTightArcRun(path, kStep, kMinTurnRadius);
+  std::cout << "max_tight_arc_run=" << tight_run << " steps (floor " << kMinTurnRadius << " m)\n"
+            << std::flush;
+  EXPECT_LT(tight_run, 3u) << "found a run of " << tight_run
+                           << " consecutive steps tighter than min_turning_radius ("
+                           << kMinTurnRadius << " m) — an untrackable loop";
   // (3) Non-trivial, and starts at the first ring's first point.
   EXPECT_LT(path.size(), 200000u) << "path is implausibly large";
   EXPECT_NEAR(path.front().first, plan.rings.front().front().first, 1e-9);

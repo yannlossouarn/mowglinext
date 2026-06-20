@@ -1,5 +1,8 @@
 import {describe, expect, it} from 'vitest';
 import {GnssStatusConstants, type GnssStatus} from '../types/ros.ts';
+// deriveGpsStatus resolves its label via i18n; assert against the active locale
+// (pinned to English in test/setup.ts) so reworded copy doesn't break the test.
+import en from '../i18n/locales/en.json';
 import {
     deriveGpsStatus,
     deriveGnssStatusFromDiagnostics,
@@ -17,7 +20,7 @@ describe('deriveGpsStatus', () => {
         const status: GnssStatus = {fix_type: GnssStatusConstants.FIX_TYPE_RTK_FIXED};
         expect(deriveGpsStatus(status)).toEqual({
             fixType: 'RTK_FIX',
-            label: 'RTK fixe',
+            label: en.gpsStatus.rtkFixed,
             percent: 100,
         });
     });
@@ -26,7 +29,7 @@ describe('deriveGpsStatus', () => {
         const status: GnssStatus = {fix_type: GnssStatusConstants.FIX_TYPE_GPS_FIX};
         expect(deriveGpsStatus(status)).toEqual({
             fixType: 'GPS_FIX',
-            label: 'GPS simple',
+            label: en.gpsStatus.gpsFix,
             percent: 25,
         });
     });
@@ -39,7 +42,7 @@ describe('deriveGpsStatus', () => {
 
         expect(deriveGpsStatus(status)).toEqual({
             fixType: 'RTK_FIX',
-            label: 'RTK fixe',
+            label: en.gpsStatus.rtkFixed,
             percent: 100,
         });
     });
@@ -53,7 +56,7 @@ describe('deriveGpsStatus', () => {
 
         expect(deriveGpsStatus(status)).toEqual({
             fixType: 'RTK_FLOAT',
-            label: 'RTK flottant',
+            label: en.gpsStatus.rtkFloat,
             percent: 50,
         });
     });
@@ -65,7 +68,7 @@ describe('deriveGpsStatus', () => {
 
         expect(deriveGpsStatus(status)).toEqual({
             fixType: 'NO_FIX',
-            label: 'Pas de GPS',
+            label: en.gpsStatus.noGps,
             percent: 0,
         });
     });
@@ -78,7 +81,7 @@ describe('deriveGpsStatus', () => {
 
         expect(deriveGpsStatus(status)).toEqual({
             fixType: 'GPS_FIX',
-            label: 'GPS simple',
+            label: en.gpsStatus.gpsFix,
             percent: 25,
         });
     });
@@ -86,7 +89,7 @@ describe('deriveGpsStatus', () => {
     it('falls back to no-fix when typed status is absent', () => {
         expect(deriveGpsStatus(undefined)).toEqual({
             fixType: 'NO_FIX',
-            label: 'Pas de GPS',
+            label: en.gpsStatus.noGps,
             percent: 0,
         });
     });

@@ -1,4 +1,5 @@
 import {useState} from "react";
+import {useTranslation} from "react-i18next";
 import {useThemeMode} from "../../../theme/ThemeContext.tsx";
 import {App, Button, Dropdown, Space} from "antd";
 import type {MenuProps} from "antd";
@@ -108,6 +109,7 @@ export const MapToolbarMobile = ({
 }: MapToolbarMobileProps) => {
     const {colors} = useThemeMode();
     const {notification} = App.useApp();
+    const {t} = useTranslation();
     const [mowLoading, setMowLoading] = useState(false);
 
     // 44px minimum touch target on every control in the cluster (Apple/WCAG
@@ -174,30 +176,30 @@ export const MapToolbarMobile = ({
         fn?.().catch((e: Error) => {
             console.error(e);
             notification.error({
-                message: "Action failed",
+                message: t("mapToolbarMobile.actionFailed"),
                 description: e.message,
             });
         });
     };
 
     const dataMenuItems: MenuProps["items"] = [
-        {key: "satellite", icon: <GlobalOutlined />, label: useSatellite ? "Dark map" : "Satellite"},
+        {key: "satellite", icon: <GlobalOutlined />, label: useSatellite ? t("mapToolbarMobile.darkMap") : t("mapToolbarMobile.satellite")},
         {type: "divider"},
-        {key: "areaRecording", icon: <AimOutlined />, label: "Area Recording"},
-        {key: "mowNext", icon: <ForwardOutlined />, label: "Mow Next Area"},
-        {key: "continueOrPause", icon: isIdle ? <CaretRightOutlined /> : <PauseOutlined />, label: isIdle ? "Continue" : "Pause"},
+        {key: "areaRecording", icon: <AimOutlined />, label: t("mapToolbarMobile.areaRecording")},
+        {key: "mowNext", icon: <ForwardOutlined />, label: t("mapToolbarMobile.mowNextArea")},
+        {key: "continueOrPause", icon: isIdle ? <CaretRightOutlined /> : <PauseOutlined />, label: isIdle ? t("mapToolbarMobile.continue") : t("mapToolbarMobile.pause")},
         {type: "divider"},
-        {key: "bladeForward", icon: <ThunderboltOutlined />, label: "Blade Forward"},
-        {key: "bladeBackward", icon: <ThunderboltOutlined />, label: "Blade Backward"},
-        {key: "bladeOff", icon: <ThunderboltOutlined />, label: "Blade Off", danger: true},
+        {key: "bladeForward", icon: <ThunderboltOutlined />, label: t("mapToolbarMobile.bladeForward")},
+        {key: "bladeBackward", icon: <ThunderboltOutlined />, label: t("mapToolbarMobile.bladeBackward")},
+        {key: "bladeOff", icon: <ThunderboltOutlined />, label: t("mapToolbarMobile.bladeOff"), danger: true},
         {type: "divider"},
-        {key: "backup", icon: <DatabaseOutlined />, label: "Backup Map"},
-        {key: "restore", icon: <DatabaseOutlined />, label: "Restore Map"},
-        {key: "importOpenMower", icon: <ImportOutlined />, label: "Import from OpenMower"},
+        {key: "backup", icon: <DatabaseOutlined />, label: t("mapToolbarMobile.backupMap")},
+        {key: "restore", icon: <DatabaseOutlined />, label: t("mapToolbarMobile.restoreMap")},
+        {key: "importOpenMower", icon: <ImportOutlined />, label: t("mapToolbarMobile.importFromOpenMower")},
         {type: "divider"},
-        {key: "download", icon: <DownloadOutlined />, label: "Download GeoJSON"},
+        {key: "download", icon: <DownloadOutlined />, label: t("mapToolbarMobile.downloadGeojson")},
         ...(editMap
-            ? [{key: "upload", icon: <UploadOutlined />, label: "Upload GeoJSON"} satisfies NonNullable<MenuProps["items"]>[number]]
+            ? [{key: "upload", icon: <UploadOutlined />, label: t("mapToolbarMobile.uploadGeojson")} satisfies NonNullable<MenuProps["items"]>[number]]
             : []),
     ];
 
@@ -224,10 +226,10 @@ export const MapToolbarMobile = ({
     };
 
     const editMenuItems: MenuProps["items"] = [
-        {key: "editProps", icon: <FormOutlined />, label: "Edit Properties", disabled: selectedFeatureCount !== 1},
-        {key: "combine", icon: <MergeCellsOutlined />, label: "Combine", disabled: selectedFeatureCount < 2},
-        {key: "subtract", icon: <MinusSquareOutlined />, label: "Subtract", disabled: selectedFeatureCount !== 2},
-        {key: "split", icon: <SplitCellsOutlined />, label: "Split (draw line)", disabled: selectedFeatureCount !== 1},
+        {key: "editProps", icon: <FormOutlined />, label: t("mapToolbarMobile.editProperties"), disabled: selectedFeatureCount !== 1},
+        {key: "combine", icon: <MergeCellsOutlined />, label: t("mapToolbarMobile.combine"), disabled: selectedFeatureCount < 2},
+        {key: "subtract", icon: <MinusSquareOutlined />, label: t("mapToolbarMobile.subtract"), disabled: selectedFeatureCount !== 2},
+        {key: "split", icon: <SplitCellsOutlined />, label: t("mapToolbarMobile.splitDrawLine"), disabled: selectedFeatureCount !== 1},
         {type: "divider"},
         ...dataMenuItems,
     ];
@@ -251,10 +253,10 @@ export const MapToolbarMobile = ({
             type={emergency ? "default" : "primary"}
             icon={<WarningOutlined />}
             onAsyncClick={(emergency ? onEmergencyOff : onEmergencyOn)!}
-            aria-label={emergency ? "Emergency Off" : "Emergency On"}
+            aria-label={emergency ? t("mapToolbarMobile.emergencyOff") : t("mapToolbarMobile.emergencyOn")}
             style={stopButtonStyle}
         >
-            STOP
+            {t("mapToolbarMobile.stop")}
         </AsyncButton>
     );
 
@@ -270,14 +272,14 @@ export const MapToolbarMobile = ({
                             danger={hasUnsavedChanges}
                             icon={<SaveOutlined />}
                             onAsyncClick={onSaveMap}
-                            aria-label="Save"
+                            aria-label={t("mapToolbarMobile.save")}
                             style={touchTarget}
                         />
                         <Button
                             size="large"
                             icon={<CloseOutlined />}
                             onClick={onEditMap}
-                            aria-label="Cancel"
+                            aria-label={t("mapToolbarMobile.cancel")}
                             style={touchTarget}
                         />
                     </Space.Compact>
@@ -289,7 +291,7 @@ export const MapToolbarMobile = ({
                             icon={<UndoOutlined />}
                             onClick={onUndo}
                             disabled={historyIndex <= 0}
-                            aria-label="Undo"
+                            aria-label={t("mapToolbarMobile.undo")}
                             style={touchTarget}
                         />
                         <Button
@@ -297,7 +299,7 @@ export const MapToolbarMobile = ({
                             icon={<RedoOutlined />}
                             onClick={onRedo}
                             disabled={historyIndex >= editHistoryLength - 1}
-                            aria-label="Redo"
+                            aria-label={t("mapToolbarMobile.redo")}
                             style={touchTarget}
                         />
                     </Space.Compact>
@@ -308,7 +310,7 @@ export const MapToolbarMobile = ({
                             size="large"
                             icon={<BorderOutlined />}
                             onClick={onDrawPolygon}
-                            aria-label="Draw polygon"
+                            aria-label={t("mapToolbarMobile.drawPolygon")}
                             style={touchTarget}
                         />
                         <ShapePickerDropdown
@@ -316,14 +318,14 @@ export const MapToolbarMobile = ({
                             onDrawEmoji={onDrawEmoji}
                             placement="top"
                         >
-                            <Button size="large" icon={<PlusOutlined />} aria-label="Add shape" style={touchTarget} />
+                            <Button size="large" icon={<PlusOutlined />} aria-label={t("mapToolbarMobile.addShape")} style={touchTarget} />
                         </ShapePickerDropdown>
                         <Button
                             size="large"
                             icon={<DeleteOutlined />}
                             disabled={selectedFeatureCount === 0}
                             onClick={onTrash}
-                            aria-label="Delete"
+                            aria-label={t("mapToolbarMobile.delete")}
                             style={touchTarget}
                         />
                     </Space.Compact>
@@ -333,7 +335,7 @@ export const MapToolbarMobile = ({
                         icon={<AimOutlined />}
                         type={dockPlacementMode ? "primary" : "default"}
                         onClick={onPlaceDock}
-                        aria-label="Place dock"
+                        aria-label={t("mapToolbarMobile.placeDock")}
                         style={touchTarget}
                     />
 
@@ -344,7 +346,7 @@ export const MapToolbarMobile = ({
                         trigger={["click"]}
                         placement="topRight"
                     >
-                        <Button size="large" icon={<EllipsisOutlined />} aria-label="More" style={touchTarget} />
+                        <Button size="large" icon={<EllipsisOutlined />} aria-label={t("mapToolbarMobile.more")} style={touchTarget} />
                     </Dropdown>
                 </div>
                 {stopButton}
@@ -368,7 +370,7 @@ export const MapToolbarMobile = ({
                             size="large"
                             icon={<PlayCircleOutlined />}
                             onAsyncClick={onStart!}
-                            aria-label="Start"
+                            aria-label={t("mapToolbarMobile.start")}
                             style={touchTarget}
                         />
                     ) : (
@@ -377,7 +379,7 @@ export const MapToolbarMobile = ({
                             size="large"
                             icon={<HomeOutlined />}
                             onAsyncClick={onHome!}
-                            aria-label="Home"
+                            aria-label={t("mapToolbarMobile.home")}
                             style={touchTarget}
                         />
                     )
@@ -387,7 +389,7 @@ export const MapToolbarMobile = ({
                     size="large"
                     icon={<EditOutlined />}
                     onClick={onEditMap}
-                    aria-label="Edit Map"
+                    aria-label={t("mapToolbarMobile.editMap")}
                     style={touchTarget}
                 />
 
@@ -400,10 +402,10 @@ export const MapToolbarMobile = ({
                         size="large"
                         icon={<ScissorOutlined />}
                         loading={mowLoading}
-                        aria-label="Mow area"
+                        aria-label={t("mapToolbarMobile.mowArea")}
                         style={touchTarget}
                     >
-                        Mow
+                        {t("mapToolbarMobile.mow")}
                     </Button>
                 </Dropdown>
 
@@ -412,7 +414,7 @@ export const MapToolbarMobile = ({
                     danger={manualMode}
                     icon={manualMode ? <StopOutlined /> : <ControlOutlined />}
                     onAsyncClick={manualMode ? onStopManualMode : onManualMode}
-                    aria-label={manualMode ? "Stop Manual Mowing" : "Manual Mowing"}
+                    aria-label={manualMode ? t("mapToolbarMobile.stopManualMowing") : t("mapToolbarMobile.manualMowing")}
                     style={touchTarget}
                 />
 
@@ -421,7 +423,7 @@ export const MapToolbarMobile = ({
                     trigger={["click"]}
                     placement="topRight"
                 >
-                    <Button size="large" icon={<EllipsisOutlined />} aria-label="More" style={touchTarget} />
+                    <Button size="large" icon={<EllipsisOutlined />} aria-label={t("mapToolbarMobile.more")} style={touchTarget} />
                 </Dropdown>
             </div>
             {stopButton}

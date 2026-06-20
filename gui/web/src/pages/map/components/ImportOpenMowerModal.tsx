@@ -1,5 +1,6 @@
 import {useState} from "react";
 import {Alert, Modal, Statistic, Table, Tag, Typography} from "antd";
+import {useTranslation} from "react-i18next";
 import type {ImportOpenMowerSummary} from "../hooks/useMapFiles.ts";
 
 interface ImportOpenMowerModalProps {
@@ -22,6 +23,7 @@ interface ImportOpenMowerModalProps {
  * `onApply` callback wired from MapPage / useMapFiles.
  */
 export function ImportOpenMowerModal({preview, onApply, onClose}: ImportOpenMowerModalProps) {
+    const {t} = useTranslation();
     const open = preview !== null;
     const summary = preview;
     const [applying, setApplying] = useState(false);
@@ -46,7 +48,7 @@ export function ImportOpenMowerModal({preview, onApply, onClose}: ImportOpenMowe
 
     return (
         <Modal
-            title="Import OpenMower map"
+            title={t('mapImportOpenMower.title')}
             open={open}
             onCancel={() => {
                 if (applying) return;
@@ -54,14 +56,14 @@ export function ImportOpenMowerModal({preview, onApply, onClose}: ImportOpenMowe
                 onClose();
             }}
             onOk={handleOk}
-            okText={applying ? "Applying…" : "Apply (replaces current map)"}
+            okText={applying ? t('mapImportOpenMower.applying') : t('mapImportOpenMower.applyReplaces')}
             okButtonProps={{
                 disabled: applying || noMowAreas,
                 loading: applying,
                 danger: true,
             }}
             cancelButtonProps={{disabled: applying}}
-            cancelText="Cancel"
+            cancelText={t('mapImportOpenMower.cancel')}
             width={720}
             maskClosable={!applying}
             closable={!applying}
@@ -71,37 +73,37 @@ export function ImportOpenMowerModal({preview, onApply, onClose}: ImportOpenMowe
                     <Alert
                         type="warning"
                         showIcon
-                        message="Apply replaces the current MowgliNext map"
-                        description="Clicking Apply will clear every existing area and dock pose, then write the areas shown below. Use Backup Map from the More menu first if you want a rollback file."
+                        message={t('mapImportOpenMower.replaceWarningMessage')}
+                        description={t('mapImportOpenMower.replaceWarningDescription')}
                     />
 
                     <div style={{display: "flex", gap: 32, flexWrap: "wrap"}}>
-                        <Statistic title="Mowing areas" value={summary.mowing_areas} />
-                        <Statistic title="Navigation areas" value={summary.navigation_areas} />
-                        <Statistic title="Obstacles (re-parented)" value={summary.obstacles} />
+                        <Statistic title={t('mapImportOpenMower.mowingAreas')} value={summary.mowing_areas} />
+                        <Statistic title={t('mapImportOpenMower.navigationAreas')} value={summary.navigation_areas} />
+                        <Statistic title={t('mapImportOpenMower.obstaclesReparented')} value={summary.obstacles} />
                         {summary.orphan_obstacles > 0 ? (
-                            <Statistic title="Orphan obstacles (dropped)" value={summary.orphan_obstacles} valueStyle={{color: "#cf1322"}} />
+                            <Statistic title={t('mapImportOpenMower.orphanObstaclesDropped')} value={summary.orphan_obstacles} valueStyle={{color: "#cf1322"}} />
                         ) : null}
                     </div>
 
                     {summary.dock_pose ? (
                         <div>
-                            <Typography.Text strong>Dock pose</Typography.Text>
+                            <Typography.Text strong>{t('mapImportOpenMower.dockPose')}</Typography.Text>
                             <div style={{display: "flex", gap: 24, marginTop: 4}}>
-                                <Statistic title="X (m)" value={summary.dock_pose.x} precision={3} />
-                                <Statistic title="Y (m)" value={summary.dock_pose.y} precision={3} />
-                                <Statistic title="Yaw (rad)" value={summary.dock_pose.yaw_rad} precision={4} />
+                                <Statistic title={t('mapImportOpenMower.xMeters')} value={summary.dock_pose.x} precision={3} />
+                                <Statistic title={t('mapImportOpenMower.yMeters')} value={summary.dock_pose.y} precision={3} />
+                                <Statistic title={t('mapImportOpenMower.yawRad')} value={summary.dock_pose.yaw_rad} precision={4} />
                             </div>
                         </div>
                     ) : (
-                        <Alert type="warning" message="No active docking station in source map — dock pose will not be touched." />
+                        <Alert type="warning" message={t('mapImportOpenMower.noDockingStation')} />
                     )}
 
                     {(summary.datum_shift_east_m !== 0 || summary.datum_shift_north_m !== 0) ? (
                         <Alert
                             type="info"
-                            message={`Datum shift: (east=${summary.datum_shift_east_m.toFixed(2)} m, north=${summary.datum_shift_north_m.toFixed(2)} m)`}
-                            description="OpenMower coordinates were translated to land in the MowgliNext map frame. If this looks wrong, double-check both datums."
+                            message={t('mapImportOpenMower.datumShift', {east: summary.datum_shift_east_m.toFixed(2), north: summary.datum_shift_north_m.toFixed(2)})}
+                            description={t('mapImportOpenMower.datumShiftDescription')}
                         />
                     ) : null}
 
@@ -109,8 +111,8 @@ export function ImportOpenMowerModal({preview, onApply, onClose}: ImportOpenMowe
                         <Alert
                             type="error"
                             showIcon
-                            message="No mowing areas in this file"
-                            description="MowgliNext requires at least one mow area. Apply is disabled — close this modal and pick a different map.json."
+                            message={t('mapImportOpenMower.noMowingAreasMessage')}
+                            description={t('mapImportOpenMower.noMowingAreasDescription')}
                         />
                     ) : null}
 
@@ -120,17 +122,17 @@ export function ImportOpenMowerModal({preview, onApply, onClose}: ImportOpenMowe
                         pagination={false}
                         dataSource={summary.areas}
                         columns={[
-                            {title: "Name", dataIndex: "name", key: "name", render: (v: string) => v || <em>(unnamed)</em>},
+                            {title: t('mapImportOpenMower.colName'), dataIndex: "name", key: "name", render: (v: string) => v || <em>{t('mapImportOpenMower.unnamed')}</em>},
                             {
-                                title: "Type",
+                                title: t('mapImportOpenMower.colType'),
                                 dataIndex: "type",
                                 key: "type",
                                 render: (v: string) => <Tag color={v === "mow" ? "green" : "blue"}>{v}</Tag>,
                             },
-                            {title: "Vertices", dataIndex: "vertices", key: "vertices"},
-                            {title: "Obstacles", dataIndex: "obstacles", key: "obstacles"},
+                            {title: t('mapImportOpenMower.colVertices'), dataIndex: "vertices", key: "vertices"},
+                            {title: t('mapImportOpenMower.colObstacles'), dataIndex: "obstacles", key: "obstacles"},
                             {
-                                title: "Approx area (m²)",
+                                title: t('mapImportOpenMower.colApproxArea'),
                                 dataIndex: "approx_area_sqm",
                                 key: "approx_area_sqm",
                                 render: (v: number) => v.toFixed(1),
@@ -142,7 +144,7 @@ export function ImportOpenMowerModal({preview, onApply, onClose}: ImportOpenMowe
                         <Alert
                             type="warning"
                             showIcon
-                            message={`${summary.warnings.length} warning${summary.warnings.length === 1 ? "" : "s"}`}
+                            message={t('mapImportOpenMower.warningCount', {count: summary.warnings.length})}
                             description={
                                 <ul style={{margin: 0, paddingLeft: 20}}>
                                     {summary.warnings.map((w, i) => (
@@ -157,7 +159,7 @@ export function ImportOpenMowerModal({preview, onApply, onClose}: ImportOpenMowe
                         <Alert
                             type="error"
                             showIcon
-                            message="Apply failed"
+                            message={t('mapImportOpenMower.applyFailed')}
                             description={applyError}
                         />
                     ) : null}

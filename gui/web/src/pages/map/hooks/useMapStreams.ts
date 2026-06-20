@@ -242,15 +242,34 @@ export function useMapStreams({
             const rangeMin = scan.range_min ?? 0;
             const rangeMax = scan.range_max ?? 12;
 
+            // Scan rays live in the lidar_link frame, which is mounted on the
+            // chassis with a static base_footprint→lidar_link transform
+            // (lidar_x/y forward+lateral offset, lidar_yaw heading offset — see
+            // mowgli_robot.yaml). Compose that mount transform with the robot
+            // pose so points land at their true map position instead of being
+            // drawn as if the lidar sat at base_footprint with zero yaw.
+            const lidarX = parseFloat(settings["lidar_x"]) || 0;
+            const lidarY = parseFloat(settings["lidar_y"]) || 0;
+            const lidarYaw = parseFloat(settings["lidar_yaw"]) || 0;
+            const cosH = Math.cos(pose.heading);
+            const sinH = Math.sin(pose.heading);
+
             // Downsample: take every Nth point for performance
             const step = Math.max(1, Math.floor(scan.ranges.length / 90));
             for (let i = 0; i < scan.ranges.length; i += step) {
                 const range = scan.ranges[i];
                 if (range < rangeMin || range > rangeMax) continue;
 
-                const angle = angleMin + i * angleInc + pose.heading;
-                const endX = pose.x + range * Math.cos(angle);
-                const endY = pose.y + range * Math.sin(angle);
+                // Point in the lidar frame (lidar_yaw folded into the ray angle).
+                const angle = angleMin + i * angleInc + lidarYaw;
+                const px = range * Math.cos(angle);
+                const py = range * Math.sin(angle);
+                // lidar_link → base_footprint (rotate by lidar_yaw, translate by mount offset).
+                const bx = lidarX + px;
+                const by = lidarY + py;
+                // base_footprint → map (rotate by robot heading, translate by pose).
+                const endX = pose.x + bx * cosH - by * sinH;
+                const endY = pose.y + bx * sinH + by * cosH;
                 const endLonLat = transpose(offsetX, offsetY, datum, endY, endX);
 
                 rays.push({

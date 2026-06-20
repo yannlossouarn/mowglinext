@@ -1,4 +1,5 @@
 import React, {ChangeEvent} from "react";
+import {useTranslation} from "react-i18next";
 import type {NotificationInstance} from "antd/es/notification/interface";
 import type {FeatureCollection, Feature} from "geojson";
 import type {Map as MapType} from "../../../types/ros.ts";
@@ -50,6 +51,8 @@ export function useMapFiles({
     setDockDirty,
     buildFeaturesFromMap,
 }: UseMapFilesOptions) {
+    const {t} = useTranslation();
+
     async function handleSaveMap() {
         const areas: Record<string, MowgliMapArea[]> = {
             "area": [],
@@ -140,13 +143,13 @@ export function useMapFiles({
         try {
             await guiApi.mowglinext.putMowglinext(updateMsg);
             notification.success({
-                message: "Area saved",
+                message: t('mapFiles.areaSaved'),
             });
             setHasUnsavedChanges(false);
             setEditMap(false);
         } catch (e: any) {
             notification.error({
-                message: "Failed to save area",
+                message: t('mapFiles.failedToSaveArea'),
                 description: e.message,
             });
         }
@@ -277,8 +280,8 @@ export function useMapFiles({
 
             if (file.name.toLowerCase().endsWith(".bag")) {
                 notification.info({
-                    message: "OpenMower .bag import — coming soon",
-                    description: "Convert your map.bag to map.json on the source robot first (OpenMower 1.x auto-converts at boot), then re-import the .json. See docs/IMPORT_OPENMOWER_MAP.md §6.",
+                    message: t('mapFiles.bagImportComingSoonMessage'),
+                    description: t('mapFiles.bagImportComingSoonDescription'),
                 });
                 return;
             }
@@ -303,7 +306,7 @@ export function useMapFiles({
                 setImportPreview(summary);
             } catch (e: any) {
                 notification.error({
-                    message: "OpenMower import failed",
+                    message: t('mapFiles.openMowerImportFailed'),
                     description: e?.message ?? String(e),
                 });
             }
@@ -340,8 +343,8 @@ export function useMapFiles({
         setHasUnsavedChanges(false);
         setDockDirty(false);
         notification.success({
-            message: "OpenMower map imported",
-            description: "Areas + dock pose written. /map should refresh shortly.",
+            message: t('mapFiles.openMowerMapImported'),
+            description: t('mapFiles.openMowerMapImportedDescription'),
         });
     };
 
@@ -387,7 +390,7 @@ export function useMapFiles({
                                 break;
                             default:
                                 notification.error({
-                                    message: `Unknown type ${areaType}`,
+                                    message: t('mapFiles.unknownType', {type: areaType}),
                                 });
                                 setFeatures({...features}); // revert
                                 return;
@@ -399,7 +402,7 @@ export function useMapFiles({
                                 break;
                             default:
                                 notification.error({
-                                    message: `Unknown type ${areaType}`,
+                                    message: t('mapFiles.unknownType', {type: areaType}),
                                 });
                                 setFeatures({...features}); // revert
                                 return;

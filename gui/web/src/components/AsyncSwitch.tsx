@@ -1,9 +1,11 @@
 import {App, Switch, SwitchProps} from "antd";
 import * as React from "react";
+import {useTranslation} from "react-i18next";
 
 export const AsyncSwitch: React.FC<SwitchProps & {
     onAsyncChange: (checked: boolean, event: React.MouseEvent<HTMLButtonElement> | React.KeyboardEvent<HTMLButtonElement>) => Promise<any>
 }> = (props) => {
+    const {t} = useTranslation();
     const {notification} = App.useApp();
     const {onAsyncChange, onChange, ...rest} = props;
     const [loading, setLoading] = React.useState(false)
@@ -20,7 +22,7 @@ export const AsyncSwitch: React.FC<SwitchProps & {
             if (console.error)
                 console.error(e);
             notification.error({
-                message: 'An error occured',
+                message: t('asyncButton.errorOccurred'),
                 description: e?.message,
             })
         })

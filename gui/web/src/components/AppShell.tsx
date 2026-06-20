@@ -6,8 +6,11 @@ import {
   MoreHorizontal, X, SlidersHorizontal,
 } from "lucide-react";
 
+import {useTranslation} from "react-i18next";
+
 import {MowerStatus} from "./MowerStatus.tsx";
 import {NotificationBell} from "./NotificationBell.tsx";
+import {LanguageSwitcher} from "./LanguageSwitcher.tsx";
 import {LiveStatusStrip} from "./LiveStatusStrip.tsx";
 import {useAutoNotifications} from "../hooks/useNotificationCenter.tsx";
 import {useHighLevelStatus} from "../hooks/useHighLevelStatus.ts";
@@ -29,45 +32,52 @@ import "../concept/concept.css";
  */
 
 interface NavItem {
-  key: string;          // path
-  label: string;
-  shortLabel?: string;  // for the bottom-nav
+  key: string;            // path
+  labelKey: string;       // i18n key
+  shortLabelKey?: string; // for the bottom-nav
   icon: typeof Home;
   showInBottom?: boolean;
 }
 
 const NAV: NavItem[] = [
-  {key: '/mowglinext',  label: 'Accueil',     shortLabel: 'Accueil',  icon: Home,     showInBottom: true},
-  {key: '/map',         label: 'Carte',                                icon: MapIcon,  showInBottom: true},
-  {key: '/schedule',    label: 'Planning',    shortLabel: 'Planning',  icon: Calendar, showInBottom: true},
-  {key: '/diagnostics', label: 'Diagnostic',  shortLabel: 'Diag',      icon: Activity, showInBottom: true},
-  {key: '/statistics',  label: 'Stats',                                icon: Compass,  showInBottom: false},
-  {key: '/settings',    label: 'Réglages',                             icon: Settings, showInBottom: false},
-  {key: '/parameters',  label: 'Paramètres',                           icon: SlidersHorizontal, showInBottom: false},
-  {key: '/logs',        label: 'Logs',                                 icon: Terminal, showInBottom: false},
-  {key: '/onboarding',  label: 'Onboarding',                           icon: Rocket,   showInBottom: false},
+  {key: '/mowglinext',  labelKey: 'nav.home',        shortLabelKey: 'nav.home',      icon: Home,     showInBottom: true},
+  {key: '/map',         labelKey: 'nav.map',                                          icon: MapIcon,  showInBottom: true},
+  {key: '/schedule',    labelKey: 'nav.schedule',    shortLabelKey: 'nav.schedule',  icon: Calendar, showInBottom: true},
+  {key: '/diagnostics', labelKey: 'nav.diagnostics', shortLabelKey: 'nav.diagShort', icon: Activity, showInBottom: true},
+  {key: '/statistics',  labelKey: 'nav.stats',                                        icon: Compass,  showInBottom: false},
+  {key: '/settings',    labelKey: 'nav.settings',                                     icon: Settings, showInBottom: false},
+  {key: '/parameters',  labelKey: 'nav.parameters',                                   icon: SlidersHorizontal, showInBottom: false},
+  {key: '/logs',        labelKey: 'nav.logs',                                         icon: Terminal, showInBottom: false},
+  {key: '/onboarding',  labelKey: 'nav.onboarding',                                   icon: Rocket,   showInBottom: false},
 ];
 
-const PAGE_META: Record<string, {title: string; subtitle?: string}> = {
-  '/mowglinext':  {title: 'Accueil',        subtitle: 'Vue en direct'},
-  '/map':         {title: 'Carte',          subtitle: 'Zones et trajectoire'},
-  '/schedule':    {title: 'Planning',       subtitle: 'Semaine type'},
-  '/diagnostics': {title: 'Diagnostic',     subtitle: 'Capteurs et état système'},
-  '/statistics':  {title: 'Statistiques',   subtitle: 'Historique long terme'},
-  '/settings':    {title: 'Réglages',       subtitle: 'Configuration robot'},
-  '/parameters':  {title: 'Paramètres',     subtitle: 'Réglage ROS2 en direct'},
-  '/logs':        {title: 'Logs',           subtitle: 'Sortie des conteneurs'},
-  '/onboarding':  {title: 'Onboarding'},
+// Title falls back to the nav label key where they coincide; statistics has a
+// fuller title than its short nav label.
+const PAGE_META: Record<string, {titleKey: string; subtitleKey?: string}> = {
+  '/mowglinext':  {titleKey: 'nav.home',                 subtitleKey: 'pageMeta.home.subtitle'},
+  '/map':         {titleKey: 'nav.map',                  subtitleKey: 'pageMeta.map.subtitle'},
+  '/schedule':    {titleKey: 'nav.schedule',             subtitleKey: 'pageMeta.schedule.subtitle'},
+  '/diagnostics': {titleKey: 'nav.diagnostics',          subtitleKey: 'pageMeta.diagnostics.subtitle'},
+  '/statistics':  {titleKey: 'pageMeta.statistics.title', subtitleKey: 'pageMeta.statistics.subtitle'},
+  '/settings':    {titleKey: 'nav.settings',             subtitleKey: 'pageMeta.settings.subtitle'},
+  '/parameters':  {titleKey: 'nav.parameters',           subtitleKey: 'pageMeta.parameters.subtitle'},
+  '/logs':        {titleKey: 'nav.logs',                 subtitleKey: 'pageMeta.logs.subtitle'},
+  '/onboarding':  {titleKey: 'nav.onboarding'},
 };
 
 export function AppShell() {
   const {colors} = useThemeMode();
+  const {t} = useTranslation();
   const navigate = useNavigate();
   const route = useMatches();
   const isMobile = useIsMobile();
 
   const currentPath = route.length > 1 ? route[1].pathname : '/mowglinext';
-  const meta = PAGE_META[currentPath] ?? {title: 'MowgliNext'};
+  const metaKeys = PAGE_META[currentPath];
+  const meta = {
+    title: metaKeys ? t(metaKeys.titleKey) : 'MowgliNext',
+    subtitle: metaKeys?.subtitleKey ? t(metaKeys.subtitleKey) : undefined,
+  };
 
   // Empty path -> dashboard. Without this `/` renders the shell with an
   // empty Outlet, which looks broken (the previous Root had this redirect
@@ -149,6 +159,7 @@ export function AppShell() {
             )}
           </div>
           <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
+            <LanguageSwitcher/>
             <NotificationBell/>
             <MowerStatus/>
           </div>
@@ -227,6 +238,7 @@ export function AppShell() {
             )}
           </div>
           <div style={{display: 'flex', alignItems: 'center', gap: 12}}>
+            <LanguageSwitcher/>
             <NotificationBell/>
             <MowerStatus/>
           </div>
@@ -283,6 +295,7 @@ interface RailProps {
 }
 
 function DesktopSideRail({items, activePath, onNavigate}: RailProps) {
+  const {t} = useTranslation();
   return (
     <aside style={{
       position: 'fixed', top: 0, bottom: 0, left: 0, width: 88,
@@ -317,13 +330,13 @@ function DesktopSideRail({items, activePath, onNavigate}: RailProps) {
 
       <LayoutGroup>
         <nav style={{display: 'flex', flexDirection: 'column', gap: 4, padding: '0 12px', flex: 1, overflowY: 'auto'}}>
-          {items.map(({key, label, icon: Icon}) => {
+          {items.map(({key, labelKey, icon: Icon}) => {
             const isActive = key === activePath;
             return (
               <button
                 key={key}
                 onClick={() => onNavigate(key)}
-                aria-label={label}
+                aria-label={t(labelKey)}
                 aria-current={isActive ? 'page' : undefined}
                 style={{
                   position: 'relative',
@@ -354,7 +367,7 @@ function DesktopSideRail({items, activePath, onNavigate}: RailProps) {
                   />
                 )}
                 <Icon size={18} strokeWidth={isActive ? 2.4 : 2}/>
-                <span>{label}</span>
+                <span>{t(labelKey)}</span>
               </button>
             );
           })}
@@ -394,6 +407,7 @@ const bottomNavPill = (
 );
 
 function MobileBottomNav({items, activePath, onNavigate, onMore, moreActive}: RailProps) {
+  const {t} = useTranslation();
   const columns = items.length + (onMore ? 1 : 0);
   return (
     <nav style={{
@@ -415,21 +429,21 @@ function MobileBottomNav({items, activePath, onNavigate, onMore, moreActive}: Ra
           borderRadius: 999,
           backdropFilter: 'blur(28px)',
         }}>
-          {items.map(({key, label, shortLabel, icon: Icon}) => {
+          {items.map(({key, labelKey, shortLabelKey, icon: Icon}) => {
             const isActive = key === activePath;
             return (
-              <button key={key} onClick={() => onNavigate(key)} aria-label={label} style={bottomNavBtnStyle(isActive)}>
+              <button key={key} onClick={() => onNavigate(key)} aria-label={t(labelKey)} style={bottomNavBtnStyle(isActive)}>
                 {isActive && bottomNavPill}
                 <Icon size={18} strokeWidth={isActive ? 2.4 : 2}/>
-                <span>{shortLabel ?? label}</span>
+                <span>{t(shortLabelKey ?? labelKey)}</span>
               </button>
             );
           })}
           {onMore && (
-            <button onClick={onMore} aria-label="More" style={bottomNavBtnStyle(!!moreActive)}>
+            <button onClick={onMore} aria-label={t('nav.more')} style={bottomNavBtnStyle(!!moreActive)}>
               {moreActive && bottomNavPill}
               <MoreHorizontal size={18} strokeWidth={moreActive ? 2.4 : 2}/>
-              <span>Plus</span>
+              <span>{t('nav.more')}</span>
             </button>
           )}
         </div>
@@ -448,6 +462,7 @@ interface MoreSheetProps {
 }
 
 function MobileMoreSheet({open, items, activePath, onClose, onNavigate}: MoreSheetProps) {
+  const {t} = useTranslation();
   return (
     <AnimatePresence>
       {open && (
@@ -470,8 +485,8 @@ function MobileMoreSheet({open, items, activePath, onClose, onNavigate}: MoreShe
             }}
           >
             <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12}}>
-              <span style={{fontSize: 13, fontWeight: 600, color: 'rgba(236, 255, 244, 0.66)'}}>Plus</span>
-              <button onClick={onClose} aria-label="Fermer" style={{
+              <span style={{fontSize: 13, fontWeight: 600, color: 'rgba(236, 255, 244, 0.66)'}}>{t('nav.more')}</span>
+              <button onClick={onClose} aria-label={t('nav.close')} style={{
                 background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(236, 255, 244, 0.66)',
                 display: 'flex', padding: 4,
               }}>
@@ -479,7 +494,7 @@ function MobileMoreSheet({open, items, activePath, onClose, onNavigate}: MoreShe
               </button>
             </div>
             <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10}}>
-              {items.map(({key, label, icon: Icon}) => {
+              {items.map(({key, labelKey, icon: Icon}) => {
                 const isActive = key === activePath;
                 return (
                   <button key={key} onClick={() => onNavigate(key)} style={{
@@ -491,7 +506,7 @@ function MobileMoreSheet({open, items, activePath, onClose, onNavigate}: MoreShe
                     fontSize: 14, fontWeight: 600,
                   }}>
                     <Icon size={20}/>
-                    <span>{label}</span>
+                    <span>{t(labelKey)}</span>
                   </button>
                 );
               })}

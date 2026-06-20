@@ -1,4 +1,5 @@
 import {useMemo} from "react";
+import {useTranslation} from "react-i18next";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 import {useIsMobile} from "../hooks/useIsMobile";
 
@@ -44,6 +45,7 @@ function intensity(km: number, max: number): number {
 
 export function YearOfLawn({sessions}: YearOfLawnProps) {
   const {colors} = useThemeMode();
+  const {t} = useTranslation();
   const isMobile = useIsMobile();
   // The full year SVG (~810px) always horizontal-scroll-clips on phones; on
   // mobile we render only the most recent weeks. Summary stats stay over the
@@ -137,15 +139,15 @@ export function YearOfLawn({sessions}: YearOfLawnProps) {
       <div style={{display: 'flex', gap: 24, marginBottom: 14, flexWrap: 'wrap'}}>
         <div>
           <div style={{fontSize: 11, color: colors.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase'}}>
-            Year of lawn
+            {t('yearOfLawn.yearOfLawn')}
           </div>
           <div style={{fontSize: 22, fontWeight: 700, color: colors.text, marginTop: 2, letterSpacing: '-0.02em'}}>
-            {totalKm.toFixed(1)} km <span style={{fontSize: 13, color: colors.textDim, fontWeight: 500}}>last 52 weeks</span>
+            {totalKm.toFixed(1)} km <span style={{fontSize: 13, color: colors.textDim, fontWeight: 500}}>{t('yearOfLawn.last52Weeks')}</span>
           </div>
         </div>
         <div>
           <div style={{fontSize: 11, color: colors.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase'}}>
-            Active days
+            {t('yearOfLawn.activeDays')}
           </div>
           <div style={{fontSize: 22, fontWeight: 700, color: colors.text, marginTop: 2, letterSpacing: '-0.02em'}}>
             {activeDays}
@@ -153,10 +155,10 @@ export function YearOfLawn({sessions}: YearOfLawnProps) {
         </div>
         <div>
           <div style={{fontSize: 11, color: colors.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase'}}>
-            Current streak
+            {t('yearOfLawn.currentStreak')}
           </div>
           <div style={{fontSize: 22, fontWeight: 700, color: streak > 0 ? colors.accent : colors.text, marginTop: 2, letterSpacing: '-0.02em'}}>
-            {streak} day{streak === 1 ? '' : 's'}
+            {t('yearOfLawn.dayCount', {count: streak})}
           </div>
         </div>
       </div>
@@ -175,13 +177,13 @@ export function YearOfLawn({sessions}: YearOfLawnProps) {
           ))}
 
           {/* day-of-week labels */}
-          {['Mon', 'Wed', 'Fri'].map((d, i) => (
-            <text key={d}
+          {(['dayMon', 'dayWed', 'dayFri'] as const).map((dKey, i) => (
+            <text key={dKey}
                   x={0}
                   y={18 + (i * 2 + 1) * colWidth + 8}
                   fontSize={9}
                   fill={colors.textMuted}>
-              {d}
+              {t(`yearOfLawn.${dKey}`)}
             </text>
           ))}
 
@@ -200,7 +202,7 @@ export function YearOfLawn({sessions}: YearOfLawnProps) {
                   fill={intensityColors[lvl]}
                   stroke={lvl === 0 ? colors.borderSubtle : 'none'}
                 >
-                  <title>{`${cell.date.toLocaleDateString()} -- ${cell.km.toFixed(2)} km`}</title>
+                  <title>{t('yearOfLawn.cellTooltip', {date: cell.date.toLocaleDateString(), km: cell.km.toFixed(2)})}</title>
                 </rect>
               );
             })
@@ -213,7 +215,7 @@ export function YearOfLawn({sessions}: YearOfLawnProps) {
         display: 'flex', alignItems: 'center', gap: 6,
         fontSize: 10, color: colors.textMuted, marginTop: 6, justifyContent: 'flex-end',
       }}>
-        <span>Less</span>
+        <span>{t('yearOfLawn.less')}</span>
         {intensityColors.map((c, i) => (
           <span key={i} style={{
             width: 10, height: 10, borderRadius: 2,
@@ -221,7 +223,7 @@ export function YearOfLawn({sessions}: YearOfLawnProps) {
             border: i === 0 ? `1px solid ${colors.borderSubtle}` : 'none',
           }}/>
         ))}
-        <span>More</span>
+        <span>{t('yearOfLawn.more')}</span>
       </div>
     </div>
   );

@@ -17,6 +17,7 @@ import {useApi} from "../hooks/useApi.ts";
 import {limeAlpha} from "../theme/colors.ts";
 import {SettingOutlined} from "@ant-design/icons";
 import type {MenuProps} from "antd";
+import {useTranslation} from "react-i18next";
 
 // Builds the badge pulse keyframes from brand tokens. Green pulse derives
 // from the lime hero accent; red pulse derives from colors.danger (rose).
@@ -55,6 +56,7 @@ const statusColor = (state: string | undefined, colors: {primary: string; warnin
 };
 
 export const MowerStatus = () => {
+    const {t} = useTranslation();
     const {colors} = useThemeMode();
     const pulseKeyframes = buildPulseKeyframes(colors.danger);
     const {highLevelStatus} = useHighLevelStatus();
@@ -107,9 +109,9 @@ export const MowerStatus = () => {
     // Long-running: container restart + rosbridge reconnect. Lock the menu
     // item until ROS2 is reachable again to prevent duplicate-click storms.
     const mowgliRestart = useContainerRestart({
-        pendingLabel: "Redémarrage Mowgli…",
-        successMessage: "Mowgli redémarré",
-        errorMessage: "Échec du redémarrage Mowgli",
+        pendingLabel: t('mowerStatus.restartingMowgli'),
+        successMessage: t('mowerStatus.mowgliRestarted'),
+        errorMessage: t('mowerStatus.mowgliRestartFailed'),
     });
     const restartMowgli = () => mowgliRestart.run(() => restartMowgliNext(guiApi));
 
@@ -127,18 +129,18 @@ export const MowerStatus = () => {
     const rebootSystem = async () => {
         try {
             await guiApi.request({path: "/system/reboot", method: "POST"});
-            notification.success({message: "Redémarrage…"});
+            notification.success({message: t('mowerStatus.restarting')});
         } catch (e: any) {
-            notification.error({message: "Échec du redémarrage", description: e.message});
+            notification.error({message: t('mowerStatus.restartFailed'), description: e.message});
         }
     };
 
     const shutdownSystem = async () => {
         try {
             await guiApi.request({path: "/system/shutdown", method: "POST"});
-            notification.success({message: "Extinction…"});
+            notification.success({message: t('mowerStatus.shuttingDown')});
         } catch (e: any) {
-            notification.error({message: "Échec de l'extinction", description: e.message});
+            notification.error({message: t('mowerStatus.shutdownFailed'), description: e.message});
         }
     };
 
@@ -146,9 +148,9 @@ export const MowerStatus = () => {
         Modal.confirm({
             title,
             content,
-            okText: "Confirmer",
+            okText: t('mowerStatus.confirm'),
             okType: "danger",
-            cancelText: "Annuler",
+            cancelText: t('mowerStatus.cancel'),
             onOk,
         });
     };
@@ -160,37 +162,37 @@ export const MowerStatus = () => {
         {
             key: "restart-mowgli",
             icon: <ReloadOutlined/>,
-            label: mowgliRestart.pending ? mowgliRestart.pendingLabel : "Redémarrer Mowgli",
+            label: mowgliRestart.pending ? mowgliRestart.pendingLabel : t('mowerStatus.restartMowgli'),
             disabled: mowgliRestart.pending,
-            onClick: () => confirmAction("Redémarrer Mowgli", "Cela va redémarrer le conteneur MowgliNext.", restartMowgli),
+            onClick: () => confirmAction(t('mowerStatus.restartMowgli'), t('mowerStatus.restartMowgliConfirm'), restartMowgli),
         },
         {type: "divider"},
         {
             key: "advanced",
             icon: <SettingOutlined/>,
-            label: "Avancé",
+            label: t('mowerStatus.advanced'),
             children: [
                 {
                     key: "reboot-board",
                     icon: <ReloadOutlined/>,
-                    label: "Redémarrer la carte (STM32)",
+                    label: t('mowerStatus.restartBoard'),
                     onClick: () => confirmAction(
-                        "Redémarrer la carte (STM32)",
-                        "Réinitialise le firmware STM32 (NVIC_SystemReset). À utiliser pour débloquer une carte figée — par ex. l'IMU renvoyant NaN. Les moteurs/la lame s'arrêtent pendant le reset (~1 s).",
+                        t('mowerStatus.restartBoard'),
+                        t('mowerStatus.restartBoardConfirm'),
                         rebootBoardAction),
                 },
                 {
                     key: "reboot",
                     icon: <DesktopOutlined/>,
-                    label: "Redémarrer le Raspberry Pi",
-                    onClick: () => confirmAction("Redémarrer le Raspberry Pi", "Le système va redémarrer. Vous perdrez la connexion temporairement.", rebootSystem),
+                    label: t('mowerStatus.restartPi'),
+                    onClick: () => confirmAction(t('mowerStatus.restartPi'), t('mowerStatus.restartPiConfirm'), rebootSystem),
                 },
                 {
                     key: "shutdown",
                     icon: <PoweroffOutlined/>,
-                    label: "Éteindre le Raspberry Pi",
+                    label: t('mowerStatus.shutdownPi'),
                     danger: true,
-                    onClick: () => confirmAction("Éteindre le Raspberry Pi", "Le système va s'éteindre. Un accès physique sera nécessaire pour le rallumer.", shutdownSystem),
+                    onClick: () => confirmAction(t('mowerStatus.shutdownPi'), t('mowerStatus.shutdownPiConfirm'), shutdownSystem),
                 },
             ],
         },
@@ -224,14 +226,14 @@ export const MowerStatus = () => {
                     </Space>
                 </Tooltip>
                 {showResetEmergency && (
-                    <Tooltip title="Réarmer l'arrêt d'urgence (le firmware décide si le verrou se libère)">
+                    <Tooltip title={t('mowerStatus.rearmEmergencyTooltip')}>
                         <Button
                             danger
                             size="small"
                             icon={<AlertOutlined/>}
                             onClick={resetEmergencyAction}
                         >
-                            Réarmer
+                            {t('mowerStatus.rearm')}
                         </Button>
                     </Tooltip>
                 )}

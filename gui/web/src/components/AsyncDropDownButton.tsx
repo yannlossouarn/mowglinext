@@ -1,12 +1,14 @@
 import {App, Dropdown} from "antd";
 import * as React from "react";
 import {DropdownButtonProps} from "antd/es/dropdown";
+import {useTranslation} from "react-i18next";
 
 export const AsyncDropDownButton: React.FC<DropdownButtonProps & {
     menu: DropdownButtonProps["menu"] & {
         onAsyncClick: (event: any) => Promise<any>
     }
 }> = (props) => {
+    const {t} = useTranslation();
     const {notification} = App.useApp();
     const [loading, setLoading] = React.useState(false)
     const handleClick = (event: any) => {
@@ -19,7 +21,7 @@ export const AsyncDropDownButton: React.FC<DropdownButtonProps & {
             if (console.error)
                 console.error(e);
             notification.error({
-                message: 'An error occured',
+                message: t('asyncButton.errorOccurred'),
                 description: e?.message,
             })
         })

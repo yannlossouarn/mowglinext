@@ -463,6 +463,15 @@ private:
     const double undock_distance = declare_parameter<double>("undock_distance", 1.0);
     blackboard_->set("undock_distance", undock_distance);
 
+    // idle_nav2_suspend (default false): when true, the BT PAUSEs the Nav2
+    // lifecycle stack (via SetNav2Lifecycle) while parked on the dock to cut
+    // the idle CPU/thermal load of the always-looping costmaps, and RESUMEs
+    // it (root Nav2ResumeGuard) before any motion. Default-off so enabling
+    // it is a deliberate, per-site operator decision. Read by the
+    // SetNav2Lifecycle nodes from the blackboard.
+    const bool idle_nav2_suspend = declare_parameter<bool>("idle_nav2_suspend", false);
+    blackboard_->set("idle_nav2_suspend", idle_nav2_suspend);
+
     // Transit / mowing speeds, sourced from mowgli_robot.yaml and applied to
     // the live controllers by SetNavMode (FollowPath.desired_linear_vel for the
     // RPP transit controller, FollowCoveragePath.vx_max for MPPI coverage).

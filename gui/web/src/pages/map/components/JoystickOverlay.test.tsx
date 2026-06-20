@@ -1,6 +1,7 @@
 import {describe, it, expect, vi} from 'vitest';
 import {render, screen} from '@testing-library/react';
 import {JoystickOverlay} from './JoystickOverlay.tsx';
+import en from "../../../i18n/locales/en.json";
 
 const noop = () => {};
 const asyncNoop = async () => {};
@@ -17,7 +18,7 @@ describe('JoystickOverlay', () => {
         const {rerender} = render(
             <JoystickOverlay visible={true} onMove={noop} onStop={noop}/>,
         );
-        expect(screen.queryByText('Finish')).toBeNull();
+        expect(screen.queryByText(en.mapJoystick.finish)).toBeNull();
 
         rerender(
             <JoystickOverlay
@@ -30,9 +31,9 @@ describe('JoystickOverlay', () => {
                 onHome={asyncNoop}
             />,
         );
-        expect(screen.getByText('Finish')).toBeTruthy();
-        expect(screen.getByText('Cancel')).toBeTruthy();
-        expect(screen.getByText('Home')).toBeTruthy();
+        expect(screen.getByText(en.mapJoystick.finish)).toBeTruthy();
+        expect(screen.getByText(en.mapJoystick.cancel)).toBeTruthy();
+        expect(screen.getByText(en.mapJoystick.home)).toBeTruthy();
     });
 
     it('does not crash with the mobile layout flag', () => {

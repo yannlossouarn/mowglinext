@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Alert, App, Card, InputNumber, Modal, Space, Typography, Row, Col, Tooltip, Button, Tag } from "antd";
 import { AimOutlined, CompassOutlined, EnvironmentOutlined, UndoOutlined } from "@ant-design/icons";
 import { useThemeMode } from "../theme/ThemeContext.tsx";
@@ -123,6 +124,7 @@ type Props = {
 };
 
 export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
+    const { t } = useTranslation();
     const { colors, mode } = useThemeMode();
     const isMobile = useIsMobile();
     const svgRef = useRef<SVGSVGElement>(null);
@@ -202,18 +204,17 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                 onChange("dock_pose_y", roundTo(storedY, 3));
                 onChange("dock_pose_yaw", roundTo(storedYaw, 4));
                 notification.success({
-                    message: "Dock pose set (from GPS)",
-                    description:
-                        "Captured the dock position from the averaged GPS fix and persisted to mowgli_robot.yaml. The map indicator jumps to the new pose on the next /map publish.",
+                    message: t("robotComponentEditor.dockPoseSetFromGps"),
+                    description: t("robotComponentEditor.dockPoseSetFromGpsDescription"),
                 });
             } catch (e: unknown) {
-                const message = e instanceof Error ? e.message : "Unknown error";
-                notification.error({message: "Failed to set dock pose", description: message});
+                const message = e instanceof Error ? e.message : t("robotComponentEditor.unknownError");
+                notification.error({message: t("robotComponentEditor.failedToSetDockPose"), description: message});
             } finally {
                 setSettingDock(false);
             }
         },
-        [guiApi, notification, onChange],
+        [guiApi, notification, onChange, t],
     );
 
     // Open a confirmation modal that previews the change and spells out
@@ -221,7 +222,7 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
     // this action without a confirm step (#173).
     const handleSetDockAtRobot = useCallback(() => {
         if (!poseAvailable) {
-            notification.warning({message: "No robot pose available yet"});
+            notification.warning({message: t("robotComponentEditor.noRobotPoseYet")});
             return;
         }
         const px = robotX!;
@@ -245,46 +246,46 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
             title: (
                 <Space>
                     <EnvironmentOutlined/>
-                    <span>Set dock pose from current robot position?</span>
+                    <span>{t("robotComponentEditor.setDockFromPoseTitle")}</span>
                 </Space>
             ),
             width: 520,
-            okText: "Set dock pose",
+            okText: t("robotComponentEditor.setDockPose"),
             okType: "primary",
-            cancelText: "Cancel",
+            cancelText: t("robotComponentEditor.cancel"),
             content: (
                 <div>
                     <Typography.Paragraph>
-                        This captures the robot's <strong>x, y AND heading</strong> right now and
-                        writes them to <code>mowgli_robot.yaml</code> as the new dock pose. The
-                        IMU auto-calibration that runs on the next docking will refine the yaw
-                        if it drifts.
+                        {t("robotComponentEditor.setDockConfirmIntro1")}{" "}
+                        <strong>{t("robotComponentEditor.setDockConfirmXYHeading")}</strong>{" "}
+                        {t("robotComponentEditor.setDockConfirmIntro2")}{" "}
+                        <code>mowgli_robot.yaml</code>{" "}
+                        {t("robotComponentEditor.setDockConfirmIntro3")}
                     </Typography.Paragraph>
                     <Card size="small" style={{marginBottom: 8}}>
                         <Row gutter={[8, 4]}>
-                            <Col span={8}><Text type="secondary" style={{fontSize: 11}}>Current robot</Text></Col>
+                            <Col span={8}><Text type="secondary" style={{fontSize: 11}}>{t("robotComponentEditor.currentRobot")}</Text></Col>
                             <Col span={5}>x: <strong>{fmt(px, " m")}</strong></Col>
                             <Col span={5}>y: <strong>{fmt(py, " m")}</strong></Col>
-                            <Col span={6}>bearing: <strong>{yawDeg}°</strong></Col>
+                            <Col span={6}>{t("robotComponentEditor.bearing")}: <strong>{yawDeg}°</strong></Col>
                         </Row>
                         <Row gutter={[8, 4]} style={{marginTop: 4}}>
-                            <Col span={8}><Text type="secondary" style={{fontSize: 11}}>Saved dock</Text></Col>
+                            <Col span={8}><Text type="secondary" style={{fontSize: 11}}>{t("robotComponentEditor.savedDock")}</Text></Col>
                             <Col span={5}>x: <strong>{fmt(savedX, " m")}</strong></Col>
                             <Col span={5}>y: <strong>{fmt(savedY, " m")}</strong></Col>
-                            <Col span={6}>bearing:{" "}
+                            <Col span={6}>{t("robotComponentEditor.bearing")}:{" "}
                                 <strong>{savedYawRad == null ? "—" : `${roundTo(yawRadToCompassBearing(savedYawRad), 1)}°`}</strong>
                             </Col>
                         </Row>
                     </Card>
                     <Typography.Paragraph type="secondary" style={{fontSize: 11, marginBottom: 0}}>
-                        Make sure the robot is sitting on the dock and facing the direction it
-                        should approach from. The new pose persists across container restarts.
+                        {t("robotComponentEditor.setDockConfirmFooter")}
                     </Typography.Paragraph>
                 </div>
             ),
             onOk: () => writeDockPose(px, py, yawRad),
         });
-    }, [poseAvailable, robotX, robotY, robotYaw, values.dock_pose_x, values.dock_pose_y, values.dock_pose_yaw, writeDockPose, notification, modal]);
+    }, [poseAvailable, robotX, robotY, robotYaw, values.dock_pose_x, values.dock_pose_y, values.dock_pose_yaw, writeDockPose, notification, modal, t]);
     // Dock yaw lives in mowgli_robot.yaml. It is normally written by the
     // IMU auto-calibration service and the "set dock pose" GUI action,
     // but operators can also override it manually here when calibration
@@ -717,18 +718,16 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
             title={
                 <Space>
                     <AimOutlined />
-                    <span>Sensor Placement</span>
+                    <span>{t("robotComponentEditor.sensorPlacement")}</span>
                     <Tag color="blue" style={{ fontSize: 10, marginLeft: 4 }}>
-                        {robot.baseLength.toFixed(2)} x {robot.baseWidth.toFixed(2)} m (from URDF)
+                        {robot.baseLength.toFixed(2)} x {robot.baseWidth.toFixed(2)} {t("robotComponentEditor.metersFromUrdf")}
                     </Tag>
                 </Space>
             }
             style={{ marginBottom: 16 }}
         >
             <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-                Drag sensors on the top-down robot view to set their X/Y position.
-                Use the rotation handle (small circle) to set sensor yaw.
-                The grid spacing is 5 cm. Robot dimensions are read from the /robot_description topic.
+                {t("robotComponentEditor.dragSensorsHint")}
             </Typography.Paragraph>
 
             <Row gutter={[16, 16]}>
@@ -780,7 +779,7 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                                     </Space>
                                 }
                                 extra={
-                                    <Tooltip title="Reset to defaults">
+                                    <Tooltip title={t("robotComponentEditor.resetToDefaults")}>
                                         <Button type="text" size="small" icon={<UndoOutlined />}
                                             onClick={() => resetSensor(meta)} />
                                     </Tooltip>
@@ -789,7 +788,7 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                             >
                                 <Row gutter={[8, 4]}>
                                     <Col span={12}>
-                                        <Text type="secondary" style={{ fontSize: 11 }}>X (forward)</Text>
+                                        <Text type="secondary" style={{ fontSize: 11 }}>{t("robotComponentEditor.xForward")}</Text>
                                         <InputNumber
                                             value={val.x} onChange={(v) => onChange(meta.xKey, v ?? 0)}
                                             step={0.005} precision={3} size="small"
@@ -797,7 +796,7 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                                         />
                                     </Col>
                                     <Col span={12}>
-                                        <Text type="secondary" style={{ fontSize: 11 }}>Y (left)</Text>
+                                        <Text type="secondary" style={{ fontSize: 11 }}>{t("robotComponentEditor.yLeft")}</Text>
                                         <InputNumber
                                             value={val.y} onChange={(v) => onChange(meta.yKey, v ?? 0)}
                                             step={0.005} precision={3} size="small"
@@ -805,7 +804,7 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                                         />
                                     </Col>
                                     <Col span={12}>
-                                        <Text type="secondary" style={{ fontSize: 11 }}>Z (height)</Text>
+                                        <Text type="secondary" style={{ fontSize: 11 }}>{t("robotComponentEditor.zHeight")}</Text>
                                         <InputNumber
                                             value={val.z} onChange={(v) => onChange(meta.zKey, v ?? 0)}
                                             step={0.005} precision={3} size="small"
@@ -814,7 +813,7 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                                     </Col>
                                     {meta.yawKey && (
                                         <Col span={12}>
-                                            <Text type="secondary" style={{ fontSize: 11 }}>Yaw</Text>
+                                            <Text type="secondary" style={{ fontSize: 11 }}>{t("robotComponentEditor.yaw")}</Text>
                                             {meta.id === "imu" ? (
                                                 <Space.Compact style={{ width: "100%" }}>
                                                     <InputNumber
@@ -823,7 +822,7 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                                                         step={1} precision={1} size="small"
                                                         style={{ width: "100%" }} addonAfter="°"
                                                     />
-                                                    <Tooltip title="Auto-calibrate IMU mounting yaw (robot drives itself ~0.6 m forward then back)">
+                                                    <Tooltip title={t("robotComponentEditor.autoCalibrateImuTooltip")}>
                                                         <Button
                                                             size="small"
                                                             icon={<CompassOutlined />}
@@ -854,14 +853,14 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                         title={
                             <Space>
                                 <div style={{ width: 12, height: 12, borderRadius: 2, background: colors.muted }} />
-                                <span>Dock Pose</span>
+                                <span>{t("robotComponentEditor.dockPose")}</span>
                             </Space>
                         }
                         style={{ marginBottom: 8, borderLeft: `3px solid ${colors.muted}` }}
                     >
                         <Row gutter={[8, 4]} align="middle">
                             <Col span={12}>
-                                <Text type="secondary" style={{ fontSize: 11 }}>Bearing (compass, 0–360°)</Text>
+                                <Text type="secondary" style={{ fontSize: 11 }}>{t("robotComponentEditor.bearingCompass")}</Text>
                                 <InputNumber
                                     value={roundTo(yawRadToCompassBearing(dockYawRad), 1)}
                                     onChange={(v) => {
@@ -920,10 +919,7 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                             </Col>
                         </Row>
                         <Typography.Paragraph type="secondary" style={{ fontSize: 10, marginTop: 4, marginBottom: 8 }}>
-                            Compass bearing: 0° = N, 90° = E, 180° = S, 270° = W. Hold a
-                            phone compass behind the dock pointing the way the robot enters
-                            and read the bearing off it. Auto-captured on first charge by
-                            dock_yaw_to_set_pose (source: <code>{dockYawSource}</code>).
+                            {t("robotComponentEditor.compassBearingHint")} ({t("robotComponentEditor.source")}: <code>{dockYawSource}</code>).
                         </Typography.Paragraph>
 
                         {/* Capture-from-robot action ─────────────────────── */}
@@ -935,32 +931,31 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                             }}
                         >
                             <Typography.Text strong style={{ fontSize: 12 }}>
-                                Capture from current robot position
+                                {t("robotComponentEditor.captureFromRobot")}
                             </Typography.Text>
                             <Typography.Paragraph
                                 type="secondary"
                                 style={{ fontSize: 11, marginTop: 2, marginBottom: 8 }}
                             >
-                                Park the robot on the dock facing the approach direction, then
-                                click below. Captures <strong>x, y AND yaw</strong> at once —
-                                this is the most reliable way to seed the dock pose for a fresh
-                                map.
+                                {t("robotComponentEditor.captureIntro1")}{" "}
+                                <strong>{t("robotComponentEditor.captureXYYaw")}</strong>{" "}
+                                {t("robotComponentEditor.captureIntro2")}
                             </Typography.Paragraph>
                             <Row gutter={[8, 4]} align="middle">
                                 <Col flex="auto">
                                     <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                                         {poseAvailable
-                                            ? `Robot now: x=${roundTo(robotX!, 2)} m, y=${roundTo(robotY!, 2)} m, bearing=${roundTo(yawRadToCompassBearing(robotYaw!), 0)}°`
-                                            : "Waiting for robot pose…"}
+                                            ? t("robotComponentEditor.robotNow", {x: roundTo(robotX!, 2), y: roundTo(robotY!, 2), bearing: roundTo(yawRadToCompassBearing(robotYaw!), 0)})
+                                            : t("robotComponentEditor.waitingForPose")}
                                     </Typography.Text>
                                 </Col>
                                 <Col flex="none">
                                     <Tooltip
                                         title={!isCharging
-                                            ? "Place robot on dock with charging contacts engaged before setting the reference pose"
+                                            ? t("robotComponentEditor.tooltipNotCharging")
                                             : !poseAvailable
-                                                ? "Waiting for robot pose"
-                                                : "Capture the robot's current pose as the canonical dock reference"}
+                                                ? t("robotComponentEditor.tooltipWaitingPose")
+                                                : t("robotComponentEditor.tooltipCapturePose")}
                                     >
                                         {/* span wrapper lets the Tooltip target a disabled Button */}
                                         <span>
@@ -972,7 +967,7 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                                                 disabled={!poseAvailable || !isCharging}
                                                 onClick={handleSetDockAtRobot}
                                             >
-                                                Set dock pose
+                                                {t("robotComponentEditor.setDockPose")}
                                             </Button>
                                         </span>
                                     </Tooltip>
@@ -982,15 +977,13 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                     </Card>
 
                     <Typography.Paragraph type="secondary" style={{ fontSize: 11, marginTop: 8 }}>
-                        Coordinates are relative to base_link (centre of rear wheel axis).
-                        X+ = forward, Y+ = left, Z+ = up. Yaw is rotation around Z axis in degrees
-                        (displayed) / radians (stored).
+                        {t("robotComponentEditor.coordinatesHint")}
                     </Typography.Paragraph>
                 </Col>
             </Row>
 
             <Modal
-                title={<Space><CompassOutlined />IMU yaw auto-calibration</Space>}
+                title={<Space><CompassOutlined />{t("robotComponentEditor.imuCalibTitle")}</Space>}
                 open={calibOpen}
                 onCancel={closeCalibration}
                 maskClosable={!calibRunning}
@@ -999,28 +992,27 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                 destroyOnClose
             >
                 <Typography.Paragraph>
-                    The robot will <strong>drive itself</strong> ~<strong>0.6 m forward</strong>{" "}
-                    and then back to the start, taking roughly <strong>10 seconds</strong>.
+                    {t("robotComponentEditor.imuCalibIntro1")}{" "}
+                    <strong>{t("robotComponentEditor.imuCalibDriveItself")}</strong> ~<strong>{t("robotComponentEditor.imuCalibForward")}</strong>{" "}
+                    {t("robotComponentEditor.imuCalibIntro2")}{" "}
+                    <strong>{t("robotComponentEditor.imuCalibTenSeconds")}</strong>.
                     <ul style={{ marginTop: 8, marginBottom: 4 }}>
-                        <li>Make sure the robot is <strong>undocked</strong> (it refuses to run while charging).</li>
-                        <li>Leave <strong>at least 1 m</strong> of clear space in front and behind.</li>
-                        <li>Any active emergency must be cleared first.</li>
+                        <li>{t("robotComponentEditor.imuCalibBullet1a")} <strong>{t("robotComponentEditor.imuCalibUndocked")}</strong> {t("robotComponentEditor.imuCalibBullet1b")}</li>
+                        <li>{t("robotComponentEditor.imuCalibBullet2a")} <strong>{t("robotComponentEditor.imuCalibAtLeast1m")}</strong> {t("robotComponentEditor.imuCalibBullet2b")}</li>
+                        <li>{t("robotComponentEditor.imuCalibBullet3")}</li>
                     </ul>
-                    Collision monitor stays armed — obstacles will stop the motion.
+                    {t("robotComponentEditor.imuCalibCollisionMonitor")}
                 </Typography.Paragraph>
                 <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-                    Estimates the mounting yaw of the IMU chip relative to base_link by
-                    comparing the horizontal accelerometer vector to the wheel-odometry
-                    body-frame acceleration during the forward and backward ramps.
-                    Only samples with |wz| &lt; 0.05 rad/s and |a_body| &gt; 0.1 m/s² are used.
+                    {t("robotComponentEditor.imuCalibTechnical")}
                 </Typography.Paragraph>
 
                 {!calibResult && !calibRunning && (
                     <div style={{ textAlign: "right", marginTop: 16 }}>
                         <Space>
-                            <Button onClick={closeCalibration}>Cancel</Button>
+                            <Button onClick={closeCalibration}>{t("robotComponentEditor.cancel")}</Button>
                             <Button type="primary" icon={<CompassOutlined />} onClick={startCalibration}>
-                                Start
+                                {t("robotComponentEditor.start")}
                             </Button>
                         </Space>
                     </div>
@@ -1030,8 +1022,8 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                     <Alert
                         type="info"
                         showIcon
-                        message="Calibration running — robot is driving itself"
-                        description="Forward leg, pause, backward leg. Stand clear. The motion will stop automatically."
+                        message={t("robotComponentEditor.calibRunningMessage")}
+                        description={t("robotComponentEditor.calibRunningDescription")}
                         style={{ marginTop: 8 }}
                     />
                 )}
@@ -1045,11 +1037,10 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                                 message={`imu_yaw = ${calibResult.imu_yaw_deg.toFixed(2)}° (${calibResult.imu_yaw_rad.toFixed(4)} rad)`}
                                 description={
                                     <>
-                                        Confidence ±{calibResult.std_dev_deg.toFixed(2)}° from{" "}
-                                        {calibResult.samples_used} valid samples.
+                                        {t("robotComponentEditor.calibConfidence", {dev: calibResult.std_dev_deg.toFixed(2), samples: calibResult.samples_used})}
                                         <br />
                                         <Typography.Text type="secondary">
-                                            Current value: {roundTo(radToDeg(values.imu_yaw ?? 0), 2)}°
+                                            {t("robotComponentEditor.calibCurrentValue", {value: roundTo(radToDeg(values.imu_yaw ?? 0), 2)})}
                                         </Typography.Text>
                                     </>
                                 }
@@ -1058,14 +1049,13 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                             <Alert
                                 type="error"
                                 showIcon
-                                message="Calibration failed"
+                                message={t("robotComponentEditor.calibFailed")}
                                 description={
                                     <>
                                         {calibResult.message}
                                         <br />
                                         <Typography.Text type="secondary">
-                                            Hint: drive faster or longer so the accelerometer sees a
-                                            clear forward and backward impulse along the body X axis.
+                                            {t("robotComponentEditor.calibFailedHint")}
                                         </Typography.Text>
                                     </>
                                 }
@@ -1073,11 +1063,11 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                         )}
                         <div style={{ textAlign: "right", marginTop: 16 }}>
                             <Space>
-                                <Button onClick={() => { resetCalibration(); }}>Retry</Button>
-                                <Button onClick={closeCalibration}>Discard</Button>
+                                <Button onClick={() => { resetCalibration(); }}>{t("robotComponentEditor.retry")}</Button>
+                                <Button onClick={closeCalibration}>{t("robotComponentEditor.discard")}</Button>
                                 {calibResult.success && (
                                     <Button type="primary" onClick={applyCalibration}>
-                                        Apply
+                                        {t("robotComponentEditor.apply")}
                                     </Button>
                                 )}
                             </Space>

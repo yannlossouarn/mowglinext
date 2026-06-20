@@ -1,5 +1,6 @@
 import React from "react";
 import { Card, Descriptions, Tag, Typography } from "antd";
+import { useTranslation } from "react-i18next";
 import { DiagnosticArray } from "../../hooks/useDiagnostics.ts";
 import { GnssStatus } from "../../types/ros.ts";
 import {
@@ -23,14 +24,14 @@ type Props = {
     selectedReceiverFamily: unknown;
 };
 
-const boolTag = (value: boolean | undefined, trueLabel: string, falseLabel: string) => {
+const boolTag = (value: boolean | undefined, trueLabel: string, falseLabel: string, unknownLabel: string) => {
     if (value === true) {
         return <Tag color="success">{trueLabel}</Tag>;
     }
     if (value === false) {
         return <Tag color="warning">{falseLabel}</Tag>;
     }
-    return <Tag>Unknown</Tag>;
+    return <Tag>{unknownLabel}</Tag>;
 };
 
 const forwardingTag = (message: string) => {
@@ -53,6 +54,7 @@ export const UniversalGnssLiveStatusCard: React.FC<Props> = ({
     selectedSignalProfile,
     selectedReceiverFamily,
 }) => {
+    const { t } = useTranslation();
     const liveStatus = deriveGpsStatus(gnssStatus);
     const detectedReceiver = gnssReceiverLabel(gnssStatus);
     const summary = findDiagnosticStatusByName(diagnostics, "universal_gnss/summary");
@@ -67,39 +69,39 @@ export const UniversalGnssLiveStatusCard: React.FC<Props> = ({
     const receiverFamily = normalizeGnssString(selectedReceiverFamily) || "auto";
 
     return (
-        <Card size="small" title="Live GNSS Status" style={{ marginBottom: 16 }}>
+        <Card size="small" title={t("settingsGnssLiveStatus.cardTitle")} style={{ marginBottom: 16 }}>
             <Descriptions size="small" column={1}>
-                <Descriptions.Item label="Detected receiver">
+                <Descriptions.Item label={t("settingsGnssLiveStatus.detectedReceiver")}>
                     {detectedReceiver !== "GNSS" ? detectedReceiver : receiverFamily}
                 </Descriptions.Item>
-                <Descriptions.Item label="Live status">
+                <Descriptions.Item label={t("settingsGnssLiveStatus.liveStatus")}>
                     <Tag color={liveStatus.fixType === "RTK_FIX" ? "success" : liveStatus.fixType === "NO_FIX" ? "warning" : "processing"}>
                         {liveStatus.label}
                     </Tag>
                 </Descriptions.Item>
-                <Descriptions.Item label="Parser health">
-                    {boolTag(parserHealthy, "Healthy", "Warning")}
+                <Descriptions.Item label={t("settingsGnssLiveStatus.parserHealth")}>
+                    {boolTag(parserHealthy, t("settingsGnssLiveStatus.healthy"), t("settingsGnssLiveStatus.warning"), t("settingsGnssLiveStatus.unknown"))}
                 </Descriptions.Item>
-                <Descriptions.Item label="Correction forwarding">
-                    {forwardingTag(forwarding?.message ?? "Unknown")}
+                <Descriptions.Item label={t("settingsGnssLiveStatus.correctionForwarding")}>
+                    {forwardingTag(forwarding?.message ?? t("settingsGnssLiveStatus.unknown"))}
                 </Descriptions.Item>
-                <Descriptions.Item label="Receiver corrections">
-                    {boolTag(receiverCorrectionAvailable ?? correctionAvailable, "Available", "Unavailable")}
+                <Descriptions.Item label={t("settingsGnssLiveStatus.receiverCorrections")}>
+                    {boolTag(receiverCorrectionAvailable ?? correctionAvailable, t("settingsGnssLiveStatus.available"), t("settingsGnssLiveStatus.unavailable"), t("settingsGnssLiveStatus.unknown"))}
                 </Descriptions.Item>
-                <Descriptions.Item label="Receiver health">
-                    {boolTag(receiverHealthy, "Healthy", "Warning")}
+                <Descriptions.Item label={t("settingsGnssLiveStatus.receiverHealth")}>
+                    {boolTag(receiverHealthy, t("settingsGnssLiveStatus.healthy"), t("settingsGnssLiveStatus.warning"), t("settingsGnssLiveStatus.unknown"))}
                 </Descriptions.Item>
-                <Descriptions.Item label="Selected runtime baud">
+                <Descriptions.Item label={t("settingsGnssLiveStatus.selectedRuntimeBaud")}>
                     <Text code>{normalizeGnssString(selectedBaud) || "921600"}</Text>
                 </Descriptions.Item>
-                <Descriptions.Item label="Selected config baud">
+                <Descriptions.Item label={t("settingsGnssLiveStatus.selectedConfigBaud")}>
                     <Text code>{normalizeGnssString(selectedConfigBaud) || normalizeGnssString(selectedBaud) || "921600"}</Text>
                 </Descriptions.Item>
-                <Descriptions.Item label="Selected profile">
-                    {gnssProfileLabel(selectedProfile)}
+                <Descriptions.Item label={t("settingsGnssLiveStatus.selectedProfile")}>
+                    {t(gnssProfileLabel(selectedProfile))}
                 </Descriptions.Item>
-                <Descriptions.Item label="Selected signal profile">
-                    {gnssSignalProfileLabel(selectedSignalProfile)}
+                <Descriptions.Item label={t("settingsGnssLiveStatus.selectedSignalProfile")}>
+                    {t(gnssSignalProfileLabel(selectedSignalProfile))}
                 </Descriptions.Item>
             </Descriptions>
         </Card>

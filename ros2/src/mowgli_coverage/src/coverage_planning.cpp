@@ -446,14 +446,17 @@ std::vector<std::pair<double, double>> buildConnector(
 // inherit acute vertices from the recorded boundary (e.g. a 91° polygon
 // corner). The fillet curls toward the INSIDE of the turn (the mowed side); its
 // radius is shrunk until the arc stays in-bounds and fits the adjacent edges.
-// If a corner can't be rounded in-bounds at any radius it is left as-is (a
-// reportable residual; rare). Operates on the densified polyline; arc sampled
-// at `step`.
+// If a corner can't be rounded in-bounds with an arc of radius >= `min_radius`
+// it is left as-is (a sharp corner the robot pivots through is better than a
+// fillet too tight for MPPI to track — that produces the very loop/hesitation
+// we're avoiding; a reportable residual, rare). Operates on the densified
+// polyline; arc sampled at `step`.
 std::vector<std::pair<double, double>> roundSharpCorners(
     const std::vector<std::pair<double, double>>& pts,
     const std::vector<std::pair<double, double>>& boundary,
     double max_turn_rad,
     double fillet_r,
+    double min_radius,
     double step)
 {
   if (pts.size() < 3)
@@ -498,7 +501,7 @@ std::vector<std::pair<double, double>> roundSharpCorners(
     const double in_dir = std::atan2(iny, inx);
     const double out_dir = std::atan2(outy, outx);
     bool done = false;
-    for (double r = fillet_r; r >= 0.02 - 1e-9; r -= 0.01)
+    for (double r = std::max(fillet_r, min_radius); r >= min_radius - 1e-9; r -= 0.01)
     {
       const double half = (M_PI - turn) / 2.0;
       const double d = r / std::tan(half);
@@ -663,6 +666,7 @@ std::vector<std::pair<double, double>> buildContinuousPath(
     const BoustrophedonPlan& plan,
     const std::vector<std::pair<double, double>>& boundary,
     double turn_radius,
+    double min_turn_radius,
     double step)
 {
   // Flatten the plan into ordered drivable segments (densified polylines),
@@ -704,7 +708,12 @@ std::vector<std::pair<double, double>> buildContinuousPath(
     return std::atan2(s[n - 1].second - s[n - 2].second, s[n - 1].first - s[n - 2].first);
   };
 
-  const double min_radius = std::max(0.02, turn_radius * 0.25);
+  // Hard floor on every connector arc: the robot's minimum trackable turning
+  // radius (mowgli_robot.yaml min_turning_radius). Shrinking a turn-around below
+  // this to "fit in-bounds" produced loops MPPI could not track (wz≈vx/r), so the
+  // robot looped/hesitated; when no arc >= this fits, buildConnector falls back
+  // to a straight join (reportable gap) instead of an untrackable loop.
+  const double min_radius = std::max(0.02, min_turn_radius);
 
   for (std::size_t i = 0; i < segs.size(); ++i)
   {
@@ -744,10 +753,13 @@ std::vector<std::pair<double, double>> buildContinuousPath(
   // the boundary forced the radius down to ~0.02 m — an arc far too tight for
   // MPPI to track (wz≈vx/r), so the robot looped/hesitated at corners it used to
   // turn through cleanly. 88° (not 90°) leaves a small margin so every corner
-  // findFirstPathInversion would flag (>90°) is still rounded.
+  // findFirstPathInversion would flag (>90°) is still rounded. The fillet radius
+  // is floored at min_radius (= min_turn_radius): a corner that can only be
+  // rounded tighter than that is left sharp (pivoted through) rather than turned
+  // into a sub-trackable loop.
   constexpr double kCornerThreshold = 88.0 * M_PI / 180.0;
-  const double fillet_r = std::max(0.04, turn_radius * 0.5);
-  path = roundSharpCorners(path, boundary, kCornerThreshold, fillet_r, step);
+  const double fillet_r = std::max(turn_radius * 0.5, min_radius);
+  path = roundSharpCorners(path, boundary, kCornerThreshold, fillet_r, min_radius, step);
 
   return path;
 }

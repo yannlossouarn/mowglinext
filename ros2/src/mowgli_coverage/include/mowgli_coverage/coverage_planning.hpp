@@ -93,15 +93,22 @@ BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
 // expected and accepted.
 //
 // If no full-radius connector fits in-bounds, `turn_radius` is shrunk for that
-// connector (down to ~op_width/2); if a connector still cannot be made
-// in-bounds, a straight connector is used as a last resort (an out-of-bounds
-// straight join is then a real, reportable gap — not silently clipped).
+// connector — but NEVER below `min_turn_radius`. A loop tighter than the robot's
+// minimum trackable turning radius is untrackable (wz≈vx/r exceeds the
+// controller's authority), so MPPI loops/hesitates instead of driving it. If no
+// arc of radius >= min_turn_radius fits in-bounds, a straight connector is used
+// as a last resort (an out-of-bounds straight join is then a real, reportable
+// gap — not silently clipped). The same floor caps the corner-fillet radius, so
+// the whole path is free of sub-min_turn_radius arcs.
 //
-//   plan        the rings + swaths from planBoustrophedon
-//   boundary    the recorded-area polygon (open or closed), for the in-bounds
-//               test that picks the turn direction
-//   turn_radius nominal connector arc radius (m); shrunk per-connector if needed
-//   step        densification step along the whole path (m, ~0.03)
+//   plan            the rings + swaths from planBoustrophedon
+//   boundary        the recorded-area polygon (open or closed), for the
+//                   in-bounds test that picks the turn direction
+//   turn_radius     nominal connector arc radius (m); shrunk per-connector toward
+//                   min_turn_radius if the nominal arc leaves the boundary
+//   min_turn_radius hard floor on every connector/fillet arc (m) — the robot's
+//                   minimum MPPI-trackable turning radius (mowgli_robot.yaml)
+//   step            densification step along the whole path (m, ~0.03)
 //
 // Returns one densified polyline starting at the first ring's first point. Pure
 // function (no ROS deps) — unit-testable. Empty when the plan has no segments.
@@ -109,6 +116,7 @@ std::vector<std::pair<double, double>> buildContinuousPath(
     const BoustrophedonPlan& plan,
     const std::vector<std::pair<double, double>>& boundary,
     double turn_radius,
+    double min_turn_radius,
     double step);
 
 // 2-D point-in-polygon (ray casting) against `ring`, a list of (x, y)

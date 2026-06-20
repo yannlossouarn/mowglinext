@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import i18n from "../../i18n";
+import en from "../../i18n/locales/en.json";
 import {
     GNSS_ADVANCED_SETTINGS_BY_FAMILY,
     GNSS_CUSTOM_OPTION_VALUE,
@@ -29,10 +31,13 @@ describe("gnssConfig", () => {
     });
 
     it("formats profile labels for the UI", () => {
-        expect(gnssProfileLabel("runtime_only")).toBe("Runtime only");
-        expect(gnssProfileLabel("Rover-High-Precision-Debug")).toBe("Rover high precision + debug");
-        expect(gnssSignalProfileLabel("all_signals")).toBe("Maximum Compatibility");
-        expect(gnssSignalProfileDescription("minimal")).toContain("bandwidth");
+        // The label helpers now return i18n keys; resolve them through the
+        // active locale (pinned to English in test/setup.ts) and compare to the
+        // locale JSON so reworded copy doesn't break the test.
+        expect(i18n.t(gnssProfileLabel("runtime_only"))).toBe(en.gnssConfig.profile.runtime_only.label);
+        expect(i18n.t(gnssProfileLabel("Rover-High-Precision-Debug"))).toBe(en.gnssConfig.profile.rover_high_precision_debug.label);
+        expect(i18n.t(gnssSignalProfileLabel("all_signals"))).toBe(en.gnssConfig.signalProfile.all_signals.label);
+        expect(i18n.t(gnssSignalProfileDescription("minimal"))).toBe(en.gnssConfig.signalProfile.minimal.description);
     });
 
     it("normalizes legacy or shorthand profile values into Universal GNSS profile ids", () => {

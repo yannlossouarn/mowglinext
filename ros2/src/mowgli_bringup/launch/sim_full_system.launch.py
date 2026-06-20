@@ -54,6 +54,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -233,7 +234,10 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         parameters=[
             monitoring_params,
-            {"use_sim_time": True},
+            {
+                "use_sim_time": True,
+                "lidar_enabled": ParameterValue(use_lidar, value_type=bool),
+            },
         ],
     )
 

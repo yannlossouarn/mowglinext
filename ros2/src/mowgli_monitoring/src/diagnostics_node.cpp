@@ -133,6 +133,7 @@ void DiagnosticsNode::declare_parameters()
   battery_error_pct_ = declare_parameter<double>("battery_error_pct", 10.0);
   motor_temp_warn_c_ = declare_parameter<double>("motor_temp_warn_c", 60.0);
   motor_temp_error_c_ = declare_parameter<double>("motor_temp_error_c", 80.0);
+  lidar_enabled_ = declare_parameter<bool>("lidar_enabled", false);
 
   // Clamp publish_rate to [0.1, 100.0] Hz to prevent zero-division.
   if (publish_rate_ < 0.1 || publish_rate_ > 100.0)
@@ -452,6 +453,15 @@ diagnostic_msgs::msg::DiagnosticStatus DiagnosticsNode::check_lidar(const rclcpp
   diagnostic_msgs::msg::DiagnosticStatus status;
   status.name = "LiDAR";
   status.hardware_id = "mowgli/lidar";
+
+  // When the LiDAR is intentionally disabled (GPS-only operation) there is no
+  // /scan publisher, so don't raise a spurious "no scan" error.
+  if (!lidar_enabled_)
+  {
+    status.level = DiagLevel::OK;
+    status.message = "LiDAR disabled";
+    return status;
+  }
 
   if (!state_.scan_ever_received)
   {

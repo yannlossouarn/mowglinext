@@ -42,9 +42,26 @@ mowgli:
     # firmware/stm32/ros_usbnode/include/board.h — the firmware sends
     # raw ticks, the bridge does the scaling.
     ticks_per_meter: 300.0
+    # Drive-motor wheel-velocity PID + feedforward (consumed by
+    # hardware_bridge_node, pushed to the STM32 firmware over the serial link so
+    # the GUI can retune the per-wheel loop without reflashing). Defaults mirror
+    # the firmware compile-time fallback (cpp_main.cpp WHEEL_PI_* / board.h
+    # PWM_PER_MPS). The firmware re-validates and clamps every value on receipt
+    # (kp 0-200, ki 0-20000, kd 0-500, integral_limit 0-255, pwm_per_mps 50-600).
+    wheel_pid_kp: 30.0            # proportional gain [PWM per m/s]
+    wheel_pid_ki: 5000.0         # integral gain [PWM per (m/s·s)]
+    wheel_pid_kd: 0.0            # derivative gain [PWM per (m/s²)] (0 = off)
+    wheel_pid_integral_limit: 100.0  # anti-windup clamp on the integral term [PWM]
+    wheel_pid_pwm_per_mps: 300.0     # open-loop feedforward velocity→PWM scale
     # Behavior tree tuning (consumed by behavior_tree_node)
     tick_rate: 10.0
     bt_debug_logging: false
+    # idle_nav2_suspend (default false): when true, the BT PAUSEs the Nav2
+    # lifecycle stack while parked on the dock so the costmaps stop looping and
+    # idle CPU/thermal load drops sharply. Nav2 is RESUMEd (collision_monitor
+    # back up) before any motion via the root Nav2ResumeGuard + Nav2ReadyPoll.
+    # Opt-in per site.
+    idle_nav2_suspend: false
     # IMU calibration (consumed by hardware_bridge_node — auto-triggered on dock)
     imu_cal_samples: 200
     imu_cal_persist_path: /ros2_ws/maps/imu_calibration.txt
@@ -210,12 +227,16 @@ mowgli:
     # edge margins (harness: 95 % → 100 % on the 9×6 m field). tool_width (the
     # map_server stamp radius) is unchanged. 0 = swaths exactly tool_width apart.
     swath_overlap: 0.02
-    # min_turning_radius: CC-Dubins arc radius F2C plans between swaths. Coverage
-    # runs CONTINUOUS arcs, so this is LIVE. Two-sided: too small → MPPI
-    # reverse-sweeps the tight forward arc; too large → the Ω-turn bulges OUTSIDE
-    # the polygon at the swath ends (R=0.35 left the area by ~0.8 m, then got
-    # clipped into ragged turns). 0.15 m keeps every turn fully in-bounds
-    # (harness: 0 cm bulge) and stays MPPI-trackable. Keep within [0.10, 0.50].
+    # min_turning_radius: hard floor on every forward turn-around / corner-fillet
+    # arc in the CONTINUOUS coverage path (coverage_server → buildContinuousPath),
+    # injected into coverage_server.min_turning_radius — so this is LIVE.
+    # Two-sided: too small → the in-bounds shrink picks a loop tighter than MPPI
+    # can track (wz≈vx/r), so the robot loops/hesitates at corners; too large →
+    # the Ω-turn bulges OUTSIDE the polygon at the swath ends (R=0.35 left the
+    # area by ~0.8 m, then got clipped into ragged turns). 0.15 m keeps every turn
+    # fully in-bounds (harness: 0 cm bulge) and stays MPPI-trackable. A turn that
+    # cannot be made in-bounds at >= this is left as a sharp pivot, never a
+    # tighter loop. Keep within [0.10, 0.50].
     min_turning_radius: 0.15
 
     # -----------------------------------------------------------------

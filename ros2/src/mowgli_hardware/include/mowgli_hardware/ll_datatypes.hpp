@@ -52,6 +52,7 @@ enum PacketId : uint8_t
   PACKET_ID_LL_BLADE_STATUS = 0x05,  ///< STM32 → Pi: blade motor status
   PACKET_ID_LL_CMD_BLADE = 0x51,  ///< Pi → STM32: blade motor control
   PACKET_ID_LL_REBOOT = 0x52,  ///< Pi → STM32: reboot the board (NVIC_SystemReset)
+  PACKET_ID_LL_SET_DRIVE_PID = 0x53,  ///< Pi → STM32: drive-motor PID/feedforward gains
 };
 
 /// Magic byte in LlReboot — a dedicated reboot packet plus this confirmation
@@ -219,6 +220,24 @@ struct LlReboot
 };
 
 /**
+ * @brief Drive-motor PID gains packet sent by the Pi (PACKET_ID_LL_SET_DRIVE_PID = 0x53).
+ *
+ * Retunes the firmware's per-wheel velocity loop (both wheels share the gains)
+ * without reflashing. The firmware validates/clamps every field before applying
+ * and keeps its compile-time defaults as the power-on fallback.
+ */
+struct LlSetDrivePid
+{
+  uint8_t type;  ///< Must equal PACKET_ID_LL_SET_DRIVE_PID
+  float kp;  ///< Proportional gain [PWM per m/s]
+  float ki;  ///< Integral gain [PWM per (m/s·s)]
+  float kd;  ///< Derivative gain [PWM per (m/s²)]
+  float integral_limit;  ///< Anti-windup clamp on the integral term [PWM]
+  float pwm_per_mps;  ///< Open-loop feedforward velocity→PWM scale
+  uint16_t crc;  ///< CRC-16 CCITT over all preceding bytes
+};
+
+/**
  * @brief Blade motor status packet from STM32 (PACKET_ID_LL_BLADE_STATUS = 0x05).
  */
 struct LlBladeStatus
@@ -247,5 +266,6 @@ static_assert(sizeof(LlHighLevelState) == 5u, "LlHighLevelState layout mismatch"
 static_assert(sizeof(LlCmdVel) == 11u, "LlCmdVel layout mismatch");
 static_assert(sizeof(LlCmdBlade) == 5u, "LlCmdBlade layout mismatch");
 static_assert(sizeof(LlBladeStatus) == 16u, "LlBladeStatus layout mismatch");
+static_assert(sizeof(LlSetDrivePid) == 23u, "LlSetDrivePid layout mismatch");
 
 }  // namespace mowgli_hardware
