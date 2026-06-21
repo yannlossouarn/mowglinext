@@ -111,6 +111,7 @@ export const DriveTuningSection: React.FC = () => {
     const [mode, setMode] = useState<"guided" | "advanced">("guided");
     const [maneuver, setManeuver] = useState<string>("yaw_hunt");
     const [protocol, setProtocol] = useState<ProtocolStep[]>([]);
+    const [notes, setNotes] = useState<string>("");
     const [current, setCurrent] = useState(0);
     const [status, setStatus] = useState<Status | null>(null);
     const [connected, setConnected] = useState(false);
@@ -119,9 +120,11 @@ export const DriveTuningSection: React.FC = () => {
     const onStatus = useCallback((raw: string) => {
         const s = parseStatus(raw);
         if (!s) return;
-        // The node answers `get_protocol` with a {protocol:[...]} message.
+        // The node answers `get_protocol` with a {protocol:[...], notes:"..."} message.
         if (Array.isArray((s as { protocol?: unknown }).protocol)) {
             setProtocol((s as { protocol: ProtocolStep[] }).protocol);
+            const n = (s as { notes?: unknown }).notes;
+            if (typeof n === "string") setNotes(n);
             return;
         }
         setConnected(true);
@@ -245,6 +248,9 @@ export const DriveTuningSection: React.FC = () => {
                                 the placement note, position the robot, then Optimize. Move on when
                                 the score stops improving.
                             </Paragraph>
+                            {notes && (
+                                <Alert type="info" showIcon message="Note" description={notes} style={{ margin: 0 }} />
+                            )}
                             <Steps
                                 current={current}
                                 onChange={setCurrent}
