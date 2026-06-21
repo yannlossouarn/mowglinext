@@ -66,8 +66,8 @@ controller_server:
     # 10 Hz: 0.3 m/s × 100 ms = 3 cm of motion between decisions, matches
     # the 5-10 Hz upstream costmap / GPS refresh. Dropped from 20 Hz
     # because the ARM host was chronically missing the 20 Hz loop rate
-    # (10-25 Hz jittery), which hurts FTC tracking more than the lower
-    # nominal frequency does.
+    # (10-25 Hz jittery), which hurts controller tracking (RPP/MPPI) more
+    # than the lower nominal frequency does.
     controller_frequency: 10.0
     # Top-level transform_tolerance is used by controller_server when
     # transforming the global plan into the costmap frame (separate from
@@ -116,28 +116,30 @@ controller_server:
       xy_goal_tolerance: 0.30
       # 0.10 rad (≈5.7°), was 0.5 rad (≈28.6°). The loose value let
       # opennav_docking's NavigateToPose-to-staging-pose phase report
-      # SUCCESS even when FTC had stopped with the chassis 20-25° off
-      # the dock-approach axis. The graceful approach controller then
-      # had to redress while driving forward — "en biais" docking. With
-      # 1.5 m of straight-line approach (staging_x_offset: -1.5) the
-      # robot still misses the cradle if it enters that corridor more
-      # than ~10° off. 0.10 rad forces FTC to keep rotating in place at
-      # the end of NavigateToPose until the heading is close enough to
-      # drive straight into the dock. Slightly longer arrivals on
-      # ordinary transit are an acceptable trade.
+      # SUCCESS even when the transit controller had stopped with the
+      # chassis 20-25° off the dock-approach axis. The graceful approach
+      # controller then had to redress while driving forward — "en biais"
+      # docking. With 1.5 m of straight-line approach (staging_x_offset:
+      # -1.5) the robot still misses the cradle if it enters that corridor
+      # more than ~10° off. 0.10 rad forces the FollowPath RotationShim's
+      # terminal pivot (rotate_to_goal_heading) to keep rotating in place
+      # at the end of NavigateToPose until the heading is close enough to
+      # drive straight into the dock. Slightly longer arrivals on ordinary
+      # transit are an acceptable trade.
       yaw_goal_tolerance: 0.10
 
     # Coverage strip endpoint validation.
     #
-    # PathProgressGoalChecker (mowgli_nav2_plugins) — subscribes to
-    # FTC's republished `<plugin_name>/global_plan` and only fires when
-    # the robot has monotonically tracked >= `progress_threshold` of
-    # the path's poses AND is within xy/yaw tolerance of the goal pose.
+    # PathProgressGoalChecker (mowgli_nav2_plugins) — subscribes to the
+    # FollowCoveragePath controller's republished `<plugin_name>/global_plan`
+    # and only fires when the robot has monotonically tracked >=
+    # `progress_threshold` of the path's poses AND is within xy/yaw
+    # tolerance of the goal pose.
     #
     # Why: SimpleGoalChecker and StoppedGoalChecker both fire on
-    # proximity-to-goal alone (the latter also gates on velocity, but
-    # FTC's PRE_ROTATE pivots in place with lin_vel≈0 — the velocity
-    # gate matches mid-traversal). F2C coverage paths can end near the
+    # proximity-to-goal alone (the latter also gates on velocity, but the
+    # RotationShim in-place pivots at swath starts have lin_vel≈0 — the
+    # velocity gate matches mid-traversal). F2C coverage paths can end near the
     # perimeter, where the robot also passes during headland mowing.
     # We measured FollowPath actions completing at <2 % coverage with
     # both legacy checkers. Gating on PATH PROGRESS (idx ≥ 95 % of the
@@ -146,8 +148,8 @@ controller_server:
     # ring.
     #
     # plan_topic must match the controller publishing the plan we
-    # follow — FTC publishes on `<plugin_name>/global_plan`, so for
-    # the FollowCoveragePath slot the full path is
+    # follow — Nav2 controllers republish on `<plugin_name>/global_plan`,
+    # so for the FollowCoveragePath slot the full path is
     # `/controller_server/FollowCoveragePath/global_plan`.
     coverage_goal_checker:
       plugin: "mowgli_nav2_plugins/PathProgressGoalChecker"
@@ -157,7 +159,11 @@ controller_server:
       plan_topic: "/controller_server/FollowCoveragePath/global_plan"
 
     # FollowPath (transit / dock approach / home / undock recovery) —
-    # MPPI. FTC was the wrong tool for transit: it has a rigid state
+    # RotationShim + RPP (configured below). Historical context — the two
+    # controllers tried before it both failed here, which is why RPP is the
+    # current choice:
+    #
+    # FTC was the wrong tool for transit: it had a rigid state
     # machine (PRE_ROTATE / FOLLOWING / WAITING_FOR_GOAL_APPROACH /
     # POST_ROTATE), rejects plans with fewer than 3 poses, and aborts
     # the action when the lateral residual exceeds
@@ -178,9 +184,10 @@ controller_server:
     # RotationShimController wraps RegulatedPurePursuitController (RPP):
     #   * RotationShim detects when the next path segment requires a yaw
     #     change > rotate_to_heading_min_angle and does a pure pivot
-    #     FIRST, then hands off — solves the "FTC PRE_ROTATE / FTC
-    #     fights MPPI's mixed cmds" problem. Pivot phase outputs pure-wz,
-    #     translation phase outputs pure-vx+small-wz (via RPP).
+    #     FIRST, then hands off — a clean rotate-then-translate split with
+    #     no rigid state machine and no mixed pivot+drive commands. Pivot
+    #     phase outputs pure-wz, translation phase outputs pure-vx+small-wz
+    #     (via RPP).
     #   * RPP is curvature-driven pure pursuit with regulated speed:
     #     plans a lookahead carrot, computes the steering curvature,
     #     scales down vx based on lookahead distance + curvature + nearby
@@ -205,7 +212,8 @@ controller_server:
       # 0→0.6 at 1.0 rad/s² (~0.6 s), spending most of the ramp BELOW the
       # firmware pivot deadband (~0.5 rad/s) so the hardware_bridge closed-loop
       # wound up then kicked → jerky pivot start (user 2026-05-28; mowing turns
-      # are smooth because FTC uses its own PRE_ROTATE profile, not this ramp).
+      # are smooth because the FollowCoveragePath controller has its own
+      # rotation profile, not this ramp).
       # Snapping to a decisive 0.75 rad/s clears the deadband margin and the
       # closed-loop holds it smoothly.
       rotate_to_heading_angular_vel: 0.75

@@ -35,7 +35,7 @@ global_costmap:
           # tilt — every ground return on a slope sails through the
           # [0.12, 1.5] band and lands as a phantom lethal obstacle (a
           # tiny pivot on uneven garden terrain was enough to paint
-          # them, driving FTC obstacle-deviation into left-right flap and
+          # them, driving MPPI obstacle-deviation into left-right flap and
           # controller_server "Failed to make progress"). costmap_scan_filter
           # does the actual tilt rejection using the IMU gravity vector and
           # the LIDAR mount yaw, so the planner only sees real obstacles.
