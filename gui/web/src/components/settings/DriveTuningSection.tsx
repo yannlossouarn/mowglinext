@@ -3,6 +3,7 @@ import {
     Alert,
     Button,
     Card,
+    Checkbox,
     Descriptions,
     Divider,
     Segmented,
@@ -195,6 +196,13 @@ export const DriveTuningSection: React.FC = () => {
     const busy = Boolean(status?.busy);
     const armed = Boolean(status?.armed);
     const phase = (status?.phase as string) ?? "idle";
+    // Per-step clearance confirmation — must be re-affirmed whenever the active
+    // step (guided) or maneuver/mode (advanced) changes, since each runs an
+    // autonomous descent that moves the robot.
+    const [confirmed, setConfirmed] = useState(false);
+    useEffect(() => {
+        setConfirmed(false);
+    }, [current, maneuver, mode]);
     const result = status?.result as Record<string, unknown> | undefined;
     // During an optimize sweep the live fields carry the candidate + best so far;
     // the final "done" result carries {best, best_score, history}.
@@ -272,8 +280,11 @@ export const DriveTuningSection: React.FC = () => {
                         <Space direction="vertical" size={12} style={{ width: "100%" }}>
                             <Paragraph type="secondary" style={{ margin: 0 }}>
                                 Tune the drive in order — each step builds on the ones above it. Read
-                                the placement note, position the robot, then Optimize. Move on when
-                                the score stops improving.
+                                the placement note, position the robot, confirm the area is clear,
+                                then Optimize. During a step the robot returns to its start spot
+                                between tries, so it needs only the listed clearance forward plus
+                                room to pivot in place — it will not march further away. Move on
+                                when the score stops improving.
                             </Paragraph>
                             {notes && (
                                 <Alert type="info" showIcon message="Note" description={notes} style={{ margin: 0 }} />
@@ -304,10 +315,18 @@ export const DriveTuningSection: React.FC = () => {
                                             ))}
                                             {step.optional && <Tag color="default">optional</Tag>}
                                         </Space>
+                                        <Checkbox
+                                            checked={confirmed}
+                                            disabled={busy}
+                                            onChange={(e) => setConfirmed(e.target.checked)}
+                                        >
+                                            Robot is positioned and the area is clear ({step.clearance};
+                                            it returns to this spot between tries).
+                                        </Checkbox>
                                         <Space wrap>
                                             <Button
                                                 icon={<PlayCircleOutlined />}
-                                                disabled={busy || !armed}
+                                                disabled={busy || !armed || !confirmed}
                                                 onClick={() => send("run_step", step.id)}
                                             >
                                                 Test once
@@ -315,7 +334,7 @@ export const DriveTuningSection: React.FC = () => {
                                             <Button
                                                 type="primary"
                                                 icon={<ThunderboltOutlined />}
-                                                disabled={busy || !armed}
+                                                disabled={busy || !armed || !confirmed}
                                                 onClick={() => send("optimize_step", step.id)}
                                             >
                                                 Optimize this step
@@ -368,6 +387,14 @@ export const DriveTuningSection: React.FC = () => {
                                 hold, angular-rate gains) toward the lowest score for this maneuver.
                             </Paragraph>
                         </div>
+                        <Checkbox
+                            checked={confirmed}
+                            disabled={busy}
+                            onChange={(e) => setConfirmed(e.target.checked)}
+                        >
+                            Robot is positioned and the area is clear for this maneuver (it returns
+                            to its start spot between tries).
+                        </Checkbox>
                         <Space wrap>
                             <Select
                                 value={maneuver}
@@ -379,7 +406,7 @@ export const DriveTuningSection: React.FC = () => {
                             <Button
                                 type="default"
                                 icon={<PlayCircleOutlined />}
-                                disabled={busy || !armed}
+                                disabled={busy || !armed || !confirmed}
                                 onClick={() => send("run")}
                             >
                                 Run once
@@ -387,7 +414,7 @@ export const DriveTuningSection: React.FC = () => {
                             <Button
                                 type="primary"
                                 icon={<ThunderboltOutlined />}
-                                disabled={busy || !armed}
+                                disabled={busy || !armed || !confirmed}
                                 onClick={() => send("optimize")}
                             >
                                 Optimize
