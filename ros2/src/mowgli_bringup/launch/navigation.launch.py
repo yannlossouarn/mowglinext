@@ -211,8 +211,8 @@ def generate_launch_description() -> LaunchDescription:
     )
     drive_tuning_arg = DeclareLaunchArgument(
         "drive_tuning",
-        default_value="false",
-        description="Launch the drive_tuning_node (maneuver runner + descent optimizer for the GUI Drive Tuning panel). Default off — it subscribes to odom/imu/cmd_vel continuously, so only enable it during a tuning session.",
+        default_value="true",
+        description="Launch the drive_tuning_node (maneuver runner + descent optimizer for the GUI Drive Tuning panel). Default on — it idles cheaply (1 Hz status + command channel) and only creates the heavy odom/imu/cmd_vel subscriptions while a tuning session is armed from the GUI. Set false to keep it out of the graph entirely.",
     )
 
     # ------------------------------------------------------------------

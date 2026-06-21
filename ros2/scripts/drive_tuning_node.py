@@ -274,16 +274,18 @@ class DriveTuning(Node):
         self._fp_gh = None
         self._busy = False
         self._stop = False
+        self.armed = False  # live subscriptions active (set by start_session)
         self._lock = threading.Lock()
         self._status = {"phase": "idle"}
         self._set = {}
         self._get = {}
 
         # ---- I/O ------------------------------------------------------------
-        self.create_subscription(Odometry, "/odometry/filtered_map", self._odom, 10)
-        self.create_subscription(Odometry, "/wheel_odom", self._on_wheel, rel)
-        self.create_subscription(TwistStamped, "/cmd_vel_nav", self._cmd, 10)
-        self.create_subscription(Imu, "/imu/data", self._imu, qos_profile_sensor_data)
+        # Always-on, lightweight: BT/safety state + the command/status channel.
+        # The heavy pose/IMU/cmd_vel subscriptions are created lazily by
+        # start_session() so the node can stay launched (default on) at
+        # negligible idle cost and only listen while a session is armed.
+        self._rel = rel
         self.create_subscription(HighLevelStatus, "/behavior_tree_node/high_level_status",
                                  self._hl, rel)
         self.create_subscription(Emergency, HB + "/emergency", self._emg, rel)
@@ -291,6 +293,7 @@ class DriveTuning(Node):
         self.create_subscription(String, "~/command", self._on_command, rel)
         self.pub_status = self.create_publisher(String, "~/status", rel)
         self.create_timer(1.0, self._publish_status)
+        self._session_subs = []  # odom/wheel/cmd_vel/imu — live only while armed
 
         self.cp = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
         self.fp = ActionClient(self, FollowPath, "/follow_path")
@@ -422,6 +425,36 @@ class DriveTuning(Node):
         while time.time() - t0 < 5.0 and self.hl_state not in HL_DRIVES:
             time.sleep(0.1)
         return self.hl_state in HL_DRIVES
+
+    # ---- session lifecycle (lazy heavy subscriptions) -----------------------
+    def start_session(self):
+        """Arm: create the live pose/IMU/cmd_vel subscriptions. Idempotent."""
+        if self.armed:
+            return
+        self._session_subs = [
+            self.create_subscription(Odometry, "/odometry/filtered_map", self._odom, 10),
+            self.create_subscription(Odometry, "/wheel_odom", self._on_wheel, self._rel),
+            self.create_subscription(TwistStamped, "/cmd_vel_nav", self._cmd, 10),
+            self.create_subscription(Imu, "/imu/data", self._imu, qos_profile_sensor_data),
+        ]
+        self.armed = True
+        self._set_phase("session active")
+        self.get_logger().info("tuning session armed — live subscriptions active")
+
+    def stop_session(self):
+        """Disarm: cancel any maneuver and release the live subscriptions."""
+        if not self.armed:
+            return
+        self.cancel()  # abort a running maneuver/optimize
+        for sub in self._session_subs:
+            self.destroy_subscription(sub)
+        self._session_subs = []
+        # Drop cached pose so a stale value can't pass preflight after re-arm.
+        self.x = self.y = self.yaw = self.sx = None
+        self.armed = False
+        self.hl(CMD_RECORD_CANCEL)
+        self._set_phase("idle")
+        self.get_logger().info("tuning session stopped — live subscriptions released")
 
     # ---- path builders ------------------------------------------------------
     def _densify(self, pts, yaws, step=0.05):
@@ -701,6 +734,7 @@ class DriveTuning(Node):
         with self._lock:
             snap = dict(self._status)
         snap["busy"] = self._busy
+        snap["armed"] = self.armed
         snap["hl_state"] = self.hl_state
         snap["sigma_xy"] = self.sx
         try:
@@ -717,6 +751,12 @@ class DriveTuning(Node):
         action = cmd.get("action")
         if action == "stop":
             self.cancel()
+            return
+        if action == "start_session":
+            self.start_session()
+            return
+        if action == "stop_session":
+            self.stop_session()
             return
         if action == "get_protocol":
             # One-off: hand the ordered step list + guidance to the GUI stepper.
@@ -744,6 +784,10 @@ class DriveTuning(Node):
             action = "optimize" if action == "optimize_step" else "run"
         else:
             maneuver = cmd.get("maneuver", self.get_parameter("maneuver").value)
+        if not self.armed:
+            self.get_logger().warn("not armed — send start_session before running maneuvers")
+            self._set_phase("not armed — press Start tuning")
+            return
         threading.Thread(target=self._campaign, args=(action, maneuver, params),
                          daemon=True).start()
 
