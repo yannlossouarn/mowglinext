@@ -85,10 +85,21 @@ PARAM_SPECS = {
     "wheel_pid_pwm_per_mps": ("double", 50.0, 800.0, 25.0),
     "wheel_pid_kp": ("double", 0.0, 200.0, 10.0),
     "wheel_pid_ki": ("double", 0.0, 20000.0, 1000.0),
+    "wheel_pid_integral_limit": ("double", 20.0, 200.0, 20.0),
     "wheel_hold_kp": ("double", 0.0, 30.0, 2.0),
     "angular_rate_kp": ("double", 0.0, 2.0, 0.1),
     "angular_rate_ki": ("double", 0.0, 8.0, 0.5),
 }
+
+# wheel_pid_kd is deliberately ABSENT from PARAM_SPECS — the per-wheel velocity
+# loop runs on quantized encoder ticks at 50 Hz, so a derivative term amplifies
+# that quantization noise far more than it damps any real overshoot. The phases
+# that look like they'd want D (breakaway "pop", pivot overshoot) are absorbed by
+# the outer position loop (MPPI/RPP) and tuned by the angular-rate step instead.
+# kd stays at 0 and is reachable only via the expert Drive Motor form; it would
+# need a filtered derivative before it is safe to put under the optimizer. The
+# firmware re-clamps integral_limit on receipt, so the host range above only
+# bounds the search, not safety. See PROTOCOL_NOTES (surfaced to the operator).
 
 # Guided multi-step tuning protocol — ordered by dependency: each step assumes
 # the ones above it are already set (breakaway -> viscous -> PI trim -> hold ->
@@ -135,6 +146,23 @@ PROTOCOL = [
         ),
     },
     {
+        "id": "windup",
+        "title": "3b · Precise-stop (windup bound)",
+        "params": ["wheel_pid_integral_limit"],
+        "maneuver": "transit_pose",
+        "clearance": "~2.5 m clear straight ahead",
+        "optional": True,
+        "guidance": (
+            "Run AFTER the PI trim, and only if closed-loop PI is enabled "
+            "(wheel_pi_enabled) — skip when running open-loop feedforward. Bounds "
+            "how far the speed integrator may wind up, so the robot stops "
+            "precisely instead of lurching past the target after a slow approach "
+            "or a stall. Scored by final-pose error, so this is the step that "
+            "protects docking and segment-end stop accuracy. Keep ~2.5 m clear "
+            "straight ahead; the robot drives forward and stops on a precise pose."
+        ),
+    },
+    {
         "id": "hold",
         "title": "4 · Standstill hold",
         "params": ["wheel_hold_kp"],
@@ -158,6 +186,16 @@ PROTOCOL = [
         ),
     },
 ]
+
+# Surfaced to the operator alongside the protocol (sent on get_protocol). Explains
+# why the drive derivative gain is not part of the guided flow.
+PROTOCOL_NOTES = (
+    "wheel_pid_kd (drive derivative gain) is intentionally NOT auto-tuned — it is "
+    "left at 0 and exposed only in the expert Drive Motor settings. On this "
+    "quantized 50 Hz velocity loop a derivative term amplifies encoder noise more "
+    "than it helps; onset/pivot overshoot is handled by the position loop and the "
+    "turn-rate step instead."
+)
 
 
 def yq(yaw):
@@ -682,7 +720,8 @@ class DriveTuning(Node):
             return
         if action == "get_protocol":
             # One-off: hand the ordered step list + guidance to the GUI stepper.
-            self.pub_status.publish(String(data=json.dumps({"protocol": PROTOCOL})))
+            self.pub_status.publish(String(data=json.dumps(
+                {"protocol": PROTOCOL, "notes": PROTOCOL_NOTES})))
             return
         if self._busy:
             self.get_logger().warn("busy — ignoring command")
