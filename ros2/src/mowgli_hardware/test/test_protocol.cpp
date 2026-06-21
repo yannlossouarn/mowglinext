@@ -26,6 +26,7 @@
  *  - PacketId enum values match PKT_ID_* defines (ll_datatypes.hpp vs mowgli_protocol.h)
  */
 
+#include <cstddef>
 #include <cstring>
 #include <vector>
 
@@ -88,6 +89,14 @@ TEST(ProtocolSizes, SetDrivePidPacketSize)
 {
   // type(1) + kp/ki/kd/integral_limit/pwm_per_mps(5*4=20) + deadband_pwm(4) +
   // wheel_pi_enabled(1) + hold_enabled(1) + hold_kp(4) + crc(2) = 33.
+  //
+  // The first five gain fields (kp..pwm_per_mps) are the UPSTREAM-owned prefix
+  // of this packet; the trailing deadband/hold fields are this fork's extension
+  // (see SetDrivePidPacket.FieldOffsetsAreCorrect, which guards the boundary).
+  // Both ends share PACKET_ID_LL_SET_DRIVE_PID (0x53), so an upstream change to
+  // the prefix layout that this fork does not mirror would silently push
+  // garbage gains into the motor loop. This size check catches field
+  // add/remove; the offset test below catches insert/reorder within the prefix.
   EXPECT_EQ(sizeof(LlSetDrivePid), 33u);
 }
 
@@ -176,6 +185,41 @@ TEST(OdometryPacket, FieldOffsetsAreCorrect)
   uint16_t crc;
   std::memcpy(&crc, raw + 15, sizeof(crc));
   EXPECT_EQ(crc, 0xABCD);
+}
+
+// ---------------------------------------------------------------------------
+// SetDrivePid struct field layout verification
+//
+// PACKET_ID_LL_SET_DRIVE_PID (0x53) is a SHARED wire contract: the kp..pwm_per_mps
+// prefix originates upstream, and this fork appends deadband/hold fields after it.
+// Pinning every offset (rather than only the total size) guards the prefix
+// against an upstream insert/reorder that keeps the size unchanged — which would
+// otherwise silently misalign the gains pushed into the 50 Hz motor loop.
+// If a future upstream sync changes the prefix, this test must fail loudly so
+// the firmware decoder is updated in lockstep.
+// ---------------------------------------------------------------------------
+
+TEST(SetDrivePidPacket, FieldOffsetsAreCorrect)
+{
+  // --- Upstream-owned prefix (must not move) ---
+  EXPECT_EQ(offsetof(LlSetDrivePid, type), 0u);
+  EXPECT_EQ(offsetof(LlSetDrivePid, kp), 1u);
+  EXPECT_EQ(offsetof(LlSetDrivePid, ki), 5u);
+  EXPECT_EQ(offsetof(LlSetDrivePid, kd), 9u);
+  EXPECT_EQ(offsetof(LlSetDrivePid, integral_limit), 13u);
+  EXPECT_EQ(offsetof(LlSetDrivePid, pwm_per_mps), 17u);
+
+  // --- This fork's extension (appended after the upstream prefix) ---
+  EXPECT_EQ(offsetof(LlSetDrivePid, deadband_pwm), 21u);
+  EXPECT_EQ(offsetof(LlSetDrivePid, wheel_pi_enabled), 25u);
+  EXPECT_EQ(offsetof(LlSetDrivePid, hold_enabled), 26u);
+  EXPECT_EQ(offsetof(LlSetDrivePid, hold_kp), 27u);
+  EXPECT_EQ(offsetof(LlSetDrivePid, crc), 31u);
+
+  // The extension must begin exactly where the upstream prefix ends, so the
+  // shared prefix stays byte-compatible with the upstream decoder.
+  EXPECT_EQ(offsetof(LlSetDrivePid, deadband_pwm),
+            offsetof(LlSetDrivePid, pwm_per_mps) + sizeof(float));
 }
 
 // ---------------------------------------------------------------------------
