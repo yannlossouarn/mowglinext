@@ -528,6 +528,12 @@ RUN chmod +x /ros2_entrypoint.sh
 COPY scripts/mow_session_monitor.py /ros2_ws/scripts/mow_session_monitor.py
 RUN chmod +x /ros2_ws/scripts/mow_session_monitor.py
 
+# Drive-tuning node — maneuver runner + descent optimizer behind the GUI
+# Drive Tuning panel. Launched on demand (navigation.launch.py drive_tuning arg,
+# default off) or run manually; talks to /hardware_bridge drive params.
+COPY scripts/drive_tuning_node.py /ros2_ws/scripts/drive_tuning_node.py
+RUN chmod +x /ros2_ws/scripts/drive_tuning_node.py
+
 ENTRYPOINT ["/ros2_entrypoint.sh"]
 CMD ["ros2", "launch", "mowgli_bringup", "mowgli.launch.py"]
 
