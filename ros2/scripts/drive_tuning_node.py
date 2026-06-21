@@ -677,6 +677,39 @@ class DriveTuning(Node):
         m["score"] = self.score(maneuver, m)
         return m
 
+    def _return_to_start(self, start):
+        """Drive back to the pose captured at the start of optimize() so the
+        descent's footprint stays bounded (~one maneuver length) no matter how
+        many iterations run, instead of marching cumulatively forward. Returns
+        False if it cannot get back (so the descent aborts rather than walking
+        off the cleared area). A clean user stop counts as success."""
+        if self._stop:
+            return True
+        if self.x is None:
+            return False
+        sx, sy, syaw = start
+        self._set_phase("returning to start")
+        # 1) Translate back along the same corridor if we moved. RotationShim
+        #    pivots ~180 deg in place, RPP drives the straight path back.
+        dist = math.hypot(sx - self.x, sy - self.y)
+        if dist > 0.08:
+            heading_back = math.atan2(sy - self.y, sx - self.x)
+            path = self._densify([(self.x, self.y), (sx, sy)], [heading_back])
+            st = self.follow(path, "FollowPath", "stopped_goal_checker", timeout=90.0)
+            if st != "OK" and not self._stop:
+                # Retry via Smac in case the hand-built straight path was rejected.
+                p2 = self.plan_smac(sx, sy, syaw)
+                st = (self.follow(p2, "FollowPath", "stopped_goal_checker", timeout=90.0)
+                      if p2 is not None else st)
+            if st != "OK" and not self._stop:
+                return False
+        # 2) Restore the start heading so the next forward run is comparable.
+        if self.x is not None and not self._stop:
+            dyaw = wrap(syaw - self.yaw)
+            if abs(dyaw) > 0.10:
+                self.spin(dyaw)
+        return True
+
     # ---- coordinate / finite-difference descent -----------------------------
     def optimize(self, maneuver, param_names=None):
         max_iters = int(self.get_parameter("optimize_max_iters").value)
@@ -686,9 +719,17 @@ class DriveTuning(Node):
         combo = self.get_combo()
         steps = {n: PARAM_SPECS[n][3] for n in names}
         self.apply_params(combo)
+        # Anchor the footprint: every scored run returns here, so the descent
+        # needs only ~one maneuver of clearance regardless of iteration count.
+        if self.x is None:
+            return {"error": "no localization — cannot anchor return-to-start"}
+        start = (self.x, self.y, self.yaw)
         base = self.run_maneuver(maneuver)
         if "error" in base:
             return base
+        if not self._return_to_start(start):
+            return {"error": "could not return to start pose — aborting to keep "
+                             "the working area bounded"}
         best, best_score = dict(combo), base["score"]
         history = [{"combo": dict(combo), "metrics": base, "score": best_score}]
         idx = 0
@@ -714,6 +755,9 @@ class DriveTuning(Node):
                 if "error" in res:
                     return res
                 history.append({"combo": dict(cand), "metrics": res, "score": res["score"]})
+                if not self._return_to_start(start):
+                    return {"error": "could not return to start pose — aborting to "
+                                     "keep the working area bounded"}
                 if res["score"] < best_score - 1e-6:
                     best, best_score, improved = dict(cand), res["score"], True
                     break
