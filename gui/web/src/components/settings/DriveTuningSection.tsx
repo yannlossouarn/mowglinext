@@ -183,7 +183,8 @@ export const DriveTuningSection: React.FC = () => {
     const send = useCallback(
         (action: string, step?: string) => {
             let command: Record<string, unknown>;
-            if (action === "stop") command = { action };
+            if (action === "stop" || action === "start_session" || action === "stop_session")
+                command = { action };
             else if (step) command = { action, step };
             else command = { action, maneuver };
             cmdStream.sendJsonMessage({ data: JSON.stringify(command) });
@@ -192,6 +193,7 @@ export const DriveTuningSection: React.FC = () => {
     );
 
     const busy = Boolean(status?.busy);
+    const armed = Boolean(status?.armed);
     const phase = (status?.phase as string) ?? "idle";
     const result = status?.result as Record<string, unknown> | undefined;
     // During an optimize sweep the live fields carry the candidate + best so far;
@@ -233,6 +235,31 @@ export const DriveTuningSection: React.FC = () => {
                     { label: "Advanced (single maneuver)", value: "advanced" },
                 ]}
             />
+
+            <Card size="small" style={{ marginBottom: 16 }}>
+                <Space wrap align="center">
+                    {armed ? (
+                        <Button danger icon={<StopOutlined />} onClick={() => send("stop_session")}>
+                            Stop tuning
+                        </Button>
+                    ) : (
+                        <Button
+                            type="primary"
+                            icon={<PlayCircleOutlined />}
+                            onClick={() => send("start_session")}
+                        >
+                            Start tuning
+                        </Button>
+                    )}
+                    <Tag color={armed ? "processing" : "default"}>
+                        {armed ? "session active" : "idle"}
+                    </Tag>
+                    <Text type="secondary">
+                        Start activates the live odom/IMU/cmd_vel subscriptions; stop releases
+                        them. Maneuvers run only while a session is active.
+                    </Text>
+                </Space>
+            </Card>
 
             {mode === "guided" ? (
                 <Card size="small" style={{ marginBottom: 16 }} title="Guided drive tuning">
@@ -280,7 +307,7 @@ export const DriveTuningSection: React.FC = () => {
                                         <Space wrap>
                                             <Button
                                                 icon={<PlayCircleOutlined />}
-                                                disabled={busy}
+                                                disabled={busy || !armed}
                                                 onClick={() => send("run_step", step.id)}
                                             >
                                                 Test once
@@ -288,7 +315,7 @@ export const DriveTuningSection: React.FC = () => {
                                             <Button
                                                 type="primary"
                                                 icon={<ThunderboltOutlined />}
-                                                disabled={busy}
+                                                disabled={busy || !armed}
                                                 onClick={() => send("optimize_step", step.id)}
                                             >
                                                 Optimize this step
@@ -352,7 +379,7 @@ export const DriveTuningSection: React.FC = () => {
                             <Button
                                 type="default"
                                 icon={<PlayCircleOutlined />}
-                                disabled={busy}
+                                disabled={busy || !armed}
                                 onClick={() => send("run")}
                             >
                                 Run once
@@ -360,7 +387,7 @@ export const DriveTuningSection: React.FC = () => {
                             <Button
                                 type="primary"
                                 icon={<ThunderboltOutlined />}
-                                disabled={busy}
+                                disabled={busy || !armed}
                                 onClick={() => send("optimize")}
                             >
                                 Optimize
