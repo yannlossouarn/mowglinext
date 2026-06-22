@@ -91,6 +91,10 @@ interface UseMapStreamsOptions {
     offsetY: number;
     datum: [number, number, number];
     setFeatures: React.Dispatch<React.SetStateAction<Record<string, MowingFeature>>>;
+    // Robot silhouette + heading live in their OWN collection / Mapbox source,
+    // separate from `setFeatures`, so ~10 Hz pose updates do not invalidate the
+    // `features`-keyed memos (areas list, labels, obstacle index, draw sync).
+    setRobotFeatures: React.Dispatch<React.SetStateAction<GeoJSON.FeatureCollection>>;
     setEditMap: React.Dispatch<React.SetStateAction<boolean>>;
     setMapKey: React.Dispatch<React.SetStateAction<string>>;
     mapInstanceRef: React.RefObject<MapboxMap | null>;
@@ -104,6 +108,7 @@ export function useMapStreams({
     offsetY,
     datum,
     setFeatures,
+    setRobotFeatures,
     setEditMap,
     setMapKey,
     mapInstanceRef,
@@ -133,42 +138,37 @@ export function useMapStreams({
         },
         (e) => {
             const pose = JSON.parse(e) as AbsolutePose;
-            const mower_lonlat = transpose(
-                offsetX,
-                offsetY,
-                datum,
-                pose.pose?.pose?.position?.y!!,
-                pose.pose?.pose?.position?.x!!
-            );
-            robotPoseRef.current = {
-                x: pose.pose?.pose?.position?.x ?? 0,
-                y: pose.pose?.pose?.position?.y ?? 0,
-                heading: pose.motion_heading ?? 0,
-            };
-            setFeatures((oldFeatures) => {
-                const orientation = pose.motion_heading!!;
-                const posX = pose.pose?.pose?.position?.x!!;
-                const posY = pose.pose?.pose?.position?.y!!;
-                const line = drawLine(offsetX, offsetY, datum, posY, posX, orientation);
-                // URDF-derived robot silhouette (chassis + drive wheels + blade)
-                // so the map robot matches the sensors-page model exactly.
-                const sil = drawRobotSilhouette(
-                    offsetX, offsetY, datum, posY, posX, orientation, robot
-                );
-                return {
-                    ...oldFeatures,
-                    mower: new MowerFeatureBase(mower_lonlat),
-                    ["mower-footprint"]: new RobotPartFeature("mower-footprint", sil.chassis, "#00a6ff"),
-                    ["mower-wheel-l"]: new RobotPartFeature("mower-wheel-l", sil.wheelL, "#0b2e3f"),
-                    ["mower-wheel-r"]: new RobotPartFeature("mower-wheel-r", sil.wheelR, "#0b2e3f"),
-                    ["mower-blade"]: new RobotPartFeature("mower-blade", sil.blade, "#ff6b6b"),
-                    ["mower-heading"]: new LineFeatureBase(
-                        "mower-heading",
-                        [mower_lonlat, line],
-                        "#ff0000",
-                        "heading"
-                    ),
-                };
+            const posX = pose.pose?.pose?.position?.x ?? 0;
+            const posY = pose.pose?.pose?.position?.y ?? 0;
+            const orientation = pose.motion_heading ?? 0;
+            const mower_lonlat = transpose(offsetX, offsetY, datum, posY, posX);
+            robotPoseRef.current = {x: posX, y: posY, heading: orientation};
+
+            // The robot moves at ~10 Hz. Its silhouette + heading go into their
+            // OWN feature collection (rendered by a dedicated Mapbox source in
+            // MapPage), NOT the shared `features` map — so a pose frame never
+            // re-identifies `features` and never re-runs the areas list / labels
+            // / obstacle-index / DrawControl-sync memos that key off it.
+            const line = drawLine(offsetX, offsetY, datum, posY, posX, orientation);
+            // URDF-derived robot silhouette (chassis + drive wheels + blade)
+            // so the map robot matches the sensors-page model exactly.
+            const sil = drawRobotSilhouette(offsetX, offsetY, datum, posY, posX, orientation, robot);
+            const robotParts: MowingFeature[] = [
+                new MowerFeatureBase(mower_lonlat),
+                new RobotPartFeature("mower-footprint", sil.chassis, "#00a6ff"),
+                new RobotPartFeature("mower-wheel-l", sil.wheelL, "#0b2e3f"),
+                new RobotPartFeature("mower-wheel-r", sil.wheelR, "#0b2e3f"),
+                new RobotPartFeature("mower-blade", sil.blade, "#ff6b6b"),
+                new LineFeatureBase("mower-heading", [mower_lonlat, line], "#ff0000", "heading"),
+            ];
+            setRobotFeatures({
+                type: "FeatureCollection",
+                features: robotParts.map((f) => ({
+                    type: "Feature" as const,
+                    id: f.id,
+                    geometry: f.geometry,
+                    properties: f.properties,
+                })),
             });
         }
     );

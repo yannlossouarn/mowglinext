@@ -71,6 +71,13 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const [tileUri, setTileUri] = useState<string | undefined>()
     const [editMap, setEditMap] = useState<boolean>(false)
     const [features, setFeatures] = useState<Record<string, MowingFeature>>({});
+    // Robot silhouette + heading — written by the ~10 Hz pose stream and
+    // rendered by a dedicated Mapbox source (robotLayers), kept OUT of
+    // `features` so pose updates don't churn the area/label/obstacle memos.
+    const [robotFeatures, setRobotFeatures] = useState<GeoJSON.FeatureCollection>({
+        type: "FeatureCollection",
+        features: [],
+    });
     const [dockPlacementMode, setDockPlacementMode] = useState<boolean>(false);
     // OpenMower import preview — populated by handleImportOpenMower after
     // the file is uploaded + parsed server-side. Modal renders when set.
@@ -183,6 +190,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         offsetY,
         datum,
         setFeatures,
+        setRobotFeatures,
         setEditMap,
         setMapKey,
         mapInstanceRef,
@@ -548,6 +556,43 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         onRecordCancel: mowerAction("high_level_control", {Command: 6}),
     }), [mowerAction, highLevelStatus.highLevelStatus.state_name]);
 
+    // Robot (mower silhouette + heading) rendered from its OWN source so the
+    // ~10 Hz pose stream only touches `robotFeatures`, never `features`. Held in
+    // a shared const so the compact and full map branches stay in lockstep
+    // (same rationale as LAYER_COLORS). The footprint fill/outline + point + the
+    // heading line reproduce exactly the layers these features used to share in
+    // the display-features source.
+    const robotLayers = (
+        <Source type={"geojson"} id={"robot-features"} data={robotFeatures}>
+            <Layer type={"line"} id={"mower-heading-line"} filter={['==', ['geometry-type'], 'LineString']}
+                layout={{'line-cap': 'round', 'line-join': 'round'}}
+                paint={{
+                    'line-color': ['get', 'color'],
+                    'line-width': ['get', 'width'],
+                }}/>
+            <Layer type={"fill"} id={"mower-footprint-fill"}
+                filter={['==', ['get', 'feature_type'], 'mower-footprint']}
+                paint={{
+                    'fill-color': ['get', 'color'],
+                    'fill-opacity': 0.55,
+                }}/>
+            <Layer type={"line"} id={"mower-footprint-outline"}
+                filter={['==', ['get', 'feature_type'], 'mower-footprint']}
+                paint={{
+                    'line-color': LAYER_COLORS.mowerOutline,
+                    'line-width': 2,
+                }}/>
+            <Layer type={"circle"} id={"mower-point"}
+                filter={['==', ['get', 'feature_type'], 'mower']}
+                paint={{
+                    'circle-radius': 4,
+                    'circle-color': LAYER_COLORS.mower,
+                    'circle-stroke-color': LAYER_COLORS.halo,
+                    'circle-stroke-width': 1.5,
+                }}/>
+        </Source>
+    );
+
     if (_datumLon == 0 || _datumLat == 0) {
         return <Spinner/>
     }
@@ -637,28 +682,6 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 'text-halo-color': LAYER_COLORS.halo,
                                 'text-halo-width': 1.5,
                             }}/>
-                        {/* Mower footprint (robot shape from URDF) */}
-                        <Layer type={"fill"} id={"mower-footprint-fill"}
-                            filter={['==', ['get', 'feature_type'], 'mower-footprint']}
-                            paint={{
-                                'fill-color': ['get', 'color'],
-                                'fill-opacity': 0.55,
-                            }}/>
-                        <Layer type={"line"} id={"mower-footprint-outline"}
-                            filter={['==', ['get', 'feature_type'], 'mower-footprint']}
-                            paint={{
-                                'line-color': LAYER_COLORS.mowerOutline,
-                                'line-width': 2,
-                            }}/>
-                        {/* Mower center point */}
-                        <Layer type={"circle"} id={"mower-point"}
-                            filter={['==', ['get', 'feature_type'], 'mower']}
-                            paint={{
-                                'circle-radius': 4,
-                                'circle-color': LAYER_COLORS.mower,
-                                'circle-stroke-color': LAYER_COLORS.halo,
-                                'circle-stroke-width': 1.5,
-                            }}/>
                         {/* Other display points (Point geometry only — exclude polygon/line vertices) */}
                         <Layer type={"circle"} id={"display-points-halo"}
                             filter={['all', ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'feature_type'], 'dock'], ['!=', ['get', 'feature_type'], 'mower']]}
@@ -674,6 +697,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 'circle-color': ['get', 'color'],
                             }}/>
                     </Source>
+                    {robotLayers}
                 </Map> : <Spinner/>}
             </div>
         );
@@ -800,28 +824,6 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 'text-halo-color': LAYER_COLORS.halo,
                                 'text-halo-width': 1.5,
                             }}/>
-                        {/* Mower footprint (robot shape from URDF) */}
-                        <Layer type={"fill"} id={"mower-footprint-fill"}
-                            filter={['==', ['get', 'feature_type'], 'mower-footprint']}
-                            paint={{
-                                'fill-color': ['get', 'color'],
-                                'fill-opacity': 0.55,
-                            }}/>
-                        <Layer type={"line"} id={"mower-footprint-outline"}
-                            filter={['==', ['get', 'feature_type'], 'mower-footprint']}
-                            paint={{
-                                'line-color': LAYER_COLORS.mowerOutline,
-                                'line-width': 2,
-                            }}/>
-                        {/* Mower center point */}
-                        <Layer type={"circle"} id={"mower-point"}
-                            filter={['==', ['get', 'feature_type'], 'mower']}
-                            paint={{
-                                'circle-radius': 4,
-                                'circle-color': LAYER_COLORS.mower,
-                                'circle-stroke-color': LAYER_COLORS.halo,
-                                'circle-stroke-width': 1.5,
-                            }}/>
                         {/* Other display points (Point geometry only — exclude polygon/line vertices) */}
                         <Layer type={"circle"} id={"display-points-halo"}
                             filter={['all', ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'feature_type'], 'dock'], ['!=', ['get', 'feature_type'], 'mower']]}
@@ -837,6 +839,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 'circle-color': ['get', 'color'],
                             }}/>
                     </Source>
+                    {robotLayers}
                     {mowProgressImage && (
                         <Source type={"image"} id={"mow-progress"} url={mowProgressImage.url} coordinates={mowProgressImage.coordinates}>
                             <Layer type={"raster"} id={"mow-progress-layer"} paint={{
