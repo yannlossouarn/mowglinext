@@ -139,6 +139,7 @@ PROTOCOL = [
         "maneuver": "transit_pose",
         "clearance": "~2.5 m clear straight ahead",
         "optional": True,
+        "requires_pi": True,
         "guidance": (
             "Only if closed-loop PI is enabled (wheel_pi_enabled). Trims residual "
             "speed error on top of breakaway + viscous. Skip when running "
@@ -152,6 +153,7 @@ PROTOCOL = [
         "maneuver": "transit_pose",
         "clearance": "~2.5 m clear straight ahead",
         "optional": True,
+        "requires_pi": True,
         "guidance": (
             "Run AFTER the PI trim, and only if closed-loop PI is enabled "
             "(wheel_pi_enabled) — skip when running open-loop feedforward. Bounds "
@@ -275,6 +277,8 @@ class DriveTuning(Node):
         self._busy = False
         self._stop = False
         self.armed = False  # live subscriptions active (set by start_session)
+        self.wheel_pi_enabled = None  # cached /hardware_bridge bool, surfaced to GUI
+        self._pi_poll_tick = 0
         self._lock = threading.Lock()
         self._status = {"phase": "idle"}
         self._set = {}
@@ -395,6 +399,17 @@ class DriveTuning(Node):
             out.setdefault(n, spec[1])
         return out
 
+    def _refresh_wheel_pi_enabled(self):
+        """Cache /hardware_bridge's wheel_pi_enabled bool so the GUI can show it
+        and gate the PI-dependent steps. Best-effort, short timeout."""
+        cli = self._get_cli(HB)
+        if not cli.wait_for_service(timeout_sec=0.5):
+            return
+        res = self._await(cli.call_async(
+            GetParameters.Request(names=["wheel_pi_enabled"])), 1.5)
+        if res and res.values and res.values[0].type == ParameterType.PARAMETER_BOOL:
+            self.wheel_pi_enabled = res.values[0].bool_value
+
     def hl(self, cmd):
         if not self.hlc.wait_for_service(timeout_sec=5.0):
             return False
@@ -438,6 +453,7 @@ class DriveTuning(Node):
             self.create_subscription(Imu, "/imu/data", self._imu, qos_profile_sensor_data),
         ]
         self.armed = True
+        self._refresh_wheel_pi_enabled()
         self._set_phase("session active")
         self.get_logger().info("tuning session armed — live subscriptions active")
 
@@ -775,10 +791,16 @@ class DriveTuning(Node):
             self._status = {"phase": phase, "t": time.time(), **extra}
 
     def _publish_status(self):
+        # Refresh the PI toggle roughly every 5 s (outside the lock) so the GUI
+        # reflects a Drive-Motor-settings change without needing a re-arm.
+        self._pi_poll_tick += 1
+        if self._pi_poll_tick % 5 == 1:
+            self._refresh_wheel_pi_enabled()
         with self._lock:
             snap = dict(self._status)
         snap["busy"] = self._busy
         snap["armed"] = self.armed
+        snap["wheel_pi_enabled"] = self.wheel_pi_enabled
         snap["hl_state"] = self.hl_state
         snap["sigma_xy"] = self.sx
         try:
