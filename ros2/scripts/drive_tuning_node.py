@@ -70,7 +70,7 @@ from std_msgs.msg import String
 from nav2_msgs.action import ComputePathToPose, FollowPath, Spin
 from nav2_msgs.srv import ClearEntireCostmap
 from mowgli_interfaces.action import PlanCoverage
-from mowgli_interfaces.msg import Emergency, HighLevelStatus, Status
+from mowgli_interfaces.msg import Emergency, HighLevelStatus, Status, WheelTick
 from mowgli_interfaces.srv import HighLevelControl
 
 HB = "/hardware_bridge"  # drive-param node (firmware knobs)
@@ -111,14 +111,16 @@ PROTOCOL = [
         "id": "breakaway",
         "title": "1 · Breakaway (deadband)",
         "params": ["wheel_pid_deadband_pwm"],
-        "maneuver": "transit_pose",
+        "maneuver": "breakaway_staircase",
         "clearance": "~1.5 m clear straight ahead",
         "pi_run": "off",  # open-loop plant ID — the integrator would mask breakaway
         "guidance": (
             "Foundation step. Place the robot with ~1.5 m of clear space straight "
-            "ahead, blade OFF, off the dock. Finds the minimum PWM that reliably "
-            "breaks the wheels away from rest. The robot drives a short distance "
-            "forward to a precise pose."
+            "ahead, blade OFF, off the dock. Press Run: the robot ramps PWM up "
+            "from rest and watches each drive wheel, finding the minimum PWM that "
+            "breaks each wheel away. The deadband is set to the higher of the two "
+            "(+ margin) so both wheels reliably start. This step has no Optimize — "
+            "Run measures and sets it directly."
         ),
     },
     {
@@ -274,6 +276,8 @@ class DriveTuning(Node):
         self.x = self.y = self.yaw = self.sx = None
         self._vx = self._wz = self._gz = 0.0
         self._wheel_v = 0.0
+        self._ticks_rl = 0  # per-wheel cumulative encoder counts (breakaway staircase)
+        self._ticks_rr = 0
         self.hl_state = None
         self.emergency = False
         self.is_charging = None
@@ -337,6 +341,11 @@ class DriveTuning(Node):
 
     def _on_wheel(self, m):
         self._wheel_v = m.twist.twist.linear.x
+
+    def _on_ticks(self, m):
+        # Rear wheels are the drive wheels (2-wheel diff-drive maps to RL/RR).
+        self._ticks_rl = int(m.wheel_ticks_rl)
+        self._ticks_rr = int(m.wheel_ticks_rr)
 
     def _cmd(self, m):
         self._vx = m.twist.linear.x
@@ -449,6 +458,25 @@ class DriveTuning(Node):
             return res.values[0].bool_value
         return None
 
+    def _get_param_values(self, names):
+        """Blocking mixed-type read of params from /hardware_bridge. Worker-thread
+        ONLY (uses wait_for_service). Returns {name: value} for those resolved."""
+        cli = self._get_cli(HB)
+        out = {}
+        if not cli.wait_for_service(timeout_sec=2.0):
+            return out
+        res = self._await(cli.call_async(GetParameters.Request(names=list(names))), 2.0)
+        if not res:
+            return out
+        for n, pv in zip(names, res.values):
+            if pv.type == ParameterType.PARAMETER_DOUBLE:
+                out[n] = pv.double_value
+            elif pv.type == ParameterType.PARAMETER_BOOL:
+                out[n] = pv.bool_value
+            elif pv.type == ParameterType.PARAMETER_INTEGER:
+                out[n] = pv.integer_value
+        return out
+
     def hl(self, cmd):
         if not self.hlc.wait_for_service(timeout_sec=5.0):
             return False
@@ -490,6 +518,7 @@ class DriveTuning(Node):
             self.create_subscription(Odometry, "/wheel_odom", self._on_wheel, self._rel),
             self.create_subscription(TwistStamped, "/cmd_vel_nav", self._cmd, 10),
             self.create_subscription(Imu, "/imu/data", self._imu, qos_profile_sensor_data),
+            self.create_subscription(WheelTick, "/wheel_ticks", self._on_ticks, self._rel),
         ]
         self.armed = True
         self._refresh_wheel_pi_enabled()
@@ -669,6 +698,111 @@ class DriveTuning(Node):
             return "CANCEL"
         return "OK" if reached else "TIMEOUT"
 
+    def breakaway_staircase(self):
+        """Find the static-friction breakaway PWM by ramping a pure-forward
+        command from rest and watching EACH drive wheel independently.
+
+        Why not the optimizer: the firmware breakaway is an ADDITIVE PWM offset
+        (pwm = pwm_per_mps*v + sign(v)*deadband). At any cruise speed the
+        pwm_per_mps*v term swamps it, so achieved speed is ~insensitive to the
+        deadband and coordinate descent gets no gradient — it just retries
+        values. The physical breakaway is the minimum PWM that overcomes static
+        friction FROM REST; that needs a staircase, not a scored cruise.
+
+        Method (single shared firmware deadband, no firmware change): temporarily
+        zero the deadband, disable the min-vel clamp and the angular-rate loop
+        (wheel PI is already off for this open-loop step), then ramp the
+        commanded forward velocity from ~0. With those off the per-wheel PWM is
+        exactly pwm_per_mps*v. At each rung, hold briefly and check each rear
+        wheel's tick delta + the gyro: the lower-friction wheel breaks away
+        first (the robot yaws), the stiffer wheel second. Record each wheel's
+        breakaway PWM and set the single deadband to max(L,R)+margin so BOTH
+        wheels reliably start. Restores the borrowed params; sets the deadband."""
+        if self.x is None:
+            return {"error": "no localization"}
+        ppm = self.get_combo().get("wheel_pid_pwm_per_mps", 300.0)
+        if ppm <= 1.0:
+            return {"error": "pwm_per_mps too small to run the staircase"}
+
+        # Borrow: zero the deadband (so PWM == pwm_per_mps*v), drop the host
+        # min-vel clamp (we probe sub-clamp speeds), disable the gyro angular
+        # loop (it would fight the asymmetric yaw and mask which wheel moved).
+        saved = self._get_param_values(["min_linear_vel", "angular_rate_loop_enabled"])
+        self.set_param(HB, "wheel_pid_deadband_pwm", 0.0, ParameterType.PARAMETER_DOUBLE)
+        self.set_param(HB, "min_linear_vel", 0.0, ParameterType.PARAMETER_DOUBLE)
+        self.set_param(HB, "angular_rate_loop_enabled", False, ParameterType.PARAMETER_BOOL)
+        time.sleep(0.4)  # let the bridge push the zeroed deadband to the STM32
+
+        PWM_LO, PWM_HI, PWM_STEP = 6.0, 120.0, 4.0
+        DWELL_S = 1.0
+        TICKS_MOVED = 3           # encoder counts in the dwell = wheel turned
+        MARGIN_PWM = 6.0          # headroom above the stiffer wheel's breakaway
+        bk_l = bk_r = None
+        chosen = None
+        rungs = []
+        try:
+            pwm = PWM_LO
+            while pwm <= PWM_HI and not self._stop and (bk_l is None or bk_r is None):
+                v = pwm / ppm
+                rl0, rr0 = self._ticks_rl, self._ticks_rr
+                gz_peak = 0.0
+                t0 = time.time()
+                while time.time() - t0 < DWELL_S and not self._stop:
+                    msg = TwistStamped()
+                    msg.header.stamp = self.get_clock().now().to_msg()
+                    msg.header.frame_id = "base_link"
+                    msg.twist.linear.x = float(v)
+                    msg.twist.angular.z = 0.0
+                    self.pub_teleop.publish(msg)
+                    gz_peak = max(gz_peak, abs(self._gz))
+                    time.sleep(0.05)
+                dl = abs(self._ticks_rl - rl0)
+                dr = abs(self._ticks_rr - rr0)
+                moved_l, moved_r = dl >= TICKS_MOVED, dr >= TICKS_MOVED
+                if bk_l is None and moved_l:
+                    bk_l = pwm
+                if bk_r is None and moved_r:
+                    bk_r = pwm
+                rungs.append({"pwm": pwm, "v": round(v, 4), "d_rl": dl, "d_rr": dr,
+                              "gz_peak": round(gz_peak, 3),
+                              "moved_l": moved_l, "moved_r": moved_r})
+                self._set_phase(
+                    f"breakaway staircase PWM={pwm:.0f} "
+                    f"L={'Y' if (bk_l is not None) else '-'} "
+                    f"R={'Y' if (bk_r is not None) else '-'}")
+                pwm += PWM_STEP
+        finally:
+            # Stop the wheels (explicit zeros — no holding torque at zero cmd).
+            for _ in range(12):
+                z = TwistStamped()
+                z.header.stamp = self.get_clock().now().to_msg()
+                z.header.frame_id = "base_link"
+                self.pub_teleop.publish(z)
+                time.sleep(0.04)
+            # Restore borrowed params; SET the discovered deadband.
+            if "min_linear_vel" in saved:
+                self.set_param(HB, "min_linear_vel", saved["min_linear_vel"],
+                               ParameterType.PARAMETER_DOUBLE)
+            if "angular_rate_loop_enabled" in saved:
+                self.set_param(HB, "angular_rate_loop_enabled",
+                               saved["angular_rate_loop_enabled"], ParameterType.PARAMETER_BOOL)
+            found = [b for b in (bk_l, bk_r) if b is not None]
+            if found:
+                chosen = max(found) + MARGIN_PWM
+                self.set_param(HB, "wheel_pid_deadband_pwm", float(chosen),
+                               ParameterType.PARAMETER_DOUBLE)
+            time.sleep(0.3)
+
+        if self._stop:
+            return {"follow_status": "CANCEL", "rungs": rungs,
+                    "breakaway_left_pwm": bk_l, "breakaway_right_pwm": bk_r}
+        return {
+            "breakaway_left_pwm": bk_l, "breakaway_right_pwm": bk_r,
+            "deadband_set_pwm": chosen, "margin_pwm": MARGIN_PWM,
+            "pwm_per_mps": ppm, "rungs": rungs,
+            "follow_status": "OK" if (bk_l is not None and bk_r is not None) else "INCOMPLETE",
+        }
+
     def cancel(self):
         self._stop = True
         if self._fp_gh is not None:
@@ -759,6 +893,8 @@ class DriveTuning(Node):
         w_hunt = g("w_hunting").value
         w_bc = g("w_backcreep").value
         w_pe = g("w_pose_err").value
+        if maneuver == "breakaway_staircase":
+            return 0.0  # not a scored maneuver — the staircase sets the value directly
         if maneuver == "yaw_hunt":
             return (w_h * m.get("undershoot", 0.0) + w_bc * m.get("backcreep", 0.0)
                     + w_hunt * 0.1 * m.get("gz_zc", 0.0))
@@ -806,6 +942,11 @@ class DriveTuning(Node):
                         return {"error": "Smac plan failed"}
                     st = self.follow(path, "FollowPath", "stopped_goal_checker")
                     m = self.metrics_pose(gx, gy, gyaw)
+            elif maneuver == "breakaway_staircase":
+                m = self.breakaway_staircase()
+                if "error" in m:
+                    return m
+                st = m.get("follow_status", "OK")
             elif maneuver == "swath":
                 path = self.coverage_swath(float(self.get_parameter("swath_box_m").value))
                 if path is None:
@@ -1031,6 +1172,11 @@ class DriveTuning(Node):
                     self.set_param(HB, "wheel_pi_enabled", pi_run,
                                    ParameterType.PARAMETER_BOOL)
                     time.sleep(0.3)  # let the bridge push the toggle to firmware
+            # The breakaway staircase sets the deadband directly from a from-rest
+            # PWM ramp; it has no scored gradient, so never wrap it in the
+            # coordinate-descent optimizer.
+            if maneuver == "breakaway_staircase":
+                action = "run"
             # Open-loop ID steps (pi_run forced off) drive a straight cmd_vel
             # instead of an RPP-tracked path — RPP on the PI-off plant weaves.
             open_loop = (pi_run is False)
