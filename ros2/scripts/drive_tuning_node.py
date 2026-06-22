@@ -401,12 +401,22 @@ class DriveTuning(Node):
 
     def _refresh_wheel_pi_enabled(self):
         """Cache /hardware_bridge's wheel_pi_enabled bool so the GUI can show it
-        and gate the PI-dependent steps. Best-effort, short timeout."""
+        and gate the PI-dependent steps. Fire-and-forget on purpose: this runs
+        from the status-timer (and command) callback, and a blocking service
+        wait there deadlocks — the executor can't process the response while the
+        callback is parked. Let the done-callback land the value asynchronously."""
         cli = self._get_cli(HB)
-        if not cli.wait_for_service(timeout_sec=0.5):
+        if not cli.service_is_ready():
             return
-        res = self._await(cli.call_async(
-            GetParameters.Request(names=["wheel_pi_enabled"])), 1.5)
+        cli.call_async(
+            GetParameters.Request(names=["wheel_pi_enabled"])
+        ).add_done_callback(self._on_wheel_pi_response)
+
+    def _on_wheel_pi_response(self, fut):
+        try:
+            res = fut.result()
+        except Exception:  # noqa: BLE001 — transient service error; retry next poll
+            return
         if res and res.values and res.values[0].type == ParameterType.PARAMETER_BOOL:
             self.wheel_pi_enabled = res.values[0].bool_value
 
