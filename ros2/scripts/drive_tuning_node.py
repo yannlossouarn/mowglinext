@@ -265,6 +265,10 @@ class DriveTuning(Node):
         self.declare_parameter("w_hunting", 0.5)
         self.declare_parameter("w_backcreep", 2.0)
         self.declare_parameter("w_pose_err", 5.0)
+        # Open-loop straight-drive (breakaway/viscous ID): constant speed of the
+        # direct cmd_vel drive, and the weight on achieved-speed error.
+        self.declare_parameter("open_loop_speed_mps", 0.20)
+        self.declare_parameter("w_speed", 3.0)
 
         # ---- state ----------------------------------------------------------
         self.x = self.y = self.yaw = self.sx = None
@@ -300,6 +304,11 @@ class DriveTuning(Node):
         self.create_subscription(Status, HB + "/status", self._stat, rel)
         self.create_subscription(String, "~/command", self._on_command, rel)
         self.pub_status = self.create_publisher(String, "~/status", rel)
+        # Direct teleop twist for open-loop straight drives (breakaway/viscous).
+        # twist_mux 'teleop' input (priority 20 > navigation 10) reaches the
+        # motors in RECORDING WITHOUT engaging RPP's outer heading loop — the
+        # ID steps must bypass RPP (see drive_straight_open_loop).
+        self.pub_teleop = self.create_publisher(TwistStamped, "/cmd_vel_teleop", rel)
         self.create_timer(1.0, self._publish_status)
         self._session_subs = []  # odom/wheel/cmd_vel/imu — live only while armed
 
@@ -607,6 +616,59 @@ class DriveTuning(Node):
             return "TIMEOUT"
         return {4: "OK", 5: "CANCEL", 6: "ABORT"}.get(res.status, str(res.status))
 
+    def drive_straight_open_loop(self, dist, speed):
+        """Drive straight ``dist`` m at constant ``speed`` by publishing cmd_vel
+        (v=speed, w=0) directly to the twist_mux teleop input — NO RPP, NO Smac.
+
+        This is the instrument for the open-loop wheel-feedforward ID steps
+        (breakaway, viscous). With wheel PI off, the linear channel is pure
+        open-loop feedforward (the thing those steps identify), while the
+        hardware_bridge gyro angular-rate loop holds heading straight. Tracking
+        a Smac path with RPP instead (the old path) made RPP's short-lookahead
+        heading loop fight the deadband-gated open-loop plant: it lagged ~1 s
+        and limit-cycled into a ±0.4 rad/s weave that ALSO contaminated the
+        feedforward measurement (the wheels ran differentially the whole run).
+
+        Stops on reaching ``dist`` (odom euclidean from the start), on timeout,
+        or on cancel. Captures samples (self.recording) for the metrics."""
+        if self.x is None:
+            return "NO_ODOM"
+        sx, sy = self.x, self.y
+        self.samples = []
+        self.recording = True
+        period = 0.05  # 20 Hz, well inside the twist_mux teleop 0.5 s timeout
+        expected = dist / max(speed, 0.05)
+        timeout = expected * 2.0 + 4.0
+        t0 = time.time()
+        reached = False
+        try:
+            while rclpy.ok() and not self._stop:
+                if time.time() - t0 > timeout:
+                    break
+                if self.x is not None and math.hypot(self.x - sx, self.y - sy) >= dist:
+                    reached = True
+                    break
+                m = TwistStamped()
+                m.header.stamp = self.get_clock().now().to_msg()
+                m.header.frame_id = "base_link"
+                m.twist.linear.x = float(speed)
+                m.twist.angular.z = 0.0
+                self.pub_teleop.publish(m)
+                time.sleep(period)
+        finally:
+            # Explicit zeros so the firmware halts instead of coasting on the
+            # last command (the drive base has no holding torque at zero cmd).
+            for _ in range(12):
+                z = TwistStamped()
+                z.header.stamp = self.get_clock().now().to_msg()
+                z.header.frame_id = "base_link"
+                self.pub_teleop.publish(z)
+                time.sleep(0.04)
+            self.recording = False
+        if self._stop:
+            return "CANCEL"
+        return "OK" if reached else "TIMEOUT"
+
     def cancel(self):
         self._stop = True
         if self._fp_gh is not None:
@@ -667,6 +729,28 @@ class DriveTuning(Node):
             "pose_yaw_err": abs(wrap(self.yaw - gyaw)),
         }
 
+    def metrics_open_loop(self, sx, sy, gx, gy, gyaw, cmd_v):
+        """Open-loop straight-drive metrics: achieved forward speed (vs the
+        commanded feedforward), peak lateral drift off the straight line, and
+        the same final-pose error as the closed-loop transit. ``achieved_speed``
+        is the wheel-odom mean over the cruise (first/last 0.5 s dropped so the
+        breakaway ramp + the stop don't bias it)."""
+        m = self.metrics_pose(gx, gy, gyaw)
+        if self.samples:
+            t0, t1 = self.samples[0][0], self.samples[-1][0]
+            cruise = [s for s in self.samples if s[0] - t0 > 0.5 and t1 - s[0] > 0.5]
+            wheel_vs = [s[7] for s in (cruise or self.samples)]
+            achieved = sum(wheel_vs) / len(wheel_vs) if wheel_vs else 0.0
+            line = [(sx, sy), (gx, gy)]
+            drift = max((_cross_track(s[1], s[2], line) for s in self.samples), default=0.0)
+        else:
+            achieved, drift = 0.0, 0.0
+        m["achieved_speed"] = achieved
+        m["cmd_speed"] = cmd_v
+        m["speed_err"] = abs(cmd_v - achieved)
+        m["drift_peak"] = drift
+        return m
+
     def score(self, maneuver, m):
         """Scalar objective (lower = better)."""
         g = self.get_parameter
@@ -679,13 +763,18 @@ class DriveTuning(Node):
             return (w_h * m.get("undershoot", 0.0) + w_bc * m.get("backcreep", 0.0)
                     + w_hunt * 0.1 * m.get("gz_zc", 0.0))
         if maneuver == "transit_pose":
-            return (w_pe * m.get("pose_xy_err", 0.0) + w_h * m.get("pose_yaw_err", 0.0))
+            # speed_err + drift_peak are only present for the open-loop straight
+            # drive (breakaway/viscous); absent → 0, so closed-loop transit
+            # (pid_trim/windup) scores exactly as before.
+            return (w_pe * m.get("pose_xy_err", 0.0) + w_h * m.get("pose_yaw_err", 0.0)
+                    + g("w_speed").value * m.get("speed_err", 0.0)
+                    + w_ct * m.get("drift_peak", 0.0))
         # outline / swath: path tracking
         return (w_ct * m.get("ct_rms", 0.0) + w_h * m.get("herr_rms", 0.0)
                 + w_hunt * 0.1 * m.get("wz_zc", 0.0))
 
     # ---- one maneuver run ---------------------------------------------------
-    def run_maneuver(self, maneuver):
+    def run_maneuver(self, maneuver, open_loop=False):
         pre = self.preflight()
         if pre:
             return {"error": pre}
@@ -700,13 +789,23 @@ class DriveTuning(Node):
                 m = self.metrics_yaw(tgt)
             elif maneuver == "transit_pose":
                 d = float(self.get_parameter("transit_dist_m").value)
+                sx, sy = self.x, self.y
                 gx, gy = self.x + d * math.cos(self.yaw), self.y + d * math.sin(self.yaw)
                 gyaw = self.yaw
-                path = self.plan_smac(gx, gy, gyaw)
-                if path is None:
-                    return {"error": "Smac plan failed"}
-                st = self.follow(path, "FollowPath", "stopped_goal_checker")
-                m = self.metrics_pose(gx, gy, gyaw)
+                if open_loop:
+                    # Open-loop wheel-feedforward ID (breakaway/viscous): drive a
+                    # straight cmd_vel, NOT an RPP-tracked Smac path — RPP on the
+                    # PI-off plant limit-cycles into a weave (see
+                    # drive_straight_open_loop).
+                    speed = float(self.get_parameter("open_loop_speed_mps").value)
+                    st = self.drive_straight_open_loop(d, speed)
+                    m = self.metrics_open_loop(sx, sy, gx, gy, gyaw, speed)
+                else:
+                    path = self.plan_smac(gx, gy, gyaw)
+                    if path is None:
+                        return {"error": "Smac plan failed"}
+                    st = self.follow(path, "FollowPath", "stopped_goal_checker")
+                    m = self.metrics_pose(gx, gy, gyaw)
             elif maneuver == "swath":
                 path = self.coverage_swath(float(self.get_parameter("swath_box_m").value))
                 if path is None:
@@ -723,41 +822,59 @@ class DriveTuning(Node):
         m["score"] = self.score(maneuver, m)
         return m
 
-    def _return_to_start(self, start):
+    def _return_to_start(self, start, open_loop=False):
         """Drive back to the pose captured at the start of optimize() so the
         descent's footprint stays bounded (~one maneuver length) no matter how
         many iterations run, instead of marching cumulatively forward. Returns
         False if it cannot get back (so the descent aborts rather than walking
-        off the cleared area). A clean user stop counts as success."""
+        off the cleared area). A clean user stop counts as success.
+
+        The return leg is NOT a scored measurement, so for the open-loop ID
+        steps it re-enables wheel PI for the RPP drive back: with PI on the
+        wheels track the heading loop fast (no open-loop weave) AND the closed
+        loop keeps the footprint accurately bounded — then PI is restored to off
+        for the next scored run."""
         if self._stop:
             return True
         if self.x is None:
             return False
         sx, sy, syaw = start
         self._set_phase("returning to start")
-        # 1) Translate back along the same corridor if we moved. RotationShim
-        #    pivots ~180 deg in place, RPP drives the straight path back.
         dist = math.hypot(sx - self.x, sy - self.y)
-        if dist > 0.08:
-            heading_back = math.atan2(sy - self.y, sx - self.x)
-            path = self._densify([(self.x, self.y), (sx, sy)], [heading_back])
-            st = self.follow(path, "FollowPath", "stopped_goal_checker", timeout=90.0)
-            if st != "OK" and not self._stop:
-                # Retry via Smac in case the hand-built straight path was rejected.
-                p2 = self.plan_smac(sx, sy, syaw)
-                st = (self.follow(p2, "FollowPath", "stopped_goal_checker", timeout=90.0)
-                      if p2 is not None else st)
-            if st != "OK" and not self._stop:
-                return False
-        # 2) Restore the start heading so the next forward run is comparable.
-        if self.x is not None and not self._stop:
-            dyaw = wrap(syaw - self.yaw)
-            if abs(dyaw) > 0.10:
-                self.spin(dyaw)
-        return True
+        pi_restored = False
+        if open_loop and dist > 0.08:
+            # Closed-loop for the return only — RPP would weave on the PI-off plant.
+            self.set_param(HB, "wheel_pi_enabled", True, ParameterType.PARAMETER_BOOL)
+            time.sleep(0.3)  # let the bridge push the toggle to firmware
+            pi_restored = True
+        try:
+            # 1) Translate back along the same corridor if we moved. RotationShim
+            #    pivots ~180 deg in place, RPP drives the straight path back.
+            if dist > 0.08:
+                heading_back = math.atan2(sy - self.y, sx - self.x)
+                path = self._densify([(self.x, self.y), (sx, sy)], [heading_back])
+                st = self.follow(path, "FollowPath", "stopped_goal_checker", timeout=90.0)
+                if st != "OK" and not self._stop:
+                    # Retry via Smac in case the hand-built straight path was rejected.
+                    p2 = self.plan_smac(sx, sy, syaw)
+                    st = (self.follow(p2, "FollowPath", "stopped_goal_checker", timeout=90.0)
+                          if p2 is not None else st)
+                if st != "OK" and not self._stop:
+                    return False
+            # 2) Restore the start heading so the next forward run is comparable.
+            if self.x is not None and not self._stop:
+                dyaw = wrap(syaw - self.yaw)
+                if abs(dyaw) > 0.10:
+                    self.spin(dyaw)
+            return True
+        finally:
+            if pi_restored:
+                # Back to PI-off so the next scored ID run measures feedforward.
+                self.set_param(HB, "wheel_pi_enabled", False, ParameterType.PARAMETER_BOOL)
+                time.sleep(0.3)
 
     # ---- coordinate / finite-difference descent -----------------------------
-    def optimize(self, maneuver, param_names=None):
+    def optimize(self, maneuver, param_names=None, open_loop=False):
         max_iters = int(self.get_parameter("optimize_max_iters").value)
         # param_names lets a protocol step optimize only its own subset; the rest
         # of the combo is read + reapplied unchanged. Default = sweep everything.
@@ -770,10 +887,10 @@ class DriveTuning(Node):
         if self.x is None:
             return {"error": "no localization — cannot anchor return-to-start"}
         start = (self.x, self.y, self.yaw)
-        base = self.run_maneuver(maneuver)
+        base = self.run_maneuver(maneuver, open_loop=open_loop)
         if "error" in base:
             return base
-        if not self._return_to_start(start):
+        if not self._return_to_start(start, open_loop=open_loop):
             return {"error": "could not return to start pose — aborting to keep "
                              "the working area bounded"}
         best, best_score = dict(combo), base["score"]
@@ -797,11 +914,11 @@ class DriveTuning(Node):
                                 next_combo=cand, best=best, best_score=best_score,
                                 history=history)
                 self.apply_params(cand)
-                res = self.run_maneuver(maneuver)
+                res = self.run_maneuver(maneuver, open_loop=open_loop)
                 if "error" in res:
                     return res
                 history.append({"combo": dict(cand), "metrics": res, "score": res["score"]})
-                if not self._return_to_start(start):
+                if not self._return_to_start(start, open_loop=open_loop):
                     return {"error": "could not return to start pose — aborting to "
                                      "keep the working area bounded"}
                 if res["score"] < best_score - 1e-6:
@@ -914,12 +1031,15 @@ class DriveTuning(Node):
                     self.set_param(HB, "wheel_pi_enabled", pi_run,
                                    ParameterType.PARAMETER_BOOL)
                     time.sleep(0.3)  # let the bridge push the toggle to firmware
+            # Open-loop ID steps (pi_run forced off) drive a straight cmd_vel
+            # instead of an RPP-tracked path — RPP on the PI-off plant weaves.
+            open_loop = (pi_run is False)
             if action == "optimize":
                 self._set_phase(f"optimizing {maneuver}", params=params)
-                result = self.optimize(maneuver, params)
+                result = self.optimize(maneuver, params, open_loop=open_loop)
             else:
                 self._set_phase(f"running {maneuver}")
-                result = self.run_maneuver(maneuver)
+                result = self.run_maneuver(maneuver, open_loop=open_loop)
             self._set_phase(f"done {maneuver}", result=result)
             self.get_logger().info(f"{action} {maneuver}: {json.dumps(result, default=str)}")
         finally:
