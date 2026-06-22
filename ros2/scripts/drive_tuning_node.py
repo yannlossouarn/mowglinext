@@ -113,6 +113,7 @@ PROTOCOL = [
         "params": ["wheel_pid_deadband_pwm"],
         "maneuver": "transit_pose",
         "clearance": "~1.5 m clear straight ahead",
+        "pi_run": "off",  # open-loop plant ID — the integrator would mask breakaway
         "guidance": (
             "Foundation step. Place the robot with ~1.5 m of clear space straight "
             "ahead, blade OFF, off the dock. Finds the minimum PWM that reliably "
@@ -126,6 +127,7 @@ PROTOCOL = [
         "params": ["wheel_pid_pwm_per_mps"],
         "maneuver": "transit_pose",
         "clearance": "~2.5 m clear straight ahead",
+        "pi_run": "off",  # open-loop: the integrator hides a wrong speed scale
         "guidance": (
             "With breakaway set, scales PWM so the commanded speed matches the "
             "actual speed. Keep ~2.5 m clear straight ahead; the robot drives "
@@ -140,6 +142,7 @@ PROTOCOL = [
         "clearance": "~2.5 m clear straight ahead",
         "optional": True,
         "requires_pi": True,
+        "pi_run": "on",  # closed-loop trim on top of the identified feedforward
         "guidance": (
             "Only if closed-loop PI is enabled (wheel_pi_enabled). Trims residual "
             "speed error on top of breakaway + viscous. Skip when running "
@@ -154,6 +157,7 @@ PROTOCOL = [
         "clearance": "~2.5 m clear straight ahead",
         "optional": True,
         "requires_pi": True,
+        "pi_run": "on",  # the integrator must be active to bound its windup
         "guidance": (
             "Run AFTER the PI trim, and only if closed-loop PI is enabled "
             "(wheel_pi_enabled) — skip when running open-loop feedforward. Bounds "
@@ -413,12 +417,28 @@ class DriveTuning(Node):
         ).add_done_callback(self._on_wheel_pi_response)
 
     def _on_wheel_pi_response(self, fut):
+        # Ignore responses that land during a campaign — the tuner toggles the
+        # live param per step then, so this would clobber the operating value.
+        if self._busy:
+            return
         try:
             res = fut.result()
         except Exception:  # noqa: BLE001 — transient service error; retry next poll
             return
         if res and res.values and res.values[0].type == ParameterType.PARAMETER_BOOL:
             self.wheel_pi_enabled = res.values[0].bool_value
+
+    def _read_wheel_pi_blocking(self):
+        """Synchronous read of the operating wheel_pi_enabled — safe ONLY from a
+        worker thread (e.g. _campaign), never from an executor callback."""
+        cli = self._get_cli(HB)
+        if not cli.wait_for_service(timeout_sec=2.0):
+            return None
+        res = self._await(cli.call_async(
+            GetParameters.Request(names=["wheel_pi_enabled"])), 2.0)
+        if res and res.values and res.values[0].type == ParameterType.PARAMETER_BOOL:
+            return res.values[0].bool_value
+        return None
 
     def hl(self, cmd):
         if not self.hlc.wait_for_service(timeout_sec=5.0):
@@ -804,7 +824,7 @@ class DriveTuning(Node):
         # Refresh the PI toggle roughly every 5 s (outside the lock) so the GUI
         # reflects a Drive-Motor-settings change without needing a re-arm.
         self._pi_poll_tick += 1
-        if self._pi_poll_tick % 5 == 1:
+        if self._pi_poll_tick % 5 == 1 and not self._busy:
             self._refresh_wheel_pi_enabled()
         with self._lock:
             snap = dict(self._status)
@@ -850,6 +870,7 @@ class DriveTuning(Node):
                     pass
         # Step-scoped actions resolve their maneuver + param subset from PROTOCOL.
         params = None
+        pi_run = None  # None = leave PI at the operating mode; True/False = force it
         if action in ("run_step", "optimize_step"):
             step = self._find_step(cmd.get("step"))
             if step is None:
@@ -857,6 +878,11 @@ class DriveTuning(Node):
                 return
             maneuver = step["maneuver"]
             params = step["params"]
+            pi_spec = step.get("pi_run")
+            if pi_spec == "off":
+                pi_run = False
+            elif pi_spec == "on":
+                pi_run = True
             action = "optimize" if action == "optimize_step" else "run"
         else:
             maneuver = cmd.get("maneuver", self.get_parameter("maneuver").value)
@@ -864,16 +890,30 @@ class DriveTuning(Node):
             self.get_logger().warn("not armed — send start_session before running maneuvers")
             self._set_phase("not armed — press Start tuning")
             return
-        threading.Thread(target=self._campaign, args=(action, maneuver, params),
+        threading.Thread(target=self._campaign, args=(action, maneuver, params, pi_run),
                          daemon=True).start()
 
     def _find_step(self, step_id):
         return next((s for s in PROTOCOL if s["id"] == step_id), None)
 
-    def _campaign(self, action, maneuver, params=None):
+    def _campaign(self, action, maneuver, params=None, pi_run=None):
         self._busy = True
         self._stop = False
+        operating_pi = None
         try:
+            # Open-loop ID vs closed-loop refinement: the feedforward steps must
+            # run with PI off (the integrator masks breakaway / speed-scale
+            # error), the PI steps with it on. Capture the operating mode so we
+            # can restore it, then force the mode this step needs.
+            if pi_run is not None:
+                operating_pi = self._read_wheel_pi_blocking()
+                if operating_pi is None:
+                    operating_pi = bool(self.wheel_pi_enabled) \
+                        if self.wheel_pi_enabled is not None else True
+                if pi_run != operating_pi:
+                    self.set_param(HB, "wheel_pi_enabled", pi_run,
+                                   ParameterType.PARAMETER_BOOL)
+                    time.sleep(0.3)  # let the bridge push the toggle to firmware
             if action == "optimize":
                 self._set_phase(f"optimizing {maneuver}", params=params)
                 result = self.optimize(maneuver, params)
@@ -883,9 +923,14 @@ class DriveTuning(Node):
             self._set_phase(f"done {maneuver}", result=result)
             self.get_logger().info(f"{action} {maneuver}: {json.dumps(result, default=str)}")
         finally:
-            self._busy = False
+            # Restore the operating PI mode BEFORE clearing _busy so the status
+            # poll never reads the transient per-step value.
+            if pi_run is not None and operating_pi is not None and pi_run != operating_pi:
+                self.set_param(HB, "wheel_pi_enabled", operating_pi,
+                               ParameterType.PARAMETER_BOOL)
             # Leave RECORDING so the BT returns to idle cleanly.
             self.hl(CMD_RECORD_CANCEL)
+            self._busy = False
 
 
 def main():
