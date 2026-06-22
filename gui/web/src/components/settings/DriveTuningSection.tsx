@@ -47,6 +47,7 @@ type ProtocolStep = {
     clearance: string;
     guidance: string;
     optional?: boolean;
+    requires_pi?: boolean;
 };
 
 // /hardware_bridge/drive_telemetry Float32MultiArray layout (hardware_bridge_node.cpp).
@@ -195,6 +196,8 @@ export const DriveTuningSection: React.FC = () => {
 
     const busy = Boolean(status?.busy);
     const armed = Boolean(status?.armed);
+    // Live /hardware_bridge wheel_pi_enabled (undefined until the node reports it).
+    const wheelPiEnabled = status?.wheel_pi_enabled as boolean | undefined;
     const phase = (status?.phase as string) ?? "idle";
     // Per-step clearance confirmation — must be re-affirmed whenever the active
     // step (guided) or maneuver/mode (advanced) changes, since each runs an
@@ -222,6 +225,17 @@ export const DriveTuningSection: React.FC = () => {
     // uses the dropdown selection. Metrics/labels key off this.
     const step = mode === "guided" ? protocol[current] : undefined;
     const activeManeuver = step?.maneuver ?? maneuver;
+    // A PI-dependent step is blocked when closed-loop PI is known to be off.
+    const piBlocked = Boolean(step?.requires_pi) && wheelPiEnabled === false;
+    let piTagColor = "default";
+    let piTagText = "unknown";
+    if (wheelPiEnabled === true) {
+        piTagColor = "green";
+        piTagText = "on";
+    } else if (wheelPiEnabled === false) {
+        piTagColor = "red";
+        piTagText = "off";
+    }
 
     return (
         <div>
@@ -314,7 +328,18 @@ export const DriveTuningSection: React.FC = () => {
                                                 <Tag key={p}>{p}</Tag>
                                             ))}
                                             {step.optional && <Tag color="default">optional</Tag>}
+                                            {step.requires_pi && (
+                                                <Tag color={piTagColor}>{`closed-loop PI: ${piTagText}`}</Tag>
+                                            )}
                                         </Space>
+                                        {piBlocked && (
+                                            <Alert
+                                                type="warning"
+                                                showIcon
+                                                message="Closed-loop PI is off (wheel_pi_enabled)"
+                                                description="This step tunes the closed-loop speed PI, which is currently disabled — running it now would have no effect. Enable PI in Drive Motor settings first, or skip this step."
+                                            />
+                                        )}
                                         <Checkbox
                                             checked={confirmed}
                                             disabled={busy}
@@ -326,7 +351,7 @@ export const DriveTuningSection: React.FC = () => {
                                         <Space wrap>
                                             <Button
                                                 icon={<PlayCircleOutlined />}
-                                                disabled={busy || !armed || !confirmed}
+                                                disabled={busy || !armed || !confirmed || piBlocked}
                                                 onClick={() => send("run_step", step.id)}
                                             >
                                                 Test once
@@ -334,7 +359,7 @@ export const DriveTuningSection: React.FC = () => {
                                             <Button
                                                 type="primary"
                                                 icon={<ThunderboltOutlined />}
-                                                disabled={busy || !armed || !confirmed}
+                                                disabled={busy || !armed || !confirmed || piBlocked}
                                                 onClick={() => send("optimize_step", step.id)}
                                             >
                                                 Optimize this step
