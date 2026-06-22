@@ -277,9 +277,11 @@ export const DriveTuningSection: React.FC = () => {
                     <Tag color={armed ? "processing" : "default"}>
                         {armed ? "session active" : "idle"}
                     </Tag>
+                    <Tag color={piTagColor}>{`closed-loop PI: ${piTagText}`}</Tag>
                     <Text type="secondary">
                         Start activates the live odom/IMU/cmd_vel subscriptions; stop releases
-                        them. Maneuvers run only while a session is active.
+                        them. Maneuvers run only while a session is active. "closed-loop PI" is
+                        your operating mode (the tuner still switches per step).
                     </Text>
                 </Space>
             </Card>
