@@ -48,6 +48,7 @@ type ProtocolStep = {
     guidance: string;
     optional?: boolean;
     requires_pi?: boolean;
+    pi_run?: string; // "off"|"on": the loop mode the tuner forces for this step
 };
 
 // /hardware_bridge/drive_telemetry Float32MultiArray layout (hardware_bridge_node.cpp).
@@ -298,7 +299,9 @@ export const DriveTuningSection: React.FC = () => {
                                 then Optimize. During a step the robot returns to its start spot
                                 between tries, so it needs only the listed clearance forward plus
                                 room to pivot in place — it will not march further away. Move on
-                                when the score stops improving.
+                                when the score stops improving. The early steps run open-loop to
+                                identify the drivetrain and the PI steps run closed-loop; the tuner
+                                sets that per step and restores your operating mode afterwards.
                             </Paragraph>
                             {notes && (
                                 <Alert type="info" showIcon message="Note" description={notes} style={{ margin: 0 }} />
@@ -330,6 +333,11 @@ export const DriveTuningSection: React.FC = () => {
                                             {step.optional && <Tag color="default">optional</Tag>}
                                             {step.requires_pi && (
                                                 <Tag color={piTagColor}>{`closed-loop PI: ${piTagText}`}</Tag>
+                                            )}
+                                            {step.pi_run && (
+                                                <Tag color={step.pi_run === "off" ? "blue" : "geekblue"}>
+                                                    {`tuner runs this ${step.pi_run === "off" ? "open-loop" : "closed-loop"}`}
+                                                </Tag>
                                             )}
                                         </Space>
                                         {piBlocked && (
