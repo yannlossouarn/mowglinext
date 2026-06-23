@@ -114,6 +114,22 @@ PARAM_SPECS = {
 # config (overridden by a test) or are absent from it (firmware default).
 PANEL_PARAM_NAMES = list(PARAM_SPECS.keys()) + ["wheel_pi_enabled"]
 
+# hardware_bridge_node.cpp declare_parameter defaults — the value each tunable
+# takes "from scratch" when it is NOT set in mowgli_robot.yaml (most of these
+# are absent by default). The panel's Default column is the YAML value if the
+# key is persisted, else this. Keep in sync with the bridge.
+FIRMWARE_DEFAULTS = {
+    "wheel_pid_kp": 30.0,
+    "wheel_pid_ki": 5000.0,
+    "wheel_pid_integral_limit": 100.0,
+    "wheel_pid_pwm_per_mps": 300.0,
+    "wheel_pid_deadband_pwm": 0.0,
+    "wheel_hold_kp": 4.0,
+    "angular_rate_kp": 0.4,
+    "angular_rate_ki": 2.0,
+    "wheel_pi_enabled": True,
+}
+
 PROTOCOL = [
     {
         "id": "breakaway",
@@ -300,7 +316,6 @@ class DriveTuning(Node):
         self.wheel_pi_enabled = None  # cached /hardware_bridge bool, surfaced to GUI
         self._live_params = {}   # name -> live /hardware_bridge value (GUI panel)
         self._saved_params = {}  # name -> mowgli_robot.yaml value (absent = firmware default)
-        self._baseline_params = {}  # name -> value at session start (for "overridden by a test")
         self._pi_poll_tick = 0
         self._lock = threading.Lock()
         self._status = {"phase": "idle"}
@@ -468,10 +483,6 @@ class DriveTuning(Node):
             self._live_params = out
             if "wheel_pi_enabled" in out:
                 self.wheel_pi_enabled = out["wheel_pi_enabled"]
-            # First reading after arming = the session baseline, so the panel can
-            # flag params a test later changed (incl. ones absent from the YAML).
-            if self.armed and not self._baseline_params:
-                self._baseline_params = dict(out)
 
     def _read_saved_params(self):
         """Parse the persisted value of each tunable from mowgli_robot.yaml so
@@ -502,20 +513,27 @@ class DriveTuning(Node):
         self._saved_params = saved
 
     def _build_params_panel(self):
-        """Merge live + saved into the per-param structure the GUI panel renders:
-        {name: {live, saved, default}} where default = the key is not persisted
-        in mowgli_robot.yaml (so the live value is the firmware default)."""
+        """Per-param structure the GUI panel renders:
+          {name: {live, default, persisted, lo, hi, step | is_bool}}
+        - live      = current /hardware_bridge value (used now, lost on restart)
+        - default   = the from-scratch boot value: the mowgli_robot.yaml value if
+                      the key is persisted, else the firmware/bridge default
+        - persisted = whether the key is in the YAML (else it's a firmware default)
+        - lo/hi/step (doubles) or is_bool — bounds for the inline Edit control."""
         panel = {}
         for name in PANEL_PARAM_NAMES:
             live = self._live_params.get(name)
             if live is None:
                 continue
-            panel[name] = {
-                "live": live,
-                "saved": self._saved_params.get(name),
-                "default": name not in self._saved_params,
-                "baseline": self._baseline_params.get(name),
-            }
+            persisted = name in self._saved_params
+            default = self._saved_params.get(name) if persisted else FIRMWARE_DEFAULTS.get(name)
+            cell = {"live": live, "default": default, "persisted": persisted}
+            if name in PARAM_SPECS:
+                _, lo, hi, step = PARAM_SPECS[name]
+                cell.update(lo=lo, hi=hi, step=step)
+            else:
+                cell["is_bool"] = True
+            panel[name] = cell
         return panel
 
     def _read_wheel_pi_blocking(self):
@@ -688,7 +706,6 @@ class DriveTuning(Node):
         self._session_subs = []
         # Drop cached pose so a stale value can't pass preflight after re-arm.
         self.x = self.y = self.yaw = self.sx = None
-        self._baseline_params = {}  # re-baseline on the next arm
         self.armed = False
         self.hl(CMD_RECORD_CANCEL)
         self._set_phase("idle")
@@ -1278,6 +1295,14 @@ class DriveTuning(Node):
                 return
             threading.Thread(target=self._persist_thread, daemon=True).start()
             return
+        if action == "set_param":
+            # Manually set one tunable's LIVE value (Edit button in the panel).
+            if self._busy:
+                self.get_logger().warn("busy — ignoring set_param")
+                return
+            threading.Thread(target=self._set_param_thread,
+                             args=(cmd.get("name"), cmd.get("value")), daemon=True).start()
+            return
         if action == "get_protocol":
             # One-off: hand the ordered step list + guidance to the GUI stepper.
             self.pub_status.publish(String(data=json.dumps(
@@ -1325,6 +1350,33 @@ class DriveTuning(Node):
             self._set_phase("saved to config" if res.get("persisted")
                             else "save to config failed", persist=res)
             self.get_logger().info(f"persist: {json.dumps(res, default=str)}")
+        finally:
+            self._busy = False
+
+    def _set_param_thread(self, name, value):
+        """Apply one tunable's live value on /hardware_bridge (manual Edit).
+        Doubles are clamped to their PARAM_SPECS range; wheel_pi_enabled is a
+        bool. The status timer re-reads the live value once _busy clears."""
+        self._busy = True
+        try:
+            if name in PARAM_SPECS:
+                lo, hi = PARAM_SPECS[name][1], PARAM_SPECS[name][2]
+                try:
+                    v = max(lo, min(hi, float(value)))
+                except (TypeError, ValueError):
+                    self._set_phase(f"set {name}: bad value {value!r}")
+                    return
+                ok = self.set_param(HB, name, v, ParameterType.PARAMETER_DOUBLE)
+                shown = v
+            elif name == "wheel_pi_enabled":
+                ok = self.set_param(HB, name, bool(value), ParameterType.PARAMETER_BOOL)
+                shown = bool(value)
+            else:
+                self._set_phase(f"set_param: unknown param {name!r}")
+                return
+            time.sleep(0.3)  # let the bridge push the value to the STM32
+            self._set_phase(f"set {name} = {shown}" if ok else f"set {name} failed")
+            self.get_logger().info(f"set_param {name} = {shown}: {'ok' if ok else 'FAILED'}")
         finally:
             self._busy = False
 

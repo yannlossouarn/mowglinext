@@ -6,15 +6,19 @@ import {
     Checkbox,
     Descriptions,
     Divider,
+    InputNumber,
+    Modal,
     Segmented,
     Select,
     Space,
     Steps,
+    Switch,
     Table,
     Tag,
     Typography,
 } from "antd";
 import {
+    EditOutlined,
     ExperimentOutlined,
     PlayCircleOutlined,
     SaveOutlined,
@@ -101,13 +105,18 @@ function num(v: unknown, digits = 3): string {
 }
 
 // --- Tunable-parameter panel (status.params from the node) -------------------
-// One entry per tunable: live value, the saved (mowgli_robot.yaml) value, the
-// session-start baseline, and whether it's absent from the YAML (firmware default).
+// One entry per tunable from the node. `default` is the from-scratch boot value
+// (the YAML value if persisted, else the firmware default); `live` is what the
+// drive control uses now and would be lost on restart. lo/hi/step (doubles) or
+// is_bool bound the inline Edit control.
 type ParamCell = {
     live: number | boolean;
-    saved: number | boolean | null;
-    default: boolean;
-    baseline: number | boolean | null;
+    default: number | boolean | null;
+    persisted: boolean;
+    lo?: number;
+    hi?: number;
+    step?: number;
+    is_bool?: boolean;
 };
 
 // Friendly labels + render order. Mirrors the protocol step order.
@@ -136,36 +145,22 @@ function approxEq(a: unknown, b: unknown): boolean {
     return false;
 }
 
-// State badge: "saved" (matches the persisted config), "default" (firmware
-// default, untouched + not in the YAML), or "overridden" (a test changed it
-// and/or it differs from the saved config → not yet persisted).
+// State badge: "overridden" (Live differs from the from-scratch Default — a
+// change that vanishes on restart unless saved) or "default" (Live == Default).
 function paramState(c: ParamCell): { text: string; color: string } {
-    const matchesSaved = !c.default && approxEq(c.live, c.saved);
-    const changed = c.baseline != null && !approxEq(c.live, c.baseline);
-    if (matchesSaved) return { text: "saved", color: "green" };
-    if (c.default && !changed) return { text: "default", color: "blue" };
-    return { text: "overridden", color: "orange" };
+    return approxEq(c.live, c.default)
+        ? { text: "default", color: "blue" }
+        : { text: "overridden", color: "orange" };
 }
 
 type ParamRow = {
     key: string;
     name: string;
-    current: string;
-    saved: string;
+    defaultStr: string;
+    live: string;
     state: { text: string; color: string };
+    cell: ParamCell;
 };
-
-const PARAM_COLUMNS = [
-    { title: "Parameter", dataIndex: "name", key: "name" },
-    { title: "Current", dataIndex: "current", key: "current", align: "right" as const },
-    { title: "Saved", dataIndex: "saved", key: "saved", align: "right" as const },
-    {
-        title: "State",
-        key: "state",
-        align: "center" as const,
-        render: (_: unknown, r: ParamRow) => <Tag color={r.state.color}>{r.state.text}</Tag>,
-    },
-];
 
 // Render an arbitrary {param: value} combo as compact tags.
 const Combo: React.FC<{ combo?: Record<string, unknown> }> = ({ combo }) => {
@@ -301,13 +296,67 @@ export const DriveTuningSection: React.FC = () => {
             return {
                 key: k,
                 name: PARAM_LABELS[k],
-                current: fmtVal(c.live),
-                saved: c.default ? "—" : fmtVal(c.saved),
+                defaultStr: fmtVal(c.default),
+                live: fmtVal(c.live),
                 state: paramState(c),
+                cell: c,
             };
         });
     }, [params]);
     const overriddenCount = paramRows.filter((r) => r.state.text === "overridden").length;
+
+    // Inline Edit: set one tunable's live value by hand.
+    const [editing, setEditing] = useState<{ name: string; label: string; cell: ParamCell } | null>(null);
+    const [editNum, setEditNum] = useState<number>(0);
+    const [editBool, setEditBool] = useState<boolean>(false);
+    const openEdit = useCallback((r: ParamRow) => {
+        setEditing({ name: r.key, label: r.name, cell: r.cell });
+        if (r.cell.is_bool) setEditBool(Boolean(r.cell.live));
+        else setEditNum(typeof r.cell.live === "number" ? r.cell.live : 0);
+    }, []);
+    const submitEdit = useCallback(() => {
+        if (!editing) return;
+        const value = editing.cell.is_bool ? editBool : editNum;
+        cmdStream.sendJsonMessage({
+            data: JSON.stringify({ action: "set_param", name: editing.name, value }),
+        });
+        setEditing(null);
+    }, [editing, editBool, editNum, cmdStream]);
+
+    const paramColumns = [
+        { title: "Parameter", dataIndex: "name", key: "name" },
+        { title: "Default", dataIndex: "defaultStr", key: "defaultStr", align: "right" as const },
+        {
+            title: "Live",
+            dataIndex: "live",
+            key: "live",
+            align: "right" as const,
+            render: (v: string, r: ParamRow) => (
+                <Text strong={r.state.text === "overridden"}>{v}</Text>
+            ),
+        },
+        {
+            title: "State",
+            key: "state",
+            align: "center" as const,
+            render: (_: unknown, r: ParamRow) => <Tag color={r.state.color}>{r.state.text}</Tag>,
+        },
+        {
+            title: "",
+            key: "edit",
+            align: "right" as const,
+            render: (_: unknown, r: ParamRow) => (
+                <Button
+                    size="small"
+                    icon={<EditOutlined />}
+                    disabled={busy}
+                    onClick={() => openEdit(r)}
+                >
+                    Edit
+                </Button>
+            ),
+        },
+    ];
 
     // Metrics to surface: prefer the finished single-run result, else the live status.
     const metrics = useMemo<Record<string, unknown>>(() => {
@@ -568,6 +617,17 @@ export const DriveTuningSection: React.FC = () => {
                         )}
                     </Space>
                 }
+                extra={
+                    <Button
+                        type="primary"
+                        size="small"
+                        icon={<SaveOutlined />}
+                        disabled={busy}
+                        onClick={() => send("persist")}
+                    >
+                        Save to config
+                    </Button>
+                }
             >
                 {paramRows.length === 0 ? (
                     <Text type="secondary">
@@ -581,18 +641,67 @@ export const DriveTuningSection: React.FC = () => {
                             pagination={false}
                             rowKey="key"
                             dataSource={paramRows}
-                            columns={PARAM_COLUMNS}
+                            columns={paramColumns}
                         />
                         <Text type="secondary">
-                            <Tag color="green">saved</Tag> matches the saved config ·{" "}
-                            <Tag color="blue">default</Tag> firmware default (not in config) ·{" "}
-                            <Tag color="orange">overridden</Tag> changed by a test, not yet saved.
-                            {overriddenCount > 0 &&
-                                " Use “Save tuned values to config” in Status to persist."}
+                            <Text strong>Default</Text> = value on a fresh start (saved config, or the
+                            firmware default if not in the config). <Text strong>Live</Text> = what the
+                            drive control uses now — lost on restart unless saved.{" "}
+                            <Tag color="blue">default</Tag> Live matches Default ·{" "}
+                            <Tag color="orange">overridden</Tag> changed, not saved. Edit sets the Live
+                            value; <Text strong>Save to config</Text> persists Live → Default.
                         </Text>
+                        {persist && (
+                            <Alert
+                                type={persist.persisted ? "success" : "error"}
+                                showIcon
+                                message={
+                                    persist.persisted ? "Saved to mowgli_robot.yaml" : "Save failed"
+                                }
+                                description={
+                                    persist.persisted ? (
+                                        <Combo combo={persist.written} />
+                                    ) : (
+                                        persist.error ?? "unknown error"
+                                    )
+                                }
+                            />
+                        )}
                     </Space>
                 )}
             </Card>
+
+            <Modal
+                open={!!editing}
+                title={editing ? `Set ${editing.label}` : ""}
+                okText="Set live value"
+                onCancel={() => setEditing(null)}
+                onOk={submitEdit}
+            >
+                {editing?.cell.is_bool ? (
+                    <Space>
+                        <Text>Off</Text>
+                        <Switch checked={editBool} onChange={setEditBool} />
+                        <Text>On</Text>
+                    </Space>
+                ) : (
+                    <Space direction="vertical" style={{ width: "100%" }}>
+                        <InputNumber
+                            autoFocus
+                            style={{ width: "100%" }}
+                            value={editNum}
+                            min={editing?.cell.lo}
+                            max={editing?.cell.hi}
+                            step={editing?.cell.step}
+                            onChange={(v) => setEditNum(typeof v === "number" ? v : 0)}
+                        />
+                        <Text type="secondary">
+                            Range {editing?.cell.lo} – {editing?.cell.hi}. Sets the Live value only —
+                            use Save to config to persist it.
+                        </Text>
+                    </Space>
+                )}
+            </Modal>
 
             <Card
                 size="small"
@@ -729,41 +838,6 @@ export const DriveTuningSection: React.FC = () => {
                                 )}
                             </div>
                         </div>
-                        <Divider style={{ margin: "4px 0" }} />
-                        <Space direction="vertical" size={6} style={{ width: "100%" }}>
-                            <Space wrap align="center">
-                                <Button
-                                    icon={<SaveOutlined />}
-                                    disabled={busy}
-                                    onClick={() => send("persist")}
-                                >
-                                    Save tuned values to config
-                                </Button>
-                                <Text type="secondary">
-                                    Writes the live drive params to <code>mowgli_robot.yaml</code> so
-                                    they survive a restart (otherwise the firmware reverts to the saved
-                                    values on the next reconnect). Save after each step you're happy with.
-                                </Text>
-                            </Space>
-                            {persist && (
-                                <Alert
-                                    type={persist.persisted ? "success" : "error"}
-                                    showIcon
-                                    message={
-                                        persist.persisted
-                                            ? "Saved to mowgli_robot.yaml"
-                                            : "Save failed"
-                                    }
-                                    description={
-                                        persist.persisted ? (
-                                            <Combo combo={persist.written} />
-                                        ) : (
-                                            persist.error ?? "unknown error"
-                                        )
-                                    }
-                                />
-                            )}
-                        </Space>
                     </Space>
                 )}
             </Card>
