@@ -612,34 +612,57 @@ class DriveTuning(Node):
         except OSError as e:
             return {"persisted": False, "error": str(e)}
 
+        # Locate the `mowgli:` → `ros__parameters:` block, its indent, and its end
+        # (the first line that dedents back to the ros__parameters level or above).
+        ros_idx, ros_indent, in_mowgli = None, "", False
+        for i, line in enumerate(lines):
+            if re.match(r"^mowgli:\s*$", line):
+                in_mowgli = True
+                continue
+            if in_mowgli:
+                m = re.match(r"^(\s*)ros__parameters:\s*$", line)
+                if m:
+                    ros_idx, ros_indent = i, m.group(1)
+                    break
+        if ros_idx is None:
+            return {"persisted": False,
+                    "error": "could not locate mowgli/ros__parameters in yaml"}
+
+        # DERIVE the child-key indent from an existing key in the block (this file
+        # nests children at 8 spaces, the in-repo copy at 4). Hardcoding it
+        # produced invalid YAML that crash-looped the launch, so never assume.
         key_re = re.compile(r"^(\s*)([A-Za-z0-9_]+)(\s*:\s*)([^#\n]*?)(\s*#.*)?\s*$")
+        child_indent, block_end = None, len(lines)
+        for j in range(ros_idx + 1, len(lines)):
+            ln = lines[j]
+            if not ln.strip() or ln.lstrip().startswith("#"):
+                continue
+            indent = ln[: len(ln) - len(ln.lstrip())]
+            if len(indent) <= len(ros_indent):  # dedent → end of the block
+                block_end = j
+                break
+            if child_indent is None:
+                child_indent = indent
+        if child_indent is None:
+            child_indent = ros_indent + "  "  # empty block → one level deeper
+
+        # Rewrite keys already present (within the block) in place.
         remaining = dict(values)
         written = {}
-        for i, line in enumerate(lines):
-            m = key_re.match(line)
+        for i in range(ros_idx + 1, block_end):
+            m = key_re.match(lines[i])
             if not m or m.group(2) not in remaining:
                 continue
-            key = m.group(2)
-            indent, comment = m.group(1), (m.group(5) or "")
+            key, comment = m.group(2), (m.group(5) or "")
             vs = self._fmt_yaml_scalar(remaining.pop(key))
-            lines[i] = f"{indent}{key}: {vs}{comment}\n"
+            lines[i] = f"{m.group(1)}{key}: {vs}{comment}\n"
             written[key] = vs
 
-        if remaining:  # append keys not already in the file
-            insert_at, in_mowgli = None, False
-            for i, line in enumerate(lines):
-                if re.match(r"^mowgli:\s*$", line):
-                    in_mowgli = True
-                elif in_mowgli and re.match(r"^\s+ros__parameters:\s*$", line):
-                    insert_at = i + 1
-                    break
-            if insert_at is None:
-                return {"persisted": False, "written": written,
-                        "missing": list(remaining),
-                        "error": "could not locate mowgli/ros__parameters in yaml"}
-            block = [f"    {k}: {self._fmt_yaml_scalar(v)}  # set by drive_tuning_node\n"
+        # Append still-missing keys at the end of the block, at the derived indent.
+        if remaining:
+            block = [f"{child_indent}{k}: {self._fmt_yaml_scalar(v)}  # set by drive_tuning_node\n"
                      for k, v in remaining.items()]
-            lines[insert_at:insert_at] = block
+            lines[block_end:block_end] = block
             for k, v in remaining.items():
                 written[k] = self._fmt_yaml_scalar(v)
 
