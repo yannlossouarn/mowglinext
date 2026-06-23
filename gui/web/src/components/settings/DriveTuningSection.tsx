@@ -10,6 +10,7 @@ import {
     Select,
     Space,
     Steps,
+    Table,
     Tag,
     Typography,
 } from "antd";
@@ -98,6 +99,73 @@ function parseStatus(raw: string): Status | null {
 function num(v: unknown, digits = 3): string {
     return typeof v === "number" && Number.isFinite(v) ? v.toFixed(digits) : "—";
 }
+
+// --- Tunable-parameter panel (status.params from the node) -------------------
+// One entry per tunable: live value, the saved (mowgli_robot.yaml) value, the
+// session-start baseline, and whether it's absent from the YAML (firmware default).
+type ParamCell = {
+    live: number | boolean;
+    saved: number | boolean | null;
+    default: boolean;
+    baseline: number | boolean | null;
+};
+
+// Friendly labels + render order. Mirrors the protocol step order.
+const PARAM_LABELS: Record<string, string> = {
+    wheel_pid_deadband_pwm: "Breakaway deadband (PWM)",
+    wheel_pid_pwm_per_mps: "Speed scale (PWM per m/s)",
+    wheel_pid_kp: "Speed PI — Kp",
+    wheel_pid_ki: "Speed PI — Ki",
+    wheel_pid_integral_limit: "Speed PI — integral limit",
+    wheel_hold_kp: "Standstill hold — Kp",
+    angular_rate_kp: "Turn rate — Kp",
+    angular_rate_ki: "Turn rate — Ki",
+    wheel_pi_enabled: "Closed-loop wheel PI",
+};
+const PARAM_ORDER = Object.keys(PARAM_LABELS);
+
+function fmtVal(v: number | boolean | null | undefined): string {
+    if (typeof v === "boolean") return v ? "on" : "off";
+    if (typeof v === "number" && Number.isFinite(v)) return v.toFixed(2);
+    return "—";
+}
+
+function approxEq(a: unknown, b: unknown): boolean {
+    if (typeof a === "boolean" || typeof b === "boolean") return a === b;
+    if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) < 1e-4;
+    return false;
+}
+
+// State badge: "saved" (matches the persisted config), "default" (firmware
+// default, untouched + not in the YAML), or "overridden" (a test changed it
+// and/or it differs from the saved config → not yet persisted).
+function paramState(c: ParamCell): { text: string; color: string } {
+    const matchesSaved = !c.default && approxEq(c.live, c.saved);
+    const changed = c.baseline != null && !approxEq(c.live, c.baseline);
+    if (matchesSaved) return { text: "saved", color: "green" };
+    if (c.default && !changed) return { text: "default", color: "blue" };
+    return { text: "overridden", color: "orange" };
+}
+
+type ParamRow = {
+    key: string;
+    name: string;
+    current: string;
+    saved: string;
+    state: { text: string; color: string };
+};
+
+const PARAM_COLUMNS = [
+    { title: "Parameter", dataIndex: "name", key: "name" },
+    { title: "Current", dataIndex: "current", key: "current", align: "right" as const },
+    { title: "Saved", dataIndex: "saved", key: "saved", align: "right" as const },
+    {
+        title: "State",
+        key: "state",
+        align: "center" as const,
+        render: (_: unknown, r: ParamRow) => <Tag color={r.state.color}>{r.state.text}</Tag>,
+    },
+];
 
 // Render an arbitrary {param: value} combo as compact tags.
 const Combo: React.FC<{ combo?: Record<string, unknown> }> = ({ combo }) => {
@@ -223,6 +291,23 @@ export const DriveTuningSection: React.FC = () => {
     const persist = status?.persist as
         | { persisted?: boolean; written?: Record<string, unknown>; error?: string }
         | undefined;
+
+    // Live tunable-parameter panel (current value of each param + default/overridden state).
+    const params = status?.params as Record<string, ParamCell> | undefined;
+    const paramRows = useMemo<ParamRow[]>(() => {
+        if (!params) return [];
+        return PARAM_ORDER.filter((k) => k in params).map((k) => {
+            const c = params[k];
+            return {
+                key: k,
+                name: PARAM_LABELS[k],
+                current: fmtVal(c.live),
+                saved: c.default ? "—" : fmtVal(c.saved),
+                state: paramState(c),
+            };
+        });
+    }, [params]);
+    const overriddenCount = paramRows.filter((r) => r.state.text === "overridden").length;
 
     // Metrics to surface: prefer the finished single-run result, else the live status.
     const metrics = useMemo<Record<string, unknown>>(() => {
@@ -471,6 +556,43 @@ export const DriveTuningSection: React.FC = () => {
                     </Space>
                 </Card>
             )}
+
+            <Card
+                size="small"
+                style={{ marginBottom: 16 }}
+                title={
+                    <Space>
+                        <span>Tunable parameters</span>
+                        {overriddenCount > 0 && (
+                            <Tag color="orange">{`${overriddenCount} unsaved`}</Tag>
+                        )}
+                    </Space>
+                }
+            >
+                {paramRows.length === 0 ? (
+                    <Text type="secondary">
+                        Waiting for live parameter values from <code>/drive_tuning_node</code> — start
+                        the node / session if this persists.
+                    </Text>
+                ) : (
+                    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                        <Table<ParamRow>
+                            size="small"
+                            pagination={false}
+                            rowKey="key"
+                            dataSource={paramRows}
+                            columns={PARAM_COLUMNS}
+                        />
+                        <Text type="secondary">
+                            <Tag color="green">saved</Tag> matches the saved config ·{" "}
+                            <Tag color="blue">default</Tag> firmware default (not in config) ·{" "}
+                            <Tag color="orange">overridden</Tag> changed by a test, not yet saved.
+                            {overriddenCount > 0 &&
+                                " Use “Save tuned values to config” in Status to persist."}
+                        </Text>
+                    </Space>
+                )}
+            </Card>
 
             <Card
                 size="small"

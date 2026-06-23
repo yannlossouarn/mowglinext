@@ -108,6 +108,12 @@ PARAM_SPECS = {
 # angular loop). Each step optimizes a small param subset with the maneuver that
 # best exercises it, and carries plain-language guidance for non-technical
 # operators. Only params that exist in firmware today (no dither/pulse yet).
+# Params surfaced in the GUI "tunable parameters" panel: the optimizer doubles
+# plus the wheel-PI bool. The staircase / optimize set these live; the panel
+# shows the current value of each and flags those that differ from the saved
+# config (overridden by a test) or are absent from it (firmware default).
+PANEL_PARAM_NAMES = list(PARAM_SPECS.keys()) + ["wheel_pi_enabled"]
+
 PROTOCOL = [
     {
         "id": "breakaway",
@@ -292,6 +298,9 @@ class DriveTuning(Node):
         self._stop = False
         self.armed = False  # live subscriptions active (set by start_session)
         self.wheel_pi_enabled = None  # cached /hardware_bridge bool, surfaced to GUI
+        self._live_params = {}   # name -> live /hardware_bridge value (GUI panel)
+        self._saved_params = {}  # name -> mowgli_robot.yaml value (absent = firmware default)
+        self._baseline_params = {}  # name -> value at session start (for "overridden by a test")
         self._pi_poll_tick = 0
         self._lock = threading.Lock()
         self._status = {"phase": "idle"}
@@ -423,30 +432,91 @@ class DriveTuning(Node):
             out.setdefault(n, spec[1])
         return out
 
-    def _refresh_wheel_pi_enabled(self):
-        """Cache /hardware_bridge's wheel_pi_enabled bool so the GUI can show it
-        and gate the PI-dependent steps. Fire-and-forget on purpose: this runs
-        from the status-timer (and command) callback, and a blocking service
-        wait there deadlocks — the executor can't process the response while the
-        callback is parked. Let the done-callback land the value asynchronously."""
+    def _refresh_live_params(self):
+        """Async-cache the live value of every tunable on /hardware_bridge for
+        the GUI panel (current value of each param) AND the wheel_pi_enabled
+        gate. Fire-and-forget on purpose: this runs from the status-timer
+        callback, where a blocking service wait deadlocks the executor — let the
+        done-callback land the values asynchronously."""
         cli = self._get_cli(HB)
         if not cli.service_is_ready():
             return
         cli.call_async(
-            GetParameters.Request(names=["wheel_pi_enabled"])
-        ).add_done_callback(self._on_wheel_pi_response)
+            GetParameters.Request(names=PANEL_PARAM_NAMES)
+        ).add_done_callback(self._on_live_params_response)
 
-    def _on_wheel_pi_response(self, fut):
-        # Ignore responses that land during a campaign — the tuner toggles the
-        # live param per step then, so this would clobber the operating value.
+    def _on_live_params_response(self, fut):
+        # Ignore responses that land during a campaign — the tuner toggles params
+        # per step then, so these would show transient mid-test values.
         if self._busy:
             return
         try:
             res = fut.result()
         except Exception:  # noqa: BLE001 — transient service error; retry next poll
             return
-        if res and res.values and res.values[0].type == ParameterType.PARAMETER_BOOL:
-            self.wheel_pi_enabled = res.values[0].bool_value
+        if not res or not res.values:
+            return
+        out = {}
+        for name, pv in zip(PANEL_PARAM_NAMES, res.values):
+            if pv.type == ParameterType.PARAMETER_DOUBLE:
+                out[name] = pv.double_value
+            elif pv.type == ParameterType.PARAMETER_BOOL:
+                out[name] = pv.bool_value
+            elif pv.type == ParameterType.PARAMETER_INTEGER:
+                out[name] = pv.integer_value
+        if out:
+            self._live_params = out
+            if "wheel_pi_enabled" in out:
+                self.wheel_pi_enabled = out["wheel_pi_enabled"]
+            # First reading after arming = the session baseline, so the panel can
+            # flag params a test later changed (incl. ones absent from the YAML).
+            if self.armed and not self._baseline_params:
+                self._baseline_params = dict(out)
+
+    def _read_saved_params(self):
+        """Parse the persisted value of each tunable from mowgli_robot.yaml so
+        the GUI can flag live values that differ from what survives a restart,
+        and which keys are absent entirely (= firmware default). Cheap local
+        read; cached in _saved_params."""
+        saved = {}
+        try:
+            with open(self.ROBOT_YAML, "r") as f:
+                text = f.read()
+        except OSError:
+            self._saved_params = saved
+            return
+        want = set(PANEL_PARAM_NAMES)
+        key_re = re.compile(r"^\s*([A-Za-z0-9_]+)\s*:\s*([^#\n]+?)\s*(?:#.*)?$")
+        for line in text.splitlines():
+            m = key_re.match(line)
+            if not m or m.group(1) not in want:
+                continue
+            raw = m.group(2).strip()
+            if raw in ("true", "false"):
+                saved[m.group(1)] = (raw == "true")
+            else:
+                try:
+                    saved[m.group(1)] = float(raw)
+                except ValueError:
+                    pass
+        self._saved_params = saved
+
+    def _build_params_panel(self):
+        """Merge live + saved into the per-param structure the GUI panel renders:
+        {name: {live, saved, default}} where default = the key is not persisted
+        in mowgli_robot.yaml (so the live value is the firmware default)."""
+        panel = {}
+        for name in PANEL_PARAM_NAMES:
+            live = self._live_params.get(name)
+            if live is None:
+                continue
+            panel[name] = {
+                "live": live,
+                "saved": self._saved_params.get(name),
+                "default": name not in self._saved_params,
+                "baseline": self._baseline_params.get(name),
+            }
+        return panel
 
     def _read_wheel_pi_blocking(self):
         """Synchronous read of the operating wheel_pi_enabled — safe ONLY from a
@@ -603,7 +673,8 @@ class DriveTuning(Node):
             self.create_subscription(WheelTick, "/wheel_ticks", self._on_ticks, self._rel),
         ]
         self.armed = True
-        self._refresh_wheel_pi_enabled()
+        self._refresh_live_params()
+        self._read_saved_params()
         self._set_phase("session active")
         self.get_logger().info("tuning session armed — live subscriptions active")
 
@@ -617,6 +688,7 @@ class DriveTuning(Node):
         self._session_subs = []
         # Drop cached pose so a stale value can't pass preflight after re-arm.
         self.x = self.y = self.yaw = self.sx = None
+        self._baseline_params = {}  # re-baseline on the next arm
         self.armed = False
         self.hl(CMD_RECORD_CANCEL)
         self._set_phase("idle")
@@ -1161,11 +1233,14 @@ class DriveTuning(Node):
             self._status = {"phase": phase, "t": time.time(), **extra}
 
     def _publish_status(self):
-        # Refresh the PI toggle roughly every 5 s (outside the lock) so the GUI
-        # reflects a Drive-Motor-settings change without needing a re-arm.
+        # Refresh the live param values + saved baseline ~every 2 s (outside the
+        # lock, and only while idle so a campaign's transient per-step values
+        # aren't displayed) so the GUI panel reflects test results + any
+        # Drive-Motor-settings change without needing a re-arm.
         self._pi_poll_tick += 1
-        if self._pi_poll_tick % 5 == 1 and not self._busy:
-            self._refresh_wheel_pi_enabled()
+        if self._pi_poll_tick % 2 == 1 and not self._busy:
+            self._refresh_live_params()
+            self._read_saved_params()
         with self._lock:
             snap = dict(self._status)
         snap["busy"] = self._busy
@@ -1173,6 +1248,7 @@ class DriveTuning(Node):
         snap["wheel_pi_enabled"] = self.wheel_pi_enabled
         snap["hl_state"] = self.hl_state
         snap["sigma_xy"] = self.sx
+        snap["params"] = self._build_params_panel()
         try:
             self.pub_status.publish(String(data=json.dumps(snap, default=str)))
         except (TypeError, ValueError):
