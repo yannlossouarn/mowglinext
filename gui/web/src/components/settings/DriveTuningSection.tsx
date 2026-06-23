@@ -24,6 +24,7 @@ import {
     SaveOutlined,
     StopOutlined,
     ThunderboltOutlined,
+    UndoOutlined,
 } from "@ant-design/icons";
 import { useWS } from "../../hooks/useWS.ts";
 
@@ -254,7 +255,8 @@ export const DriveTuningSection: React.FC = () => {
                 action === "stop" ||
                 action === "start_session" ||
                 action === "stop_session" ||
-                action === "persist"
+                action === "persist" ||
+                action === "reset_default"
             )
                 command = { action };
             else if (step) command = { action, step };
@@ -322,6 +324,14 @@ export const DriveTuningSection: React.FC = () => {
         });
         setEditing(null);
     }, [editing, editBool, editNum, cmdStream]);
+    const resetOne = useCallback(
+        (r: ParamRow) => {
+            cmdStream.sendJsonMessage({
+                data: JSON.stringify({ action: "reset_default", name: r.key }),
+            });
+        },
+        [cmdStream],
+    );
 
     const paramColumns = [
         { title: "Parameter", dataIndex: "name", key: "name" },
@@ -343,17 +353,27 @@ export const DriveTuningSection: React.FC = () => {
         },
         {
             title: "",
-            key: "edit",
+            key: "actions",
             align: "right" as const,
             render: (_: unknown, r: ParamRow) => (
-                <Button
-                    size="small"
-                    icon={<EditOutlined />}
-                    disabled={busy}
-                    onClick={() => openEdit(r)}
-                >
-                    Edit
-                </Button>
+                <Space size={4}>
+                    <Button
+                        size="small"
+                        icon={<EditOutlined />}
+                        disabled={busy}
+                        onClick={() => openEdit(r)}
+                    >
+                        Edit
+                    </Button>
+                    <Button
+                        size="small"
+                        icon={<UndoOutlined />}
+                        disabled={busy || r.state.text === "default"}
+                        onClick={() => resetOne(r)}
+                    >
+                        Reset
+                    </Button>
+                </Space>
             ),
         },
     ];
@@ -618,15 +638,25 @@ export const DriveTuningSection: React.FC = () => {
                     </Space>
                 }
                 extra={
-                    <Button
-                        type="primary"
-                        size="small"
-                        icon={<SaveOutlined />}
-                        disabled={busy}
-                        onClick={() => send("persist")}
-                    >
-                        Save to config
-                    </Button>
+                    <Space>
+                        <Button
+                            size="small"
+                            icon={<UndoOutlined />}
+                            disabled={busy || overriddenCount === 0}
+                            onClick={() => send("reset_default")}
+                        >
+                            Reset all to default
+                        </Button>
+                        <Button
+                            type="primary"
+                            size="small"
+                            icon={<SaveOutlined />}
+                            disabled={busy}
+                            onClick={() => send("persist")}
+                        >
+                            Save to config
+                        </Button>
+                    </Space>
                 }
             >
                 {paramRows.length === 0 ? (

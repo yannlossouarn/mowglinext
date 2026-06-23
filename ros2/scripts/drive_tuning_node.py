@@ -443,8 +443,11 @@ class DriveTuning(Node):
                 for n, pv in zip(names, res.values):
                     if pv.type == ParameterType.PARAMETER_DOUBLE:
                         out[n] = pv.double_value
-        for n, spec in PARAM_SPECS.items():
-            out.setdefault(n, spec[1])
+        # Return ONLY what was actually read. Do NOT fabricate values for params
+        # that failed to read — apply_params() writes the combo straight to the
+        # firmware, so substituting a lower bound here silently zeroed real gains
+        # (kp/ki/hold_kp/…) whenever a read hiccuped (e.g. the get_parameters
+        # service not ready right after a node/bridge restart).
         return out
 
     def _refresh_live_params(self):
@@ -1192,6 +1195,13 @@ class DriveTuning(Node):
         # of the combo is read + reapplied unchanged. Default = sweep everything.
         names = list(param_names) if param_names else list(PARAM_SPECS.keys())
         combo = self.get_combo()
+        # get_combo() now returns only params it could actually read. If the
+        # current values can't be read, abort — re-applying a partial combo (or
+        # descending on a missing key) is how gains used to get zeroed.
+        missing = [n for n in names if n not in combo]
+        if missing:
+            return {"error": "could not read current drive params "
+                             f"({', '.join(missing)}) from /hardware_bridge — aborting"}
         steps = {n: PARAM_SPECS[n][3] for n in names}
         self.apply_params(combo)
         # Anchor the footprint: every scored run returns here, so the descent
@@ -1303,6 +1313,15 @@ class DriveTuning(Node):
             threading.Thread(target=self._set_param_thread,
                              args=(cmd.get("name"), cmd.get("value")), daemon=True).start()
             return
+        if action == "reset_default":
+            # Restore Live = Default (saved-config or firmware default) for one
+            # param (name given) or all (no name). The recovery for zeroed gains.
+            if self._busy:
+                self.get_logger().warn("busy — ignoring reset_default")
+                return
+            threading.Thread(target=self._reset_default_thread,
+                             args=(cmd.get("name"),), daemon=True).start()
+            return
         if action == "get_protocol":
             # One-off: hand the ordered step list + guidance to the GUI stepper.
             self.pub_status.publish(String(data=json.dumps(
@@ -1377,6 +1396,34 @@ class DriveTuning(Node):
             time.sleep(0.3)  # let the bridge push the value to the STM32
             self._set_phase(f"set {name} = {shown}" if ok else f"set {name} failed")
             self.get_logger().info(f"set_param {name} = {shown}: {'ok' if ok else 'FAILED'}")
+        finally:
+            self._busy = False
+
+    def _reset_default_thread(self, name=None):
+        """Set Live = Default (the from-scratch value: mowgli_robot.yaml if the
+        key is persisted, else the firmware default) for one param or all. This
+        is the recovery path when a value has drifted/zeroed from its config."""
+        self._busy = True
+        try:
+            self._read_saved_params()  # freshest saved baseline
+            targets = [name] if name else list(PANEL_PARAM_NAMES)
+            applied = {}
+            for n in targets:
+                if n not in PANEL_PARAM_NAMES:
+                    continue
+                default = (self._saved_params[n] if n in self._saved_params
+                           else FIRMWARE_DEFAULTS.get(n))
+                if default is None:
+                    continue
+                if n == "wheel_pi_enabled":
+                    ok = self.set_param(HB, n, bool(default), ParameterType.PARAMETER_BOOL)
+                else:
+                    ok = self.set_param(HB, n, float(default), ParameterType.PARAMETER_DOUBLE)
+                if ok:
+                    applied[n] = default
+            time.sleep(0.3)  # let the bridge push the values to the STM32
+            self._set_phase(f"reset {len(applied)} param(s) to default", reset=applied)
+            self.get_logger().info(f"reset_default: {json.dumps(applied, default=str)}")
         finally:
             self._busy = False
 
