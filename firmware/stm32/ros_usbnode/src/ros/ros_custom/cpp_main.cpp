@@ -658,9 +658,24 @@ extern "C" void motors_handler()
             blade_on_off = 0;
         } else {
             const uint32_t cmd_vel_age_ms = HAL_GetTick() - snap_cmd_vel;
-            if (cmd_vel_age_ms > 200u) {
-                /* Command-vel watchdog: zero motors if the host hasn't
-                 * sent a twist in 200 ms (Pi hang, USB glitch, etc). */
+            /* Command-vel watchdog. If the host stops sending twists we must
+             * react — BUT only force a coast-to-stop when we were commanded to
+             * MOVE and then lost the stream (Pi hang / USB glitch mid-drive).
+             *
+             * When the last command was a STOP (both wheel targets ~0), a stale
+             * cmd_vel is benign: keep the standstill position hold engaged
+             * (want_hold, below) instead of releasing to coast. Otherwise, after
+             * a pivot / segment end the controller stops streaming, the 200 ms
+             * watchdog fires, the hold releases, and the wheels coast — letting
+             * backlash + tire-windup reverse-creep off the target heading, which
+             * the next controller engagement then over-corrects through the
+             * deadband. Holding zero position is also the safer state on a slope.
+             *
+             * Emergency and IDLE (handled above) still hard-stop unconditionally;
+             * a true mid-drive comms loss (targets != 0) still hard-stops here. */
+            const bool commanded_stop =
+                fabsf(snap_left_target) < 1.0e-3f && fabsf(snap_right_target) < 1.0e-3f;
+            if (cmd_vel_age_ms > 200u && !commanded_stop) {
                 hard_stop = true;
             }
             if (cmd_vel_age_ms > 25000u) {
