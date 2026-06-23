@@ -151,13 +151,16 @@ PROTOCOL = [
         "id": "viscous",
         "title": "2 · Speed scale (viscous)",
         "params": ["wheel_pid_pwm_per_mps"],
-        "maneuver": "transit_pose",
+        "maneuver": "viscous_fit",
         "clearance": "~2.5 m clear straight ahead",
         "pi_run": "off",  # open-loop: the integrator hides a wrong speed scale
         "guidance": (
-            "With breakaway set, scales PWM so the commanded speed matches the "
-            "actual speed. Keep ~2.5 m clear straight ahead; the robot drives "
-            "forward and stops on a precise pose."
+            "With breakaway set, scales PWM so commanded speed matches actual "
+            "speed. Press Run: the robot drives forward at four speeds spanning "
+            "your configured mowing/transit range and fits PWM-vs-speed, so the "
+            "scale is calibrated where the robot actually drives (not extrapolated "
+            "from one low speed). The fit's R² also flags if the response isn't "
+            "linear over that range. Keep ~2.5 m clear ahead. Run, not Optimize."
         ),
     },
     {
@@ -270,6 +273,27 @@ def _cross_track(px, py, path_xy):
             d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
         best = min(best, d)
     return best
+
+
+def _linfit(xs, ys):
+    """Ordinary least-squares fit y = slope*x + intercept. Returns
+    (slope, intercept, r2) or None if degenerate. Used by the viscous step to
+    fit PWM vs achieved speed across several operating points — the slope is the
+    feedforward gain (pwm_per_mps) and r2 reports how linear the plant actually
+    is over the tested range (low r2 → the affine model is only approximate)."""
+    n = len(xs)
+    if n < 2:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    if sxx < 1e-9:
+        return None
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
+    intercept = my - slope * mx
+    ss_tot = sum((y - my) ** 2 for y in ys)
+    ss_res = sum((y - (slope * x + intercept)) ** 2 for x, y in zip(xs, ys))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-9 else 1.0
+    return slope, intercept, r2
 
 
 class DriveTuning(Node):
@@ -1000,6 +1024,121 @@ class DriveTuning(Node):
             "follow_status": "OK" if (bk_l is not None and bk_r is not None) else "INCOMPLETE",
         }
 
+    def _read_operating_speeds(self):
+        """Read mowing_speed / transit_speed from mowgli_robot.yaml so the
+        viscous fit calibrates at the REAL operating range instead of a fixed
+        guess. Defaults match the firmware/site config (0.2 / 0.25 m/s)."""
+        speeds = {"mowing_speed": 0.2, "transit_speed": 0.25}
+        try:
+            with open(self.ROBOT_YAML) as f:
+                text = f.read()
+        except OSError:
+            return speeds
+        for key in speeds:
+            m = re.search(rf"^\s*{key}\s*:\s*([0-9.]+)", text, re.M)
+            if m:
+                try:
+                    speeds[key] = float(m.group(1))
+                except ValueError:
+                    pass
+        return speeds
+
+    def viscous_fit(self):
+        """Identify the feedforward gain wheel_pid_pwm_per_mps by a MULTI-POINT
+        fit across the operating speed range — not a single point.
+
+        Drives a straight open-loop command (PI off, breakaway already set by
+        step 1) at N speeds bracketing the configured mowing/transit speed. At
+        each it records the achieved forward speed (wheel odom) and the applied
+        feedforward PWM (= deadband + pwm_per_mps*v_cmd; PI is off so this IS the
+        real applied PWM). The plant's steady state obeys PWM = deadband_true +
+        slope_true*v_act, so a least-squares fit of PWM vs achieved speed
+        recovers the TRUE gain (slope) and deadband (intercept) regardless of the
+        current — possibly wrong — settings. The fit's r2 also MEASURES whether
+        the affine model holds over the range instead of assuming a single
+        low-speed point extrapolates linearly to the operating speed."""
+        if self.x is None:
+            return {"error": "no localization"}
+        combo = self.get_combo()
+        d_set = combo.get("wheel_pid_deadband_pwm")
+        s_set = combo.get("wheel_pid_pwm_per_mps")
+        if d_set is None or s_set is None:
+            return {"error": "could not read current deadband / pwm_per_mps from /hardware_bridge"}
+
+        op = self._read_operating_speeds()
+        v_op_hi = max(op["mowing_speed"], op["transit_speed"])
+        # Bracket the operating range: a bit below the slow end up to just above
+        # the fast end, so the fit covers where the robot actually drives.
+        v_hi = min(0.6, v_op_hi * 1.2)
+        v_lo = max(0.10, v_hi * 0.45)
+        n_pts = 4  # 4 points → a robust slope AND enough residual DOF that a low
+        #            r2 actually means curvature, not just a perfect 2-3 pt line
+        speeds = [v_lo + (v_hi - v_lo) * k / (n_pts - 1) for k in range(n_pts)]
+        # ~2 s dwell keeps total forward travel (Σ v·dwell) inside the ~2.5 m
+        # clearance; 0.7 s settle drops the per-point accel transient.
+        DWELL_S, SETTLE_S = 2.0, 0.7
+
+        # Drop the host min-vel clamp so low test speeds aren't zeroed. The gyro
+        # angular loop can stay on (keeps it straight); its corrections are
+        # zero-mean across the wheels, so the MEAN PWM == the feedforward formula.
+        saved = self._get_param_values(["min_linear_vel"])
+        self.set_param(HB, "min_linear_vel", 0.0, ParameterType.PARAMETER_DOUBLE)
+        time.sleep(0.3)
+        points = []
+        try:
+            for v_cmd in speeds:
+                if self._stop:
+                    break
+                vacc = []
+                t0 = time.time()
+                while time.time() - t0 < DWELL_S and not self._stop:
+                    m = TwistStamped()
+                    m.header.stamp = self.get_clock().now().to_msg()
+                    m.header.frame_id = "base_link"
+                    m.twist.linear.x = float(v_cmd)
+                    m.twist.angular.z = 0.0
+                    self.pub_teleop.publish(m)
+                    if time.time() - t0 > SETTLE_S:  # skip the accel transient
+                        vacc.append(self._wheel_v)
+                    time.sleep(0.05)
+                v_act = sum(vacc) / len(vacc) if vacc else 0.0
+                pwm_applied = d_set + s_set * v_cmd  # PI off → real applied PWM
+                points.append({"v_cmd": round(v_cmd, 3), "v_act": round(v_act, 3),
+                               "pwm": round(pwm_applied, 1)})
+                self._set_phase(f"viscous fit v_cmd={v_cmd:.2f} v_act={v_act:.2f}")
+        finally:
+            for _ in range(12):  # stop
+                z = TwistStamped()
+                z.header.stamp = self.get_clock().now().to_msg()
+                z.header.frame_id = "base_link"
+                self.pub_teleop.publish(z)
+                time.sleep(0.04)
+            if "min_linear_vel" in saved:
+                self.set_param(HB, "min_linear_vel", saved["min_linear_vel"],
+                               ParameterType.PARAMETER_DOUBLE)
+            time.sleep(0.2)
+
+        if self._stop:
+            return {"follow_status": "CANCEL", "points": points}
+        fit = _linfit([p["v_act"] for p in points], [p["pwm"] for p in points])
+        if fit is None or fit[0] <= 0.0:
+            return {"follow_status": "INCOMPLETE", "points": points,
+                    "error": "fit failed — need >=2 distinct achieved speeds and a positive slope"}
+        slope, intercept, r2 = fit
+        lo, hi = PARAM_SPECS["wheel_pid_pwm_per_mps"][1], PARAM_SPECS["wheel_pid_pwm_per_mps"][2]
+        new_ppm = max(lo, min(hi, slope))
+        ok = self.set_param(HB, "wheel_pid_pwm_per_mps", float(new_ppm),
+                            ParameterType.PARAMETER_DOUBLE)
+        time.sleep(0.3)
+        return {
+            "points": points,
+            "pwm_per_mps_fit": slope, "pwm_per_mps_set": new_ppm,
+            "implied_deadband_pwm": intercept, "deadband_used": d_set,
+            "linearity_r2": r2, "nonlinear_warning": r2 < 0.95,
+            "operating_speeds": op,
+            "follow_status": "OK" if ok else "INCOMPLETE",
+        }
+
     def cancel(self):
         self._stop = True
         if self._fp_gh is not None:
@@ -1090,8 +1229,8 @@ class DriveTuning(Node):
         w_hunt = g("w_hunting").value
         w_bc = g("w_backcreep").value
         w_pe = g("w_pose_err").value
-        if maneuver == "breakaway_staircase":
-            return 0.0  # not a scored maneuver — the staircase sets the value directly
+        if maneuver in ("breakaway_staircase", "viscous_fit"):
+            return 0.0  # not scored — these fit + set the value directly
         if maneuver == "yaw_hunt":
             return (w_h * m.get("undershoot", 0.0) + w_bc * m.get("backcreep", 0.0)
                     + w_hunt * 0.1 * m.get("gz_zc", 0.0))
@@ -1141,6 +1280,11 @@ class DriveTuning(Node):
                     m = self.metrics_pose(gx, gy, gyaw)
             elif maneuver == "breakaway_staircase":
                 m = self.breakaway_staircase()
+                if "error" in m:
+                    return m
+                st = m.get("follow_status", "OK")
+            elif maneuver == "viscous_fit":
+                m = self.viscous_fit()
                 if "error" in m:
                     return m
                 st = m.get("follow_status", "OK")
@@ -1471,10 +1615,10 @@ class DriveTuning(Node):
                     self.set_param(HB, "wheel_pi_enabled", pi_run,
                                    ParameterType.PARAMETER_BOOL)
                     time.sleep(0.3)  # let the bridge push the toggle to firmware
-            # The breakaway staircase sets the deadband directly from a from-rest
-            # PWM ramp; it has no scored gradient, so never wrap it in the
-            # coordinate-descent optimizer.
-            if maneuver == "breakaway_staircase":
+            # The breakaway staircase and the viscous multi-point fit set their
+            # param directly (PWM ramp / regression); they have no scored
+            # gradient, so never wrap them in the coordinate-descent optimizer.
+            if maneuver in ("breakaway_staircase", "viscous_fit"):
                 action = "run"
             # Open-loop ID steps (pi_run forced off) drive a straight cmd_vel
             # instead of an RPP-tracked path — RPP on the PI-off plant weaves.

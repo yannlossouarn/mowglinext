@@ -307,6 +307,19 @@ export const DriveTuningSection: React.FC = () => {
     }, [params]);
     const overriddenCount = paramRows.filter((r) => r.state.text === "overridden").length;
 
+    // Speed-scale (viscous) multi-point fit result, when the last run was one.
+    const fit = status?.result as
+        | {
+              pwm_per_mps_fit?: number;
+              pwm_per_mps_set?: number;
+              implied_deadband_pwm?: number;
+              linearity_r2?: number;
+              nonlinear_warning?: boolean;
+              points?: { v_cmd: number; v_act: number; pwm: number }[];
+          }
+        | undefined;
+    const hasFit = !!fit && typeof fit.pwm_per_mps_fit === "number";
+
     // Inline Edit: set one tunable's live value by hand.
     const [editing, setEditing] = useState<{ name: string; label: string; cell: ParamCell } | null>(null);
     const [editNum, setEditNum] = useState<number>(0);
@@ -850,6 +863,30 @@ export const DriveTuningSection: React.FC = () => {
                                 </>
                             )}
                         </Descriptions>
+
+                        {hasFit && (
+                            <Alert
+                                type={fit?.nonlinear_warning ? "warning" : "success"}
+                                showIcon
+                                message={`Speed-scale fit: pwm_per_mps = ${num(fit?.pwm_per_mps_set, 0)} (slope ${num(fit?.pwm_per_mps_fit, 1)}, implied deadband ${num(fit?.implied_deadband_pwm, 0)} PWM, R²=${num(fit?.linearity_r2, 3)})`}
+                                description={
+                                    <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                                        <Text type="secondary">
+                                            {fit?.nonlinear_warning
+                                                ? "R² < 0.95 — the PWM→speed response is NOT linear over the tested range; a single gain is approximate (the points curve). Consider closed-loop PI to absorb the residual."
+                                                : "Linear over the tested range — a single gain (this slope) tracks the commanded speed across your operating speeds."}
+                                        </Text>
+                                        {Array.isArray(fit?.points) && (
+                                            <Space size={[4, 4]} wrap>
+                                                {fit!.points!.map((p, i) => (
+                                                    <Tag key={i}>{`cmd ${num(p.v_cmd, 2)} → act ${num(p.v_act, 2)} @ ${num(p.pwm, 0)} PWM`}</Tag>
+                                                ))}
+                                            </Space>
+                                        )}
+                                    </Space>
+                                }
+                            />
+                        )}
 
                         <div>
                             <Text strong>Suggested next combo</Text>
