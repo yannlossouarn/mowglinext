@@ -240,10 +240,19 @@ controller_server:
       desired_linear_vel: 0.30            # transit speed cap (m/s)
       min_approach_linear_velocity: 0.16  # ≥ kMinLinVel=0.15 host clamp (hardware_bridge on_cmd_vel)
       approach_velocity_scaling_dist: 0.6
-      # Lookahead: velocity-scaled. At 0.30 m/s → 0.45 m, at 0.13 m/s → 0.20 m.
+      # Lookahead: velocity-scaled = clamp(lookahead_time*v, min, max).
+      # 2026 weave fix: the old 1.5/0.30 collapsed the lookahead at the low
+      # regulated speed — once the robot started to wander, regulated speed
+      # scaling dropped v to ~0.16 m/s, shrinking the lookahead to ~0.30 m,
+      # which made pure-pursuit steering twitchier → bigger swerve → slower →
+      # shorter lookahead (a limit cycle: cmd_wz std 0.59 rad/s, ±0.3 m lateral
+      # weave on a straight path). Raising lookahead_time 1.5→2.0 and the floor
+      # 0.30→0.50 broke it (measured: cmd_wz std −55%, lateral span 0.63→0.22 m,
+      # and speed no longer regulates down). 0.50 m floor at 0.2 m/s is still
+      # well inside the chassis length, so transit/dock tracking stays tight.
       use_velocity_scaled_lookahead_dist: true
-      lookahead_time: 1.5
-      min_lookahead_dist: 0.30            # short-radius near goal
+      lookahead_time: 2.0
+      min_lookahead_dist: 0.50            # floor so regulated-speed dips don't twitch
       max_lookahead_dist: 0.90
       # Curvature-based slowdown: when steering radius < 0.9 m, drop to
       # min 0.20 m/s. Keeps tight turns controllable without stalling.
