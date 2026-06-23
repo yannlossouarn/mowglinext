@@ -48,6 +48,8 @@ Run in-container:
 """
 import json
 import math
+import os
+import re
 import threading
 import time
 
@@ -476,6 +478,86 @@ class DriveTuning(Node):
             elif pv.type == ParameterType.PARAMETER_INTEGER:
                 out[n] = pv.integer_value
         return out
+
+    # ---- persistence (write tuned params to mowgli_robot.yaml) ---------------
+    # Path that mowgli.launch.py reads at boot (mowgli.launch.py:77). In the
+    # mowgli-ros2 container this is the host-mounted docker/config/mowgli file,
+    # so a write here survives a container restart AND is the same file the GUI
+    # Drive Motor settings form edits.
+    ROBOT_YAML = "/ros2_ws/config/mowgli_robot.yaml"
+
+    def persist_params(self):
+        """Write the live /hardware_bridge drive params to mowgli_robot.yaml so
+        they survive a restart (the optimizer / staircase otherwise only sets
+        them live and the firmware reverts to the saved values on reconnect).
+        Worker-thread only — get_combo / _read_wheel_pi_blocking block."""
+        vals = dict(self.get_combo())  # all PARAM_SPECS doubles, live
+        pi = self._read_wheel_pi_blocking()
+        if pi is not None:
+            vals["wheel_pi_enabled"] = pi
+        return self._persist_params_to_yaml(vals)
+
+    @staticmethod
+    def _fmt_yaml_scalar(v):
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        s = "%.6g" % float(v)
+        if "." not in s and "e" not in s and "E" not in s:
+            s += ".0"  # keep it a YAML float, not an int
+        return s
+
+    def _persist_params_to_yaml(self, values):
+        """Line-splice ``values`` into mowgli_robot.yaml under mowgli/
+        ros__parameters, preserving comments + layout (same approach as
+        calibrate_imu_yaw_node / map_server set_docking_point). Keys already
+        present are rewritten in place; missing keys (e.g. wheel_pid_deadband_pwm,
+        which is absent by default) are appended into the block."""
+        path = self.ROBOT_YAML
+        if not os.path.isfile(path):
+            return {"persisted": False, "error": f"{path} not found"}
+        try:
+            with open(path, "r") as f:
+                lines = f.readlines()
+        except OSError as e:
+            return {"persisted": False, "error": str(e)}
+
+        key_re = re.compile(r"^(\s*)([A-Za-z0-9_]+)(\s*:\s*)([^#\n]*?)(\s*#.*)?\s*$")
+        remaining = dict(values)
+        written = {}
+        for i, line in enumerate(lines):
+            m = key_re.match(line)
+            if not m or m.group(2) not in remaining:
+                continue
+            key = m.group(2)
+            indent, comment = m.group(1), (m.group(5) or "")
+            vs = self._fmt_yaml_scalar(remaining.pop(key))
+            lines[i] = f"{indent}{key}: {vs}{comment}\n"
+            written[key] = vs
+
+        if remaining:  # append keys not already in the file
+            insert_at, in_mowgli = None, False
+            for i, line in enumerate(lines):
+                if re.match(r"^mowgli:\s*$", line):
+                    in_mowgli = True
+                elif in_mowgli and re.match(r"^\s+ros__parameters:\s*$", line):
+                    insert_at = i + 1
+                    break
+            if insert_at is None:
+                return {"persisted": False, "written": written,
+                        "missing": list(remaining),
+                        "error": "could not locate mowgli/ros__parameters in yaml"}
+            block = [f"    {k}: {self._fmt_yaml_scalar(v)}  # set by drive_tuning_node\n"
+                     for k, v in remaining.items()]
+            lines[insert_at:insert_at] = block
+            for k, v in remaining.items():
+                written[k] = self._fmt_yaml_scalar(v)
+
+        try:
+            with open(path, "w") as f:
+                f.writelines(lines)
+        except OSError as e:
+            return {"persisted": False, "error": str(e), "written": written}
+        return {"persisted": True, "path": path, "written": written}
 
     def hl(self, cmd):
         if not self.hlc.wait_for_service(timeout_sec=5.0):
@@ -1112,6 +1194,14 @@ class DriveTuning(Node):
         if action == "stop_session":
             self.stop_session()
             return
+        if action == "persist":
+            # Write the live tuned drive params to mowgli_robot.yaml. Allowed
+            # while idle (not armed) but never mid-campaign.
+            if self._busy:
+                self.get_logger().warn("busy — ignoring persist")
+                return
+            threading.Thread(target=self._persist_thread, daemon=True).start()
+            return
         if action == "get_protocol":
             # One-off: hand the ordered step list + guidance to the GUI stepper.
             self.pub_status.publish(String(data=json.dumps(
@@ -1150,6 +1240,17 @@ class DriveTuning(Node):
             return
         threading.Thread(target=self._campaign, args=(action, maneuver, params, pi_run),
                          daemon=True).start()
+
+    def _persist_thread(self):
+        self._busy = True  # serialize against campaigns; status shows "running"
+        try:
+            self._set_phase("saving to mowgli_robot.yaml")
+            res = self.persist_params()
+            self._set_phase("saved to config" if res.get("persisted")
+                            else "save to config failed", persist=res)
+            self.get_logger().info(f"persist: {json.dumps(res, default=str)}")
+        finally:
+            self._busy = False
 
     def _find_step(self, step_id):
         return next((s for s in PROTOCOL if s["id"] == step_id), None)

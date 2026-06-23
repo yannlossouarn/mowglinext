@@ -16,6 +16,7 @@ import {
 import {
     ExperimentOutlined,
     PlayCircleOutlined,
+    SaveOutlined,
     StopOutlined,
     ThunderboltOutlined,
 } from "@ant-design/icons";
@@ -186,7 +187,12 @@ export const DriveTuningSection: React.FC = () => {
     const send = useCallback(
         (action: string, step?: string) => {
             let command: Record<string, unknown>;
-            if (action === "stop" || action === "start_session" || action === "stop_session")
+            if (
+                action === "stop" ||
+                action === "start_session" ||
+                action === "stop_session" ||
+                action === "persist"
+            )
                 command = { action };
             else if (step) command = { action, step };
             else command = { action, maneuver };
@@ -213,6 +219,10 @@ export const DriveTuningSection: React.FC = () => {
     const best = (status?.best ?? result?.best) as Record<string, unknown> | undefined;
     const bestScore = (status?.best_score ?? result?.best_score) as number | undefined;
     const nextCombo = status?.next_combo as Record<string, unknown> | undefined;
+    // Result of the last "persist" (Save tuned values to config) action.
+    const persist = status?.persist as
+        | { persisted?: boolean; written?: Record<string, unknown>; error?: string }
+        | undefined;
 
     // Metrics to surface: prefer the finished single-run result, else the live status.
     const metrics = useMemo<Record<string, unknown>>(() => {
@@ -597,11 +607,41 @@ export const DriveTuningSection: React.FC = () => {
                                 )}
                             </div>
                         </div>
-                        <Paragraph type="secondary" style={{ margin: 0 }}>
-                            The optimizer leaves the robot on the best combo. To make it permanent,
-                            copy the values into <Text strong>Drive Motor</Text> settings and save —
-                            otherwise the firmware reverts to the saved values on the next reconnect.
-                        </Paragraph>
+                        <Divider style={{ margin: "4px 0" }} />
+                        <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                            <Space wrap align="center">
+                                <Button
+                                    icon={<SaveOutlined />}
+                                    disabled={busy}
+                                    onClick={() => send("persist")}
+                                >
+                                    Save tuned values to config
+                                </Button>
+                                <Text type="secondary">
+                                    Writes the live drive params to <code>mowgli_robot.yaml</code> so
+                                    they survive a restart (otherwise the firmware reverts to the saved
+                                    values on the next reconnect). Save after each step you're happy with.
+                                </Text>
+                            </Space>
+                            {persist && (
+                                <Alert
+                                    type={persist.persisted ? "success" : "error"}
+                                    showIcon
+                                    message={
+                                        persist.persisted
+                                            ? "Saved to mowgli_robot.yaml"
+                                            : "Save failed"
+                                    }
+                                    description={
+                                        persist.persisted ? (
+                                            <Combo combo={persist.written} />
+                                        ) : (
+                                            persist.error ?? "unknown error"
+                                        )
+                                    }
+                                />
+                            )}
+                        </Space>
                     </Space>
                 )}
             </Card>
