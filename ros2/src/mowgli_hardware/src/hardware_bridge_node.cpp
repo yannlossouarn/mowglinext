@@ -213,6 +213,12 @@ private:
               drive_pid_changed = true;
               continue;
             }
+            if (name == "angular_rate_loop_enabled" &&
+                p.get_type() == rclcpp::ParameterType::PARAMETER_BOOL)
+            {
+              angular_rate_loop_enabled_ = p.as_bool();
+              continue;
+            }
             if (p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE)
             {
               continue;
@@ -220,6 +226,35 @@ private:
             if (name == "min_linear_vel")
             {
               min_linear_vel_ = p.as_double();
+            }
+            // Angular-rate controller gains — host-side (used directly in
+            // on_cmd_vel via angular_rate_params_), so no firmware resend; the
+            // controller picks up the new struct on the next cmd_vel. These were
+            // previously declared but NOT handled here, so they were stuck at
+            // boot defaults and the tuner's angular step was a no-op.
+            else if (name == "angular_rate_kff")
+            {
+              angular_rate_params_.kff = p.as_double();
+            }
+            else if (name == "angular_rate_kp")
+            {
+              angular_rate_params_.kp = p.as_double();
+            }
+            else if (name == "angular_rate_ki")
+            {
+              angular_rate_params_.ki = p.as_double();
+            }
+            else if (name == "angular_rate_max_cmd")
+            {
+              angular_rate_params_.max_cmd = p.as_double();
+            }
+            else if (name == "angular_rate_integral_max")
+            {
+              angular_rate_params_.integral_max = p.as_double();
+            }
+            else if (name == "angular_rate_target_lp_tau")
+            {
+              angular_rate_params_.target_lp_tau = p.as_double();
             }
             else if (name == "wheel_pid_deadband_pwm")
             {
