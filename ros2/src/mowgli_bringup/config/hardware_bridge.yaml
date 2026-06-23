@@ -19,3 +19,13 @@ hardware_bridge:
     # curve — the residual bias stays elevated. 20 s puts us past the Allan
     # minimum for the WT901, giving ~√5 ≈ 2.2× tighter gyro/accel offsets.
     imu_cal_samples: 1000
+
+    # Inner angular-rate loop — low-pass time constant (s) on the TARGET wz
+    # before the PI. Raised from the 0.2 default to 0.45 after the 2026 weave
+    # investigation: RPP feeds an oscillating heading target on straight paths,
+    # and the PI was chasing + overshooting each swing (gyro ~2.6x the command)
+    # → a ±0.3 m weave. Low-passing the target to its NET intent broke the
+    # RPP<->inner-loop fight — measured cmd_wz std 0.265->0.084 (-68%), lateral
+    # weave 0.22->0.10 m — with steady-state authority unchanged (a sustained
+    # command still settles to it). See angular_rate_controller.hpp.
+    angular_rate_target_lp_tau: 0.45
